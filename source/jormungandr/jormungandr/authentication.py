@@ -49,6 +49,8 @@ def authentication_required(func):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
+        if current_app.config.get('PUBLIC', False):
+            return func(*args, **kwargs)
         region = None
         if 'region' in kwargs:
             region = kwargs['region']
@@ -60,6 +62,8 @@ def authentication_required(func):
                                                 lat=kwargs['lat'])
             except RegionNotFound:
                 pass
+        elif current_app.config.get('DEFAULT_REGION'): # if a default region is defined in config
+            region = current_app.config.get('DEFAULT_REGION') # we use it
         user = get_user(token=get_token())
         if not region:
             #we could not find any regions, we abort
