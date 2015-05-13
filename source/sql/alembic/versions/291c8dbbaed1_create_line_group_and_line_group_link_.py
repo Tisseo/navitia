@@ -1,14 +1,14 @@
 """create line_group and line_group_link tables
 
 Revision ID: 291c8dbbaed1
-Revises: 53a04ae84033
+Revises: 3bea0b3cb116
 Create Date: 2015-05-12 15:24:02.969762
 
 """
 
 # revision identifiers, used by Alembic.
 revision = '291c8dbbaed1'
-down_revision = '53a04ae84033'
+down_revision = '3bea0b3cb116'
 
 from alembic import op
 import sqlalchemy as sa
