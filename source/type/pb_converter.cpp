@@ -393,6 +393,12 @@ void fill_pb_object(nt::Line const* l, const nt::Data& data,
         fill_pb_object(l->commercial_mode, data,
                 line->mutable_commercial_mode(), depth-1, now, action_period, show_codes);
         fill_pb_object(l->network, data, line->mutable_network(), depth-1, now, action_period, show_codes);
+
+        for(const auto& group_pair : l->group_list) {
+            pbnavitia::GroupLink* group_link = line->add_groups();
+            group_link->set_is_main_line(group_pair.second);
+            fill_pb_object(group_pair.first,data, group_link->mutable_group(), depth-1, now, action_period, show_codes);
+        }
     }
 
     for(const auto message : l->get_applicable_messages(now, action_period)){
@@ -407,6 +413,29 @@ void fill_pb_object(nt::Line const* l, const nt::Data& data,
 
     for(auto property : l->properties) {
 	fill_property(property.first, property.second, line->add_properties());
+    }
+}
+
+void fill_pb_object(const nt::LineGroup* lg, const nt::Data& data,
+        pbnavitia::LineGroup * line_group, int max_depth,
+        const pt::ptime& now, const pt::time_period& action_period, const bool show_codes){
+    if(lg == nullptr)
+        return ;
+    int depth = (max_depth <= 3) ? max_depth : 3;
+
+    if(!lg->comment.empty()) {
+        line_group->set_comment(lg->comment);
+    }
+    line_group->set_name(lg->name);
+    line_group->set_uri(lg->uri);
+
+    //Main line is stored in first position
+    bool is_main_line = true;
+    for(const auto& line : lg->line_list) {
+        pbnavitia::LineGroupLink* line_group_link = line_group->add_lines();
+    	line_group_link->set_is_main_line(is_main_line);
+        is_main_line = false;
+        fill_pb_object(line, data, line_group_link->mutable_line(), depth-1, now, action_period, show_codes);
     }
 }
 
