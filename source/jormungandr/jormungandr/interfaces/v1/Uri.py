@@ -383,6 +383,29 @@ def routes(is_collection):
     return Routes
 
 
+def groups(is_collection):
+    class Groups(Uri):
+        """ Retrieves groups"""
+
+        def __init__(self):
+            Uri.__init__(self, is_collection, "groups")
+            self.collections = [
+                ("groups",
+                 NonNullList(fields.Nested(group,
+                                           display_null=False))),
+                ("pagination", PbField(pagination)),
+                ("error", PbField(error)),
+                ("disruptions", DisruptionsField),
+            ]
+            collections = marshal_with(OrderedDict(self.collections),
+                                       display_null=False)
+            self.method_decorators.insert(1, collections)
+            self.parsers["get"].add_argument("original_id", type=unicode,
+                            description="original uri of the object you"
+                                    "want to query")
+    return Groups
+
+
 def lines(is_collection):
     class Lines(Uri):
 

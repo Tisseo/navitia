@@ -366,6 +366,11 @@ code = {
     "value": fields.String()
 }
 
+line_group_pair = {
+    "id": fields.String(),
+    "group_main_line": fields.String()
+}
+
 prop = {
     "name": fields.String(),
     "value": fields.String()
@@ -524,6 +529,11 @@ line["geojson"] = MultiLineString(attribute="geojson")
 line["opening_time"] = SplitDateTime(date=None, time="opening_time")
 line["closing_time"] = SplitDateTime(date=None, time="closing_time")
 line["properties"] = NonNullList(NonNullNested(prop))
+line["groups"] = NonNullList(NonNullNested(line_group_pair))
+
+line_group = deepcopy(generic_type)
+line_group["comment"] = fields.String()
+line_group["lines"] = NonNullList(NonNullNested(lines))
 
 route = deepcopy(generic_type)
 route["links"] = DisruptionLinks()
