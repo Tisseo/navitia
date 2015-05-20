@@ -60,6 +60,7 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_stop_points(data, work);
 
     this->fill_lines(data, work);
+    this->fill_line_groups(data, work);
     this->fill_routes(data, work);
 
     this->fill_journey_patterns(data, work);
@@ -549,6 +550,41 @@ void EdReader::fill_lines(nt::Data& data, pqxx::work& work){
         }
     }
 }
+
+void EdReader::link_group_and_lines(std::string request, pqxx::work& work, bool is_main_lines)
+{
+    pqxx::result line_group_result = work.exec(request);
+    for(auto const_it = line_group_result.begin(); const_it != line_group_result.end(); ++const_it){
+        auto group_it = this->line_group_map.find(const_it["group_id"].as<idx_t>());
+        if(group_it !=  this->line_group_map.end()) {
+            auto line_it = this->line_map.find(const_it["line_id"].as<idx_t>());
+            if(line_it != this->line_map.end()) {
+                group_it->second->line_list.push_back(line_it->second);
+                line_it->second->group_list.push_back(std::pair<nt::LineGroup*,bool>(group_it->second, is_main_lines));
+            }
+        }
+    }
+}
+
+void EdReader::fill_line_groups(nt::Data&, pqxx::work& work){
+    std::string request = "SELECT id, name, comment FROM navitia.line_group";
+
+    pqxx::result result = work.exec(request);
+    for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
+        nt::LineGroup* line_group = new nt::LineGroup();
+        const_it["name"].to(line_group->name);
+        const_it["comment"].to(line_group->comment);
+        this->line_group_map[const_it["id"].as<idx_t>()] = line_group;
+    }
+
+    /* Put all line inside groups
+     *
+     * We insert main lines first in order to give them first place in line group 'line_list' vectors
+     */
+    link_group_and_lines("SELECT group_id, line_id FROM navitia.line_group_link WHERE is_main_line = true", work, true);
+    link_group_and_lines("SELECT group_id, line_id, is_main_line FROM navitia.line_group_link WHERE is_main_line = false", work, false);
+}
+
 
 void EdReader::fill_routes(nt::Data& data, pqxx::work& work){
     std::string request = "SELECT id, name, uri, line_id, destination_stop_area_id,"
