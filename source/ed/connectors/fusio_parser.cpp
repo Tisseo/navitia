@@ -661,6 +661,60 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
     gtfs_data.line_map[line->uri] = line;
 }
 
+void LineGroupFusioHandler::init(Data&) {
+    id_c = csv.get_pos_col("line_group_id");
+    name_c = csv.get_pos_col("line_group_name");
+    main_line_id_c = csv.get_pos_col("main_line_id"); 
+}
+
+void LineGroupFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
+    if(!is_first_line && !(has_col(id_c, row) && has_col(name_c, row) && has_col(main_line_id_c, row))) {
+        LOG4CPLUS_WARN(logger, "LineGroupFusioHandler: Line ignored in " << csv.filename <<
+            " missing line_group_id or line_group_name or main_line_id column");
+    }
+    auto line = gtfs_data.line_map.find(row[main_line_id_c]);
+    if (line == gtfs_data.line_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupFusioHandler: Impossible to find the line " << row[main_line_id_c]);
+        return;
+    }
+    ed::types::LineGroup* line_group = new ed::types::LineGroup();
+    line_group->uri = row[id_c];
+    line_group->name = row[name_c];
+    line_group->main_line = line->second;
+    data.line_groups.push_back(line_group);
+    gtfs_data.line_group_map[line_group->uri] = line_group;    
+}
+
+void LineGroupLinksFusioHandler::init(Data&) {
+    line_group_id_c = csv.get_pos_col("line_group_id");
+    line_id_c = csv.get_pos_col("line_id");
+}
+
+void LineGroupLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
+    if(!is_first_line && !(has_col(line_group_id_c, row) && has_col(line_id_c, row))) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Line ignored in " << csv.filename <<
+        " missing line_group_id or line_id column");
+    }
+    auto line_group = gtfs_data.line_group_map.find(row[line_group_id_c]);
+    if (line_group == gtfs_data.line_group_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Impossible to find the line_group " << row[line_group_id_c]);
+        return;
+    }
+
+    auto line = gtfs_data.line_map.find(row[line_id_c]);
+    if (line == gtfs_data.line_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Impossible to find the line " << row[line_id_c]);
+        return;
+    }
+
+    ed::types::LineGroupLink line_group_link;
+    line_group_link.line_group = line_group->second;
+    line_group_link.line = line->second;
+    //To know if line is group main line, we look into the group
+    line_group_link.is_main_line = (line_group->second->main_line->uri == line->second->uri);
+    data.line_group_links.push_back(line_group_link);
+}
+
 void CompanyFusioHandler::init(Data&) {
     id_c = csv.get_pos_col("company_id"), name_c = csv.get_pos_col("company_name"),
             company_address_name_c = csv.get_pos_col("company_address_name"),
@@ -670,6 +724,7 @@ void CompanyFusioHandler::init(Data&) {
             company_mail_c = csv.get_pos_col("company_mail"),
             company_phone_c = csv.get_pos_col("company_phone"),
             company_fax_c = csv.get_pos_col("company_fax");
+
 }
 
 void CompanyFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
@@ -866,6 +921,7 @@ void ObjectPropertiesFusioHandler::handle_line(Data& data, const csv_row& row, b
         LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: type '" << row[object_type_c] << "' not supported");
         return;
     }
+    
     const auto key = row[property_name_c];
     const auto val = row[property_value_c];
     data.object_properties[{object, enum_type}][key] = val;
@@ -1376,6 +1432,8 @@ void FusioParser::parse_files(Data& data) {
     parse<CommercialModeFusioHandler>(data, "commercial_modes.txt");
     parse<CommentFusioHandler>(data, "comments.txt");
     parse<LineFusioHandler>(data, "lines.txt");
+    parse<LineGroupFusioHandler>(data, "line_groups.txt");
+    parse<LineGroupLinksFusioHandler>(data, "line_group_links.txt");
     parse<StopPropertiesFusioHandler>(data, "stop_properties.txt");
     parse<StopsFusioHandler>(data, "stops.txt", true);
     parse<RouteFusioHandler>(data, "routes.txt", true);
