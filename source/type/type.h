@@ -102,17 +102,17 @@ enum class Type_e {
     POI                             = 13,
     StopPointConnection             = 15,
     Contributor                     = 16,
-    LineGroup                       = 17,
 
     // Objets spéciaux qui ne font pas partie du référentiel TC
-    StopTime                        = 18,
-    Address                         = 19,
-    Coord                           = 20,
-    Unknown                         = 21,
-    Way                             = 22,
-    Admin                           = 23,
-    POIType                         = 24,
-    Calendar                        = 25
+    StopTime                        = 17,
+    Address                         = 18,
+    Coord                           = 19,
+    Unknown                         = 20,
+    Way                             = 21,
+    Admin                           = 22,
+    POIType                         = 23,
+    Calendar                        = 24,
+    LineGroup                       = 25
 };
 
 enum class Mode_e {
