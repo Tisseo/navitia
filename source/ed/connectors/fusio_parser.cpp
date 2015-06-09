@@ -664,13 +664,13 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
 void LineGroupFusioHandler::init(Data&) {
     id_c = csv.get_pos_col("line_group_id");
     name_c = csv.get_pos_col("line_group_name");
-    main_line_id_c = csv.get_pos_col("main_line_id"); 
+    main_line_id_c = csv.get_pos_col("main_line_id");
 }
 
-void LineGroupFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
-    if(!is_first_line && !(has_col(id_c, row) && has_col(name_c, row) && has_col(main_line_id_c, row))) {
+void LineGroupFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(!(has_col(id_c, row) && has_col(name_c, row) && has_col(main_line_id_c, row))) {
         LOG4CPLUS_WARN(logger, "LineGroupFusioHandler: Line ignored in " << csv.filename <<
-            " missing line_group_id or line_group_name or main_line_id column");
+            " missing line_group_id, line_group_name or main_line_id column");
     }
     auto line = gtfs_data.line_map.find(row[main_line_id_c]);
     if (line == gtfs_data.line_map.end()) {
@@ -681,8 +681,18 @@ void LineGroupFusioHandler::handle_line(Data& data, const csv_row& row, bool is_
     line_group->uri = row[id_c];
     line_group->name = row[name_c];
     line_group->main_line = line->second;
+
+    // Link main_line to line_group
+    ed::types::LineGroupLink line_group_link;
+    line_group_link.line_group = line_group;
+    line_group_link.line = line->second;
+    line_group_link.is_main_line = true;
+
+    line_group->linkedLinesURI.insert(line->second->uri);
+
     data.line_groups.push_back(line_group);
-    gtfs_data.line_group_map[line_group->uri] = line_group;    
+    data.line_group_links.push_back(line_group_link);
+    gtfs_data.line_group_map[line_group->uri] = line_group;
 }
 
 void LineGroupLinksFusioHandler::init(Data&) {
@@ -690,8 +700,8 @@ void LineGroupLinksFusioHandler::init(Data&) {
     line_id_c = csv.get_pos_col("line_id");
 }
 
-void LineGroupLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
-    if(!is_first_line && !(has_col(line_group_id_c, row) && has_col(line_id_c, row))) {
+void LineGroupLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(!(has_col(line_group_id_c, row) && has_col(line_id_c, row))) {
         LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Line ignored in " << csv.filename <<
         " missing line_group_id or line_id column");
     }
@@ -707,11 +717,17 @@ void LineGroupLinksFusioHandler::handle_line(Data& data, const csv_row& row, boo
         return;
     }
 
+    if(line_group->second->linkedLinesURI.find(line->second->uri) != line_group->second->linkedLinesURI.end()) {
+        // Don't insert duplicates
+        return;
+    }
+
     ed::types::LineGroupLink line_group_link;
     line_group_link.line_group = line_group->second;
     line_group_link.line = line->second;
     //To know if line is group main line, we look into the group
     line_group_link.is_main_line = (line_group->second->main_line->uri == line->second->uri);
+    line_group->second->linkedLinesURI.insert(line->second->uri);
     data.line_group_links.push_back(line_group_link);
 }
 
@@ -921,7 +937,7 @@ void ObjectPropertiesFusioHandler::handle_line(Data& data, const csv_row& row, b
         LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: type '" << row[object_type_c] << "' not supported");
         return;
     }
-    
+
     const auto key = row[property_name_c];
     const auto val = row[property_value_c];
     data.object_properties[{object, enum_type}][key] = val;
@@ -1295,6 +1311,10 @@ void CommentLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool)
         data.add_pt_object_comment(object, comment_id);
     } else if (navitia_type == nt::Type_e::Line) {
         const auto object = get_object(gtfs_data.line_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::LineGroup) {
+        const auto object = get_object(gtfs_data.line_group_map, object_id, "comment");
         if (! object) { return; }
         data.add_pt_object_comment(object, comment_id);
     } else if (navitia_type == nt::Type_e::Route) {

@@ -619,9 +619,9 @@ struct Line : public Header, Nameable, HasMessages, Codes{
     boost::optional<boost::posix_time::time_duration> opening_time, closing_time;
 
     std::map<std::string,std::string> properties;
-    
+
     //The bool part of the pair stand for "is_main_line"
-    std::vector<std::pair<LineGroup*, bool> > group_list;
+    std::vector<std::pair<LineGroup*, bool>> group_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & code & forward_name & backward_name
@@ -653,12 +653,12 @@ struct Line : public Header, Nameable, HasMessages, Codes{
 struct LineGroup : public Header, Nameable{
     const static Type_e type = Type_e::LineGroup;
     std::string name;
-    std::string comment;
-    //The first line of the list is the main line
+
+    Line* main_line;
     std::vector<Line*> line_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & idx & name & uri & comment & line_list;
+        ar & idx & name & uri & main_line & line_list;
     }
     std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
     bool operator<(const LineGroup & other) const { return this < &other; }

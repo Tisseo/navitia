@@ -228,13 +228,14 @@ struct LineGroup : public Header, Nameable {
     const static nt::Type_e type = nt::Type_e::LineGroup;
     std::string name;
     Line* main_line;
+    std::set<std::string> linkedLinesURI;
 
-    bool operator<(const LineGroup & other) const; 
+    bool operator<(const LineGroup & other) const;
 };
 
 struct LineGroupLink {
-    LineGroup * line_group;
-    Line * line;
+    LineGroup* line_group;
+    Line* line;
     bool is_main_line;
 };
 

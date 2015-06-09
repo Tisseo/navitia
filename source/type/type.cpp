@@ -534,7 +534,7 @@ type::hasOdtProperties Line::get_odt_properties() const{
 std::vector<idx_t> LineGroup::get(Type_e type, const PT_Data&) const {
     std::vector<idx_t> result;
     switch(type) {
-    case Type_e::Line: indexes(line_list);
+    case Type_e::Line: return indexes(line_list);
     default: break;
     }
     return result;

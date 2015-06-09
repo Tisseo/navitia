@@ -331,10 +331,10 @@ void EdPersistor::persist(const ed::Data& data){
     LOG4CPLUS_INFO(logger, "Begin: insert lines");
     this->insert_lines(data.lines);
     LOG4CPLUS_INFO(logger, "End: insert lines");
-    LOG4CPLUS_INFO(logger, "Begin: insert routes");
     LOG4CPLUS_INFO(logger, "Begin: insert line groups");
     this->insert_line_groups(data.line_groups, data.line_group_links);
     LOG4CPLUS_INFO(logger, "End: insert line groups");
+    LOG4CPLUS_INFO(logger, "Begin: insert routes");
     this->insert_routes(data.routes);
     LOG4CPLUS_INFO(logger, "End: insert routes");
     LOG4CPLUS_INFO(logger, "Begin: insert journey patterns");
@@ -473,7 +473,7 @@ void EdPersistor::clean_db(){
         "navitia.connection, navitia.calendar, navitia.period, "
         "navitia.week_pattern, "
         "navitia.meta_vj, navitia.rel_metavj_vj, navitia.object_properties, navitia.object_code, "
-        "navitia.comments, navitia.ptobject_comments"
+        "navitia.comments, navitia.ptobject_comments, "
         "navitia.line_group, navitia.line_group_link"
         " CASCADE");
     //we remove the parameters (but we do not truncate the table since the shape might have been updated with fusio2ed)
@@ -731,26 +731,26 @@ void EdPersistor::insert_lines(const std::vector<types::Line*>& lines){
 }
 
 void EdPersistor::insert_line_groups(const std::vector<types::LineGroup*>& groups, const std::vector<types::LineGroupLink>& group_links){
-    this->lotus.prepare_bulk_insert("navitia.line_group", {"id","name","comment"});
+    this->lotus.prepare_bulk_insert("navitia.line_group", {"id","uri","name"});
     for(const auto& line_group: groups) {
-        this->lotus.insert({std::to_string(line_group->idx),
-            line_group->name,
-            line_group->comment
+        this->lotus.insert({
+            std::to_string(line_group->idx),
+            navitia::encode_uri(line_group->uri),
+            line_group->name
         });
     }
     this->lotus.finish_bulk_insert();
 
     this->lotus.prepare_bulk_insert("navitia.line_group_link", {"group_id","line_id","is_main_line"});
     for(const auto& group_link: group_links) {
-        //First line of list is main_line
         const auto& line_group = std::find(groups.begin(),groups.end(),group_link.line_group);
         if(line_group == groups.end())
         {
-            LOG4CPLUS_ERROR(logger, "Group " << group_link.line_group->idx << "when trying to insert line_group_link");
+            LOG4CPLUS_ERROR(logger, "Group " << group_link.line_group->idx << " not found when trying to insert line_group_link");
             break;
         }
         bool is_main_line = ((*line_group)->main_line->idx == group_link.line->idx);
-	this->lotus.insert({std::to_string(group_link.line_group->idx),
+        this->lotus.insert({std::to_string(group_link.line_group->idx),
             std::to_string(group_link.line->idx),
             std::to_string(is_main_line)
         });

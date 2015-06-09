@@ -108,7 +108,6 @@ private:
     void fill_lines(navitia::type::Data& data, pqxx::work& work);
 
     void fill_line_groups(navitia::type::Data& data, pqxx::work& work);
-    void link_group_and_lines(std::string request, pqxx::work& work, bool is_main_line);
 
     void fill_routes(navitia::type::Data& data, pqxx::work& work);
     void fill_journey_patterns(navitia::type::Data& data, pqxx::work& work);

@@ -551,38 +551,32 @@ void EdReader::fill_lines(nt::Data& data, pqxx::work& work){
     }
 }
 
-void EdReader::link_group_and_lines(std::string request, pqxx::work& work, bool is_main_lines)
-{
-    pqxx::result line_group_result = work.exec(request);
-    for(auto const_it = line_group_result.begin(); const_it != line_group_result.end(); ++const_it){
-        auto group_it = this->line_group_map.find(const_it["group_id"].as<idx_t>());
-        if(group_it !=  this->line_group_map.end()) {
-            auto line_it = this->line_map.find(const_it["line_id"].as<idx_t>());
-            if(line_it != this->line_map.end()) {
-                group_it->second->line_list.push_back(line_it->second);
-                line_it->second->group_list.push_back(std::pair<nt::LineGroup*,bool>(group_it->second, is_main_lines));
-            }
-        }
-    }
-}
-
-void EdReader::fill_line_groups(nt::Data&, pqxx::work& work){
-    std::string request = "SELECT id, name, comment FROM navitia.line_group";
+void EdReader::fill_line_groups(nt::Data& data, pqxx::work& work){
+    std::string request = "SELECT id, uri, name FROM navitia.line_group";
 
     pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
         nt::LineGroup* line_group = new nt::LineGroup();
+        const_it["uri"].to(line_group->uri);
         const_it["name"].to(line_group->name);
-        const_it["comment"].to(line_group->comment);
         this->line_group_map[const_it["id"].as<idx_t>()] = line_group;
+        data.pt_data->line_groups.push_back(line_group);
     }
 
-    /* Put all line inside groups
-     *
-     * We insert main lines first in order to give them first place in line group 'line_list' vectors
-     */
-    link_group_and_lines("SELECT group_id, line_id FROM navitia.line_group_link WHERE is_main_line = true", work, true);
-    link_group_and_lines("SELECT group_id, line_id, is_main_line FROM navitia.line_group_link WHERE is_main_line = false", work, false);
+    pqxx::result line_group_result = work.exec("SELECT group_id, line_id, is_main_line FROM navitia.line_group_link");
+    for(auto const_it = line_group_result.begin(); const_it != line_group_result.end(); ++const_it){
+        bool isMainLine(const_it["is_main_line"].as<bool>());
+        auto group_it = this->line_group_map.find(const_it["group_id"].as<idx_t>());
+        if(group_it !=  this->line_group_map.end()) {
+            auto line_it = this->line_map.find(const_it["line_id"].as<idx_t>());
+            if(line_it != this->line_map.end()) {
+                if(isMainLine)
+                    group_it->second->main_line = line_it->second;
+                group_it->second->line_list.push_back(line_it->second);
+                line_it->second->group_list.push_back(std::pair<nt::LineGroup*,bool>(group_it->second, isMainLine));
+            }
+        }
+    }
 }
 
 
@@ -1085,6 +1079,8 @@ void EdReader::fill_comments(nt::Data& data, pqxx::work& work) {
             cpt_not_found += add_comment(data, obj_id, route_map, comment);
         } else if (type_str == "line") {
             cpt_not_found += add_comment(data, obj_id, line_map, comment);
+        } else if (type_str == "line_group") {
+            cpt_not_found += add_comment(data, obj_id, line_group_map, comment);
         } else if (type_str == "stop_area") {
             cpt_not_found += add_comment(data, obj_id, stop_area_map, comment);
         } else if (type_str == "stop_point") {
