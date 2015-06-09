@@ -18,8 +18,8 @@ import geoalchemy2 as ga
 def upgrade():
     op.create_table('line_group',
     sa.Column('id', sa.BIGINT(), nullable=False),
+    sa.Column('uri', sa.TEXT(), nullable=False),
     sa.Column('name', sa.TEXT(), nullable=False),
-    sa.Column('comment', sa.TEXT(), nullable=False),
     sa.PrimaryKeyConstraint('id', name=u'line_group_pkey'),
     schema='navitia'
     )

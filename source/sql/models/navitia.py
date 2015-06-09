@@ -384,8 +384,8 @@ line = Table('line', metadata,*[
 
 line_group = Table('line_group', metadata,*[
     Column('id', BIGINT(), primary_key=True, nullable=False),
-    Column('name', TEXT(), primary_key=False),
-    Column('comment', TEXT(), primary_key=False),],
+    Column('uri', TEXT(), primary_key=False, nullable=False),
+    Column('name', TEXT(), primary_key=False),],
     schema='navitia')
 
 line_group_link = Table('line_group_link', metadata,*[
