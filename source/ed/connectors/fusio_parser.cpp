@@ -740,7 +740,6 @@ void CompanyFusioHandler::init(Data&) {
             company_mail_c = csv.get_pos_col("company_mail"),
             company_phone_c = csv.get_pos_col("company_phone"),
             company_fax_c = csv.get_pos_col("company_fax");
-
 }
 
 void CompanyFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
@@ -937,7 +936,6 @@ void ObjectPropertiesFusioHandler::handle_line(Data& data, const csv_row& row, b
         LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: type '" << row[object_type_c] << "' not supported");
         return;
     }
-
     const auto key = row[property_name_c];
     const auto val = row[property_value_c];
     data.object_properties[{object, enum_type}][key] = val;

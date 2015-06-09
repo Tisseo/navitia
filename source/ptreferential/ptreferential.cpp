@@ -282,7 +282,6 @@ std::vector<idx_t> make_query(Type_e requested_type, std::string request,
                     "Filter Unknown object type: " + filter.object);
         }
     }
-
     std::vector<idx_t> final_indexes = data.get_all_index(requested_type);
     // When we have no objets asked(like for example companies)
     if(final_indexes.empty()){
