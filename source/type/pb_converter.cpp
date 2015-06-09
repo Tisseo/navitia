@@ -397,7 +397,7 @@ void fill_pb_object(nt::Line const* l, const nt::Data& data,
         for(const auto& group_pair : l->group_list) {
             pbnavitia::GroupLink* group_link = line->add_groups();
             group_link->set_is_main_line(group_pair.second);
-            fill_pb_object(group_pair.first,data, group_link->mutable_group(), depth-1, now, action_period, show_codes);
+            fill_pb_object(group_pair.first, data, group_link->mutable_group(), depth-1, now, action_period, show_codes);
         }
     }
 
@@ -417,25 +417,27 @@ void fill_pb_object(nt::Line const* l, const nt::Data& data,
 }
 
 void fill_pb_object(const nt::LineGroup* lg, const nt::Data& data,
-        pbnavitia::LineGroup * line_group, int max_depth,
+        pbnavitia::LineGroup* line_group, int max_depth,
         const pt::ptime& now, const pt::time_period& action_period, const bool show_codes){
     if(lg == nullptr)
         return ;
     int depth = (max_depth <= 3) ? max_depth : 3;
 
-    if(!lg->comment.empty()) {
-        line_group->set_comment(lg->comment);
+    for (const auto& comment: data.pt_data->comments.get(lg)) {
+        auto com = line_group->add_comments();
+        com->set_value(comment);
+        com->set_type("standard");
     }
+
     line_group->set_name(lg->name);
     line_group->set_uri(lg->uri);
 
-    //Main line is stored in first position
-    bool is_main_line = true;
-    for(const auto& line : lg->line_list) {
-        pbnavitia::LineGroupLink* line_group_link = line_group->add_lines();
-    	line_group_link->set_is_main_line(is_main_line);
-        is_main_line = false;
-        fill_pb_object(line, data, line_group_link->mutable_line(), depth-1, now, action_period, show_codes);
+    if(depth > 0) {
+        for(const auto& line : lg->line_list) {
+            pbnavitia::LineLink* line_link = line_group->add_lines();
+            line_link->set_is_main_line(line->idx == lg->main_line->idx);
+            fill_pb_object(line, data, line_link->mutable_line(), depth-1, now, action_period, show_codes);
+        }
     }
 }
 
