@@ -335,7 +335,7 @@ void Data::clean() {
                     for(auto rp = (*vj1)->journey_pattern->journey_pattern_point_list.begin(); rp != (*vj1)->journey_pattern->journey_pattern_point_list.end();++rp) {
                         if(vjs1->stop_time_list.at((*rp)->order)->departure_time >= vjs2->stop_time_list.at((*rp)->order)->departure_time ||
                            vjs1->stop_time_list.at((*rp)->order)->arrival_time >= vjs2->stop_time_list.at((*rp)->order)->arrival_time) {
-                            toErase.insert((*vj2)->uri);
+                            //toErase.insert((*vj2)->uri);
                             LOG4CPLUS_WARN(logger, "Data::clean(): overlap: "
                                            << (*vj1)->uri << ":"
                                            << (*vj1)->stop_time_list.front()->departure_time << "->"
