@@ -474,13 +474,15 @@ static void add_pathes(EnhancedResponse& enhanced_response,
                 // For a waiting section, if the previous public transport section,
                 // has estimated datetime we need to set it has estimated too.
                 const auto& sections = pb_journey->sections();
-                for (auto it = sections.rbegin(); it != sections.rend(); ++it) {
+                auto it = sections.end();
+                do {
+                    it--;
                     if (it->type() != pbnavitia::PUBLIC_TRANSPORT) { continue; }
                     if (boost::count(it->additional_informations(), pbnavitia::HAS_DATETIME_ESTIMATED)) {
                         pb_section->add_additional_informations(pbnavitia::HAS_DATETIME_ESTIMATED);
                     }
                     break;
-                }
+                } while (it != sections.begin());
 
                 bt::time_period action_period(item.departure, item.arrival);
                 const auto origin_sp = item.stop_points.front();
