@@ -93,12 +93,14 @@ private:
 
     void insert_stop_points(const std::vector<types::StopPoint*>& stop_points);
     void insert_lines(const std::vector<types::Line*>& lines);
+    void insert_line_groups(const std::vector<types::LineGroup*>& groups, const std::vector<types::LineGroupLink>& group_links);
     void insert_routes(const std::vector<types::Route*>& routes);
     void insert_journey_patterns(const std::vector<types::JourneyPattern*>& journey_pattern);
     void insert_validity_patterns(const std::vector<types::ValidityPattern*>& validity_patterns);
     void insert_vehicle_properties(const std::vector<types::VehicleJourney*>& vehicle_journeys);
     void insert_vehicle_journeys(const std::vector<types::VehicleJourney*>& vehicle_journeys);
     void insert_meta_vj(const std::map<std::string, types::MetaVehicleJourney>& meta_vjs);
+    void insert_object_codes(const std::map<ed::types::pt_object_header, std::map<std::string, std::string>>& object_codes);
 
     void insert_journey_pattern_point(const std::vector<types::JourneyPatternPoint*>& journey_pattern_points);
 
@@ -109,7 +111,9 @@ private:
 
     void insert_admin_stop_areas(const std::vector<types::AdminStopArea*> admin_stop_areas);
 
-    void insert_object_properties(const std::vector<types::ObjectProperty>& object_properties);
+    void insert_object_properties(const std::map<ed::types::pt_object_header, std::map<std::string, std::string>>& object_properties);
+
+    void insert_comments(const Data& data);
 
     /// Inserer les données fiche horaire par période
     void insert_week_patterns(const std::vector<types::Calendar*>& calendars);

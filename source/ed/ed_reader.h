@@ -72,11 +72,15 @@ private:
     std::unordered_map<idx_t, navitia::type::StopArea*> stop_area_map;
     std::unordered_map<idx_t, navitia::type::StopPoint*> stop_point_map;
     std::unordered_map<idx_t, navitia::type::Line*> line_map;
+    std::unordered_map<idx_t, navitia::type::LineGroup*> line_group_map;
     std::unordered_map<idx_t, navitia::type::Route*> route_map;
     std::unordered_map<idx_t, navitia::type::JourneyPattern*> journey_pattern_map;
     std::unordered_map<idx_t, navitia::type::ValidityPattern*> validity_pattern_map;
     std::unordered_map<idx_t, navitia::type::JourneyPatternPoint*> journey_pattern_point_map;
     std::unordered_map<idx_t, navitia::type::VehicleJourney*> vehicle_journey_map;
+
+    //we need a temporary structure to store the comments on the stop times
+    std::unordered_map<idx_t, std::vector<std::string>> stop_time_comments;
 
     //map d'id en base(osmid) vers l'idx de l'objet
     std::unordered_map<idx_t, navitia::georef::Admin*> admin_map;
@@ -102,6 +106,8 @@ private:
     void fill_stop_areas(navitia::type::Data& data, pqxx::work& work);
     void fill_stop_points(navitia::type::Data& data, pqxx::work& work);
     void fill_lines(navitia::type::Data& data, pqxx::work& work);
+    void fill_line_groups(navitia::type::Data& data, pqxx::work& work);
+
     void fill_routes(navitia::type::Data& data, pqxx::work& work);
     void fill_journey_patterns(navitia::type::Data& data, pqxx::work& work);
     void fill_validity_patterns(navitia::type::Data& data, pqxx::work& work);
@@ -113,10 +119,13 @@ private:
 
     void fill_stop_times(navitia::type::Data& data, pqxx::work& work);
 
+    void fill_comments(navitia::type::Data& data, pqxx::work& work);
+
 
     void fill_admins(navitia::type::Data& data, pqxx::work& work);
     void fill_admin_stop_areas(navitia::type::Data& data, pqxx::work& work);
     void fill_admins_postal_codes(navitia::type::Data& data, pqxx::work& work);
+    void fill_object_codes(navitia::type::Data& data, pqxx::work& work);
     void fill_stop_point_connections(navitia::type::Data& data, pqxx::work& work);
     void fill_poi_types(navitia::type::Data& data, pqxx::work& work);
     void fill_pois(navitia::type::Data& data, pqxx::work& work);

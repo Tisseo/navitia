@@ -1,8 +1,8 @@
 SET(PROTO_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/type.proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/response.proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/request.proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/task.proto
+    ${CMAKE_SOURCE_DIR}/navitia-proto/type.proto
+    ${CMAKE_SOURCE_DIR}/navitia-proto/response.proto
+    ${CMAKE_SOURCE_DIR}/navitia-proto/request.proto
+    ${CMAKE_SOURCE_DIR}/navitia-proto/task.proto
     ${CMAKE_SOURCE_DIR}/chaos-proto/chaos.proto
     ${CMAKE_SOURCE_DIR}/chaos-proto/gtfs-realtime.proto
 )
@@ -25,7 +25,7 @@ SET(PROTO_SRCS ${CMAKE_CURRENT_BINARY_DIR}/chaos.pb.cc
 )
 
 add_custom_command(OUTPUT ${PROTO_HDRS} ${PROTO_SRCS}
-    COMMAND protoc ARGS ${PROTO_FILES} -I ${CMAKE_CURRENT_SOURCE_DIR} -I ${CMAKE_SOURCE_DIR}/chaos-proto
+    COMMAND protoc ARGS ${PROTO_FILES} -I ${CMAKE_SOURCE_DIR}/navitia-proto -I ${CMAKE_SOURCE_DIR}/chaos-proto
     --cpp_out=${CMAKE_CURRENT_BINARY_DIR}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/type" VERBATIM
     DEPENDS ${PROTO_FILES})
@@ -40,14 +40,7 @@ add_custom_command (TARGET pb_lib
     PRE_BUILD
     COMMAND protoc ARGS "--python_out=${CMAKE_SOURCE_DIR}/navitiacommon/navitiacommon" type.proto
     response.proto request.proto task.proto stat.proto
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/type" VERBATIM)
-
-add_custom_command (TARGET pb_lib
-    PRE_BUILD
-    COMMAND protoc ARGS "--python_out=${CMAKE_SOURCE_DIR}/stat_persistor/stat_persistor" type.proto
-    task.proto stat.proto
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/type" VERBATIM)
-
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/navitia-proto" VERBATIM)
 
 
 #we don't want a dependancy to navitiacommon for monitor
@@ -55,7 +48,7 @@ add_custom_command (TARGET pb_lib
     PRE_BUILD
     COMMAND protoc ARGS "--python_out=${CMAKE_SOURCE_DIR}/monitor/monitor_kraken" type.proto
     response.proto request.proto
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/type" VERBATIM)
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/navitia-proto" VERBATIM)
 
 #for integration tests, we need chaos protobuf
 add_custom_command (TARGET pb_lib
@@ -82,9 +75,6 @@ SET(BOOST_LIBS ${Boost_FILESYSTEM_LIBRARY}
 add_library(data ${DATA_SRC})
 target_link_libraries(data types fill_disruption_from_database fare routing autocomplete ${BOOST_LIBS})
 
-add_executable(main_destination_test tests/main_destination_test.cpp)
-target_link_libraries(main_destination_test ed data types routing fare georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
-ADD_BOOST_TEST(main_destination_test)
 
 add_executable(fill_pb_placemark_test tests/fill_pb_placemark_test.cpp)
 target_link_libraries(fill_pb_placemark_test ed data types routing fare georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib thermometer protobuf)
@@ -119,3 +109,7 @@ ADD_BOOST_TEST(fill_pb_object_tests)
 add_executable(aggregation_odt_test tests/aggregation_odt_test.cpp)
 target_link_libraries(aggregation_odt_test ed data types georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
 ADD_BOOST_TEST(aggregation_odt_test)
+
+add_executable(comments_test tests/comments_test.cpp)
+target_link_libraries(comments_test ed data types georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
+ADD_BOOST_TEST(comments_test)

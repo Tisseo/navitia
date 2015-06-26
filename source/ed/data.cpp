@@ -38,6 +38,7 @@ www.navitia.io
 #include <boost/geometry/geometry.hpp>
 #include <boost/range/algorithm/find_if.hpp>
 #include "type/datetime.h"
+#include <boost/range/algorithm/max_element.hpp>
 
 
 
@@ -57,6 +58,7 @@ void Data::normalize_uri(){
     ::ed::normalize_uri(companies);
     ::ed::normalize_uri(commercial_modes);
     ::ed::normalize_uri(lines);
+    ::ed::normalize_uri(line_groups);
     ::ed::normalize_uri(physical_modes);
     ::ed::normalize_uri(stop_areas);
     ::ed::normalize_uri(stop_points);
@@ -218,6 +220,29 @@ void Data::shift_stop_times() {
     }
 }
 
+static bool compare(const std::pair<ed::types::StopArea*, size_t>& p1,
+                    const std::pair<ed::types::StopArea*, size_t>& p2){
+    return p1.second < p2.second;
+}
+
+void Data::build_route_destination(){
+    std::unordered_map<ed::types::Route*, std::map<ed::types::StopArea*, size_t>> destinations;
+    for (const auto* vj : vehicle_journeys) {
+        if (! vj->tmp_route || vj->stop_time_list.empty()) { continue; }
+        if (vj->tmp_route->destination) { continue; } // we have a destination, don't create one
+        if (! vj->stop_time_list.back()->journey_pattern_point
+            || ! vj->stop_time_list.back()->journey_pattern_point->stop_point
+            || ! vj->stop_time_list.back()->journey_pattern_point->stop_point->stop_area) {
+            continue;
+        }
+        ++destinations[vj->tmp_route][vj->stop_time_list.back()->journey_pattern_point->stop_point->stop_area];
+    }
+    for (const auto& map_route: destinations) { // we use a const auto& to avoid useless copy of the map
+        if (map_route.second.empty()) { continue; } // we never know
+        const auto max = boost::max_element(map_route.second, compare);
+        map_route.first->destination = max->first;
+    }
+}
 
 void Data::complete(){
     build_journey_patterns();
@@ -319,6 +344,18 @@ void Data::clean() {
                     }
 
                     using ed::types::StopTime;
+
+                    const bool same_itl = boost::equal((*vj1)->stop_time_list, (*vj2)->stop_time_list,
+                                                         [](const StopTime* st1, const StopTime* st2) {
+                                                             return st1->local_traffic_zone == st2->local_traffic_zone;
+                                                         });
+                    if (!same_itl){
+                        LOG4CPLUS_WARN(logger, "Data::clean(): are equal with different local trafic zone: "
+                                       << (*vj1)->uri << " and " << (*vj2)->uri);
+                        continue;
+
+                    }
+
                     const bool are_equal =
                         (*vj1)->validity_pattern->days != (*vj2)->validity_pattern->days
                         && boost::equal((*vj1)->stop_time_list, (*vj2)->stop_time_list,
@@ -380,6 +417,7 @@ void Data::clean() {
     // We avoid resizing the vector until completition for performance reasons.
     size_t num_elements = stops.size();
     for(size_t to_erase : erasest) {
+        remove_reference_to_object(stops[to_erase]);
         delete stops[to_erase];
         stops[to_erase] = stops[num_elements - 1];
         num_elements--;
@@ -423,17 +461,20 @@ void Data::clean() {
             //we remove the meta vj
             meta_vj_map.erase(vj->meta_vj_name);
         }
+
+        remove_reference_to_object(vj);
         delete vj;
         vehicle_journeys[to_erase] = vehicle_journeys[num_elements - 1];
         num_elements--;
     }
     vehicle_journeys.resize(num_elements);
 
-    LOG4CPLUS_INFO(logger, "Data::clean(): " << erase_overlap <<  " vehicle_journeys have been deleted because they overlap, "
-                   << erase_emptiness << " because they do not contain any clean stop_times, "
-                   << erase_no_circulation << " because they are never valid "
-                   << " and " << erase_invalid_stoptimes << " because the stop times were negatives");
-
+    if (erase_overlap || erase_emptiness || erase_no_circulation || erase_invalid_stoptimes){
+        LOG4CPLUS_INFO(logger, "Data::clean(): " << erase_overlap <<  " vehicle_journeys have been deleted because they overlap, "
+                       << erase_emptiness << " because they do not contain any clean stop_times, "
+                       << erase_no_circulation << " because they are never valid "
+                       << " and " << erase_invalid_stoptimes << " because the stop times were negatives");
+    }
     // Delete duplicate connections
     // Connections are sorted by departure,destination
     auto sort_function = [](types::StopPointConnection * spc1, types::StopPointConnection *spc2) {return spc1->uri < spc2->uri

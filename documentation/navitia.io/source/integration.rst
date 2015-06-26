@@ -1,10 +1,13 @@
 Navitia documentation: v1 interface 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.. contents:: Index
+
 Overview
 ========
 
 This document describes how to call navitia via the v1 interface, and the returned resources.
+You can read our lexicon at https://github.com/OpenTransport/vocabulary/blob/master/vocabulary.md
 
 Endpoint
 ********
@@ -14,29 +17,42 @@ The only endpoint of this version of the api is : https://api.navitia.io/v1/
 See `authentication`_ section to find out **how to use your token**.
 
 If you use a web browser, you only have to paste it in the user area, with no password.
+Or, in a simplier way, you can add your token in the address bar like :
+https://*my-token-is-mine-and-i-will-never-clearly-give-it*@api.navitia.io/v1/coverage/fr-idf/networks
+
 
 Some easy examples
 ******************
 
 * Geographical coverage of the service > https://api.navitia.io/v1/coverage 
 * Where am I? (WGS 84 coordinates)
+
     * https://api.navitia.io/v1/coord/2.377310;48.847002
     * I'm on the "/fr-idf" coverage, at "20, rue Hector Malot in Paris, France"
+
 * Which services are available on this coverage? Let's take a look at the links at the bottom of this stream
+
     * https://api.navitia.io/v1/coverage/fr-idf
+
 * Networks available? (see what network_ is)
+
     * https://api.navitia.io/v1/coverage/fr-idf/networks
+
 * RATP network lines? > https://api.navitia.io/v1/coverage/fr-idf/networks/network:RTP/lines 
 * Too much lines, let's use physical mode filtering
+
     * physical modes managed by RATP 
     * https://api.navitia.io/v1/coverage/fr-idf/networks/network:RTP/physical_modes
     * metro lines 
-    * https://api.navitia.io/v1/coverage/fr-idf/networks/network:RTP/physical_modes/physical_mode:Metro/lines 
+    * https://api.navitia.io/v1/coverage/fr-idf/networks/network:RTP/physical_modes/physical_mode:Metro/lines
+
 * By the way, what stuff are close to me?
+
     * https://api.navitia.io/v1/coverage/fr-idf/coords/2.377310;48.847002/places_nearby
     * or https://api.navitia.io/v1/coverage/fr-idf/coords/2.377310;48.847002/lines
     * or https://api.navitia.io/v1/coverage/fr-idf/coords/2.377310;48.847002/stop_schedules
     * or ...
+
 
 Resources
 *********
@@ -184,6 +200,8 @@ you will find a *links* section:
 You have to put one line id instead of "{lines.id}". For example:
 https://api.navitia.io/v1/coverage/fr-idf/networks/network:RTP/lines/line:RTP:1197611/stop_schedules
 
+.. _inner-reference:
+
 Inner references
 ****************
 
@@ -261,19 +279,19 @@ When your request is good but we are not able to find a journey
 Apis
 ====
 
-Coverage
-********
+Coverage (/coverage)
+********************
 You can easily navigate through regions covered by navitia.io, with the coverage api.
 The only arguments are the ones of `paging`_.
 
-Public transportation objects
-******************************
+Public transportation objects exploration (/networks or /lines or /routes...)
+*****************************************************************************
 
 Once you have selected a region, you can explore the public transportation objects 
 easily with these apis. You just need to add at the end of your url 
 a collection name to see all the objects of a particular collection.
 To see an object add the id of this object at the end of the collection's url.
-The only arguments are the ones of `paging`_.
+The `paging`_ arguments may be used to paginate results.
 
 Collections
 ###########
@@ -292,17 +310,25 @@ Specific parameters
 
 There are other specific parameters.
 
-A least, there is one: *odt_level* which can be applied only on /lines collection...
+odt_level
+_________
 
-It allows you to request navitia for specific pickup lines. It refers to the `odt`_ section.
+- Type: `String`
+- Default value: `all`
+- Warning: works ONLY with /lines collection...
+
+It allows you to request navitia for specific pickup lines. It refers to the odt_ section.
 "odt_level" can take one of these values:
 
 *NEW! after 1.18 versions, this parameter is more accurate*
+
 * all (default value): no filter, provide all public transport lines, whatever its type
-* scheduled : provide only regular lines (see the `odt`_ section)
-* with_stops : to get regular, "odt_with_stop_time" and "odt_with_stop_point" lines. 
-  * You can easily request route_schedule and stop_schedule with these kind of lines.
-  * Be aware of "estimated" stop times
+* scheduled : provide only regular lines (see the odt_ section)
+* with_stops : to get regular, "odt_with_stop_time" and "odt_with_stop_point" lines.
+
+    * You can easily request route_schedule and stop_schedule with these kind of lines.
+    * Be aware of "estimated" stop times
+
 * zonal : to get "odt_with_zone" lines with non-detailed trips 
 
 For example
@@ -310,6 +336,15 @@ For example
 https://api.navitia.io/v1/coverage/fr-nw/networks/network:lila/lines
 
 https://api.navitia.io/v1/coverage/fr-nw/networks/network:Lignes18/lines?odt_level=scheduled
+
+distance
+________
+
+- Type: `Integer`
+- Default value: 200
+
+If you specify coords in your filter, you can modify the radius used for the proximity search.
+https://api.navitia.io/v1/coverage/fr-idf/coords/2.377310;48.847002/stop_schedules?distance=500
 
 Examples
 ########
@@ -341,21 +376,135 @@ Response example for this request https://api.navitia.io/v1/coverage/fr-idf/phys
 Other examples
 
 * Network list
-  * https://api.navitia.io/v1/coverage/fr-idf/networks
+
+    * https://api.navitia.io/v1/coverage/fr-idf/networks
+
 * Physical mode list
-  * https://api.navitia.io/v1/coverage/fr-idf/physical_modes
+
+    * https://api.navitia.io/v1/coverage/fr-idf/physical_modes
+
 * Line list
-  * https://api.navitia.io/v1/coverage/fr-idf/lines
+
+    * https://api.navitia.io/v1/coverage/fr-idf/lines
+
 * Line list for one mode
-  * https://api.navitia.io/v1/coverage/fr-idf/physical_modes/physical_mode:Metro/lines
+
+    * https://api.navitia.io/v1/coverage/fr-idf/physical_modes/physical_mode:Metro/lines
 
 
-Places
-******
+Public Transport objects autocomplete (/pt_objects)
+***************************************************
 
-This api search in public transport objects via their names.
-It returns, in addition of classic objects, a collection of `place`_.
+This api search in public transport objects via their names. It's a kind of magical autocomplete on public transport data.
+It returns, in addition of classic objects, a collection of places_ .
 
++------------------------------------------+
+| *Warning*                                |
+|                                          |
+|    There is no pagination for this api   |
++------------------------------------------+
+
+How does it works
+#################
+
+Differents kind of objects can be returned (sorted as):
+
+* network
+* commercial_mode
+* line
+* route
+* stop_area
+
+Here is a typical use case. A traveler has to find a line between the 1500 lines around Paris. 
+Without any filters:
+
+* traveler input: "bob"
+
+    * network : "bobby network"
+    * line : "bobby bus 1"
+    * line : "bobby bus 2"
+    * route : "bobby bus 1 to green"
+    * route : "bobby bus 1 to rose"
+    * route : "bobby bus 2 to yellow"
+    * stop_area : "...
+
+* traveler input: "bobby met"
+
+    * line : "bobby metro 1"
+    * line : "bobby metro 11"
+    * line : "bobby metro 2"
+    * line : "bobby metro 3"
+    * route : "bobby metro 1 to Martin"
+    * route : "bobby metro 1 to Mahatma"
+    * route : "bobby metro 11 to Marcus"
+    * route : "bobby metro 11 to Steven"
+    * route : "...
+
+* traveler input: "bobby met 11" or "bobby metro 11"
+
+    * line : "bobby metro 11"
+    * route : "bobby metro 11 to Marcus"
+    * route : "bobby metro 11 to Steven"
+
+Parameters
+##########
+
++---------+---------------+----------------------------+------------------------------------+-----------------------------+
+| Required| Name          | Type                       | Description                        | Default value               |
++=========+===============+============================+====================================+=============================+
+| yep     | q             | string                     | The search term                    |                             |
++---------+---------------+----------------------------+------------------------------------+-----------------------------+
+| nop     | type\[\]      | array of string            | Type of objects you want to query  | \[``network``,              |
+|         |               |                            | It takes one the following values: | ``commercial_mode``,        |
+|         |               |                            | \[``network``,                     | ``line``,                   |
+|         |               |                            | ``commercial_mode``,               | ``route``,                  |
+|         |               |                            | ``line``,                          | ``stop_area``\]             |
+|         |               |                            | ``route``,                         |                             |
+|         |               |                            | ``stop_area``\]                    |                             |
++---------+---------------+----------------------------+------------------------------------+-----------------------------+
+
+
+Example
+#######
+
+Response example for : https://api.navitia.io/v1/coverage/fr-idf/pt_objects?q=bus%20ratp%20%39&type[]=line&type[]=route
+
+.. code-block:: json
+
+    {
+    "places": [
+        {
+            {
+
+                "embedded_type": "line",
+                "line": {
+                    ...
+                },
+                "id": "line:RTP:1258386",
+                "name": " RATP Bus 39 (Gare du Nord - Issy Frères Voisin)"
+
+            },
+                    },
+    "links" : [
+        ...
+     ],
+    }
+
+
+Places autocomplete (/places)
+*****************************
+
+This api search in all geographical objects via their names.
+It returns, in addition of classic objects, a collection of places_ .
+This api is very useful to make some autocomplete stuff.
+
+Differents kind of objects can be returned (sorted as):
+
+* administrative_region
+* stop_area
+* poi
+* address
+* stop_point (appears only if specified, using "&type[]=stop_point" filter)
 
 +------------------------------------------+
 | *Warning*                                |
@@ -366,17 +515,25 @@ It returns, in addition of classic objects, a collection of `place`_.
 Parameters
 ##########
 
-+---------+---------------+-----------------+----------------------------------------+--------------------------------------+
-| Required| Name          | Type            | Description                            | Default value                        |
-+=========+===============+=================+========================================+======================================+
-| yep     | q             | string          | The search term                        |                                      |
-+---------+---------------+-----------------+----------------------------------------+--------------------------------------+
-| nop     | type\[\]      | array of string | Type of objects you want to query      | \[``stop_area``, ``stop_point``,     |
-|         |               |                 |                                        | ``poi``, ``administrative_region``\] |
-+---------+---------------+-----------------+----------------------------------------+--------------------------------------+
-| nop     | admin_uri\[\] | array of string | If filled, will restrained the search  |                                      |
-|         |               |                 | within the given admin uris            | ""                                   |
-+---------+---------------+-----------------+----------------------------------------+--------------------------------------+
++---------+---------------+------------------+------------------------------------+-----------------------------+
+| Required| Name          | Type             | Description                        | Default value               |
++=========+===============+==================+====================================+=============================+
+| yep     | q             | string           | The search term                    |                             |
++---------+---------------+------------------+------------------------------------+-----------------------------+
+| nop     | type\[\]      | array of string  | Type of objects you want to query  | \[``stop_area``,            |
+|         |               |                  | It takes one the following values: | ``address``,                |
+|         |               |                  | \[``stop_area``,                   | ``poi``,                    |
+|         |               |                  | ``address``,                       | ``administrative_region``\] |
+|         |               |                  | ``administrative_region``,         |                             |
+|         |               |                  | ``poi``,                           |                             |
+|         |               |                  | ``stop_point``\]                   |                             |
++---------+---------------+------------------+------------------------------------+-----------------------------+
+| nop     | admin_uri\[\] | array of string  | If filled, will restrained the     |                             |
+|         |               |                  | search within the given admin uris |                             |
++---------+---------------+------------------+------------------------------------+-----------------------------+
+
+How does it works
+#################
 
 Example
 #######
@@ -404,11 +561,11 @@ Response example for : https://api.navitia.io/v1/coverage/fr-idf/places?q=rue
      ],
     }
 
-Places Nearby
-*************
+Places Nearby (/places_nearby)
+******************************
 
 This api search for public transport object near another object, or near coordinates.
-It returns, in addition of classic objects, a collection of `place`_.
+It returns, in addition of classic objects, a collection of places_.
 
 +------------------------------------------+
 | *Warning*                                |
@@ -437,10 +594,15 @@ Parameters
 Filters can be added:
 
 * request for the city of "Paris" on fr-idf
+
     * http://api.navitia.io/v1/coverage/fr-idf/places?q=paris
+
 * then pois nearby this city
+
     * http://api.navitia.io/v1/coverage/fr-idf/places/admin:7444/places_nearby
+
 * and then, let's catch every parking around
+
     * "distance=10000" Paris is not so big
     * "type[]=poi" to take pois only
     * "filter=poi_type.id=poi_type:amenity:parking" to get parking
@@ -476,8 +638,8 @@ https://api.navitia.io/v1/coverage/fr-idf/stop_areas/stop_area:TRN:SA:DUA8754575
     }
 
 
-Journeys
-********
+Journeys (/journeys)
+********************
 
 This api compute journeys.
 
@@ -627,7 +789,8 @@ Here is a typical journey, all sections are detailed below
 .. image:: typical_itinerary.png
 
 
-* main response
+Main response object
+____________________
 
 =================== ================== ===========================================================================
 Field               Type               Description
@@ -637,24 +800,39 @@ links               link_              Links related to the journeys
 =================== ================== ===========================================================================
 
 
-* Journey object
+Journey object
+______________
 
-=================== ================== ===========================================================================
-Field               Type               Description
-=================== ================== ===========================================================================
-_duration            int                Duration of the journey
-nb_transfers        int                Number of transfers in the journey
-departure_date_time `<datetime>`_      Departure date and time of the journey
-requested_date_time `datetime`_         Requested date and time of the journey
-arrival_date_time   `datetime`_         Arrival date and time of the journey
-sections            array `section`_  All the sections of the journey
-from                `place <place>`_             The place from where the journey starts
-to                  `<place>`_             The place from where the journey ends
-links               `link`_              Links related to this journey
-type                *enum* string      Used to qualified a journey. See the `journey_qualif`_ section for more information
-fare                fare_              Fare of the journey (tickets and price)
-tags                array of string    List of tags on the journey. The tags add additional information on the journey beside the journey type. See for example `multiple_journeys`_.
-=================== ================== ===========================================================================
++---------------------+--------------------------+--------------------------------------------------------------+
+| Field               | Type                     | Description                                                  |
++=====================+==========================+==============================================================+
+| duration            | int                      | Duration of the journey                                      |
++---------------------+--------------------------+--------------------------------------------------------------+
+| nb_transfers        | int                      | Number of transfers in the journey                           |
++---------------------+--------------------------+--------------------------------------------------------------+
+| departure_date_time | `date-time`_             | Departure date and time of the journey                       |
++---------------------+--------------------------+--------------------------------------------------------------+
+| requested_date_time | `date-time`_             | Requested date and time of the journey                       |
++---------------------+--------------------------+--------------------------------------------------------------+
+| arrival_date_time   | `date-time`_             | Arrival date and time of the journey                         |
++---------------------+--------------------------+--------------------------------------------------------------+
+| sections            | array of `section`_      | All the sections of the journey                              |
++---------------------+--------------------------+--------------------------------------------------------------+
+| from                | places_                  | The place from where the journey starts                      |
++---------------------+--------------------------+--------------------------------------------------------------+
+| to                  | places_                  | The place from where the journey ends                        |
++---------------------+--------------------------+--------------------------------------------------------------+
+| links               | `link`_                  | Links related to this journey                                |
++---------------------+--------------------------+--------------------------------------------------------------+
+| type                | *enum* string            | Used to qualified a journey.                                 |
+|                     |                          | See the `journey-qualif`_ section for more information       |
++---------------------+--------------------------+--------------------------------------------------------------+
+| fare                | fare_                    | Fare of the journey (tickets and price)                      |
++---------------------+--------------------------+--------------------------------------------------------------+
+| tags                | array of string          | List of tags on the journey. The tags add additional         |
+|                     |                          | information on the journey beside the journey type.          |
+|                     |                          | See for example `multiple_journeys`_.                        |
++---------------------+--------------------------+--------------------------------------------------------------+
 
 
 +-----------------------------------------------------------------------------------------------------------+
@@ -665,7 +843,8 @@ tags                array of string    List of tags on the journey. The tags add
 
 .. _section:
 
-* Section object
+Section object
+______________
 
 
 +-------------------------+------------------------------------+----------------------------------------------------+
@@ -711,9 +890,9 @@ tags                array of string    List of tags on the journey. The tags add
 +-------------------------+------------------------------------+----------------------------------------------------+
 | duration                | int                                | Duration of this section                           |      
 +-------------------------+------------------------------------+----------------------------------------------------+
-| from                    | place_                             | Origin place of this section                       |      
+| from                    | places_                            | Origin place of this section                       |      
 +-------------------------+------------------------------------+----------------------------------------------------+
-| to                      | place_                             | Destination place of this section                  |      
+| to                      | places_                            | Destination place of this section                  |      
 +-------------------------+------------------------------------+----------------------------------------------------+
 | links                   | Array of link_                     | Links related to this section                      |      
 +-------------------------+------------------------------------+----------------------------------------------------+
@@ -742,21 +921,23 @@ tags                array of string    List of tags on the journey. The tags add
 +-------------------------+------------------------------------+----------------------------------------------------+
 | stop_date_times         | Array of stop_date_time_           | List of the stop times of this section             |
 +-------------------------+------------------------------------+----------------------------------------------------+
-| departure_date_time     | `date_time <date_time_object>`_    | Date and time of departure                         |
+| departure_date_time     | `date-time`_                       | Date and time of departure                         |
 +-------------------------+------------------------------------+----------------------------------------------------+
-| arrival_date_time       | `date_time <date_time_object>`_    | Date and time of arrival                           |
+| arrival_date_time       | `date-time`_                       | Date and time of arrival                           |
 +-------------------------+------------------------------------+----------------------------------------------------+
 
 
 .. _path:
 
-* Path object
+Path object
+___________
 
   A path object in composed of an array of path_item_ (segment).
 
 .. _path_item:
 
-* Path item object
+Path item object
+________________
 
 +--------------------------+--------------------------------------+--------------------------------------------------------+
 | Field                    | Type                                 | Description                                            |
@@ -784,7 +965,9 @@ tags                array of string    List of tags on the journey. The tags add
 
 .. _fare:
 
-* Fare object
+Fare object
+___________
+
 
 ===================== =========================== ===================================================================
 Field                 Type                        Description
@@ -796,7 +979,8 @@ links                 link_                       Links related to this object. 
 
 .. _cost:
 
-* Cost object
+Cost object
+___________
 
 ===================== =========================== =============
 Field                 Type                        Description
@@ -807,7 +991,8 @@ currency              string                      currency
 
 .. _ticket:
 
-* Ticket object 
+Ticket object 
+_____________
 
 ===================== =========================== ========================================
 Field                 Type                        Description
@@ -820,8 +1005,8 @@ links                 array of link_              Link to the section_ using thi
 ===================== =========================== ========================================
 
 
-Route Schedules
-***************
+Route Schedules and time tables (/route_schedules)
+***************************************************
 
 This api give you access to schedules of routes.
 The response is made of an array of route_schedule, and another one of `note`_.
@@ -848,7 +1033,8 @@ Parameters
 Objects
 #######
 
-* route_schedule object
+route_schedule object
+_____________________
 
 ===================== =========================== ==============================================
 Field                 Type                        Description
@@ -859,7 +1045,8 @@ Table                 table_                      The schedule table
 
 .. _table:
 
-* table object
+table object
+____________
 
 ======= ================= ====================================
 Field   Type              Description
@@ -870,7 +1057,8 @@ Rows    Array of row_     A row of the schedule
 
 .. _header:
 
-* header object
+header object
+_____________
 
 +--------------------------+-----------------------------+-----------------------------------+
 | Field                    | Type                        | Description                       |
@@ -887,55 +1075,55 @@ Rows    Array of row_     A row of the schedule
 
 .. _row:
 
-* row object
+row object
+__________
+
 
 +------------+----------------------------------------------+---------------------------+
 | Field      | Type                                         | Description               |
 +============+==============================================+===========================+
-| date_times | Array of `date_time <date_time_object>`_     | Array of date_time        |
+| date_times | Array of `date-time`_                        | Array of date_time        |
 +------------+----------------------------------------------+---------------------------+
 | stop_point | `stop_point`_                                | The stop point of the row |
 +------------+----------------------------------------------+---------------------------+
 
 
 
-Stop Schedules
-**************
+Stop Schedules and other kind of time tables (/stop_schedules)
+**************************************************************
 
-This api give you access to schedules of stops.
+This api give you access to schedules of stops going through a stop point.
 The response is made of an array of stop_schedule, and another one of `note`_.
 You can access it via that kind of url: `<https://api.navitia.io/v1/{a_path_to_a_resource}/stop_schedules>`_
 
 Parameters
 ##########
 
-+----------+---------------------+-----------+------------------------------+---------------+
-| Required | Name                | Type      | Description                  | Default Value |
-+==========+=====================+===========+==============================+===============+
-| yep      | from_datetime       | date_time | The date_time from           |               |
-|          |                     |           | which you want the schedules |               |
-+----------+---------------------+-----------+------------------------------+---------------+
-| nop      | duration            | int       | Maximum duration in seconds  | 86400         |
-|          |                     |           | between from_datetime        |               |
-|          |                     |           | and the retrieved datetimes. |               |
-+----------+---------------------+-----------+------------------------------+---------------+
++----------+---------------------+---------------------------------+------------------------------+---------------+
+| Required | Name                | Type                            | Description                  | Default Value |
++==========+=====================+=================================+==============================+===============+
+| yep      | from_datetime       | `date-time`_                    | The date_time from           |               |
+|          |                     |                                 | which you want the schedules |               |
++----------+---------------------+---------------------------------+------------------------------+---------------+
+| nop      | duration            | int                             | Maximum duration in seconds  | 86400         |
+|          |                     |                                 | between from_datetime        |               |
+|          |                     |                                 | and the retrieved datetimes. |               |
++----------+---------------------+---------------------------------+------------------------------+---------------+
 
-Objects
-#######
-
-* stop_schedule object
+Stop_schedule object
+####################
 
 ===================== =============================================== ==============================================
 Field                 Type                                            Description
 ===================== =============================================== ==============================================
 display_informations  display_informations_                           Usefull information about the route to display
 route                 route_                                          The route of the schedule
-date_times            Array of `date_time <date_time_object>`_        When does a bus stops at the stop point
+date_times            Array of `date-time`_                           When does a bus stops at the stop point
 stop_point            stop_point_                                     The stop point of the schedule
 ===================== =============================================== ==============================================
 
-Departures
-**********
+Departures (/departures)
+************************
 
 This api retrieves a list of departures from a datetime of a selected object.
 Departures are ordered chronologically in growing order.
@@ -943,21 +1131,19 @@ Departures are ordered chronologically in growing order.
 Parameters
 ##########
 
-+----------+---------------------+-----------+------------------------------+---------------+
-| Required | Name                | Type      | Description                  | Default Value |
-+==========+=====================+===========+==============================+===============+
-| yep      | from_datetime       | date_time | The date_time from           |               |
-|          |                     |           | which you want the schedules |               |
-+----------+---------------------+-----------+------------------------------+---------------+
-| nop      | duration            | int       | Maximum duration in seconds  | 86400         |
-|          |                     |           | between from_datetime        |               |
-|          |                     |           | and the retrieved datetimes. |               |
-+----------+---------------------+-----------+------------------------------+---------------+
++----------+---------------------+---------------------------------+------------------------------+---------------+
+| Required | Name                | Type                            | Description                  | Default Value |
++==========+=====================+=================================+==============================+===============+
+| yep      | from_datetime       | `date-time`_                    | The date_time from           |               |
+|          |                     |                                 | which you want the schedules |               |
++----------+---------------------+---------------------------------+------------------------------+---------------+
+| nop      | duration            | int                             | Maximum duration in seconds  | 86400         |
+|          |                     |                                 | between from_datetime        |               |
+|          |                     |                                 | and the retrieved datetimes. |               |
++----------+---------------------+---------------------------------+------------------------------+---------------+
 
-Objects
-#######
-
-* departure object
+Departure objects
+#################
 
 ===================== ========================= ========================================
 Field                 Type                      Description
@@ -967,8 +1153,238 @@ stop_date_time        Array of stop_date_time_  When does a bus stops at the sto
 stop_point            stop_point_               The stop point of the schedule
 ===================== ========================= ========================================
 
-Arrivals
-********
+Arrivals (/arrivals)
+********************
+
+This api retrieves a list of arrivals from a datetime of a selected object.
+Arrivals are ordered chronologically in growing order.
+
+Traffic reports and disruptions (/traffic_reports)
+**************************************************
+
+This service provides the state of public transport traffic.
+It can be called for an overall coverage or for a specific object. 
+
+Parameters
+##########
+
+You can access it via that kind of url: `<https://api.navitia.io/v1/{a_path_to_a_resource}/traffic_reports>`_
+
+For example:
+
+* overall public transport traffic report on Ile de France coverage
+
+    * https://api.navitia.io/v1/coverage/fr-idf/traffic_reports
+
+* Is there any perturbations on the RER network ?
+
+    * https://api.navitia.io/v1/coverage/fr-idf/networks/network:RER/traffic_reports
+
+* Is there any perturbations on the "RER A" line ?
+
+    * https://api.navitia.io/v1/coverage/fr-idf/networks/network:RER/lines/line:TRN:DUA810801043/traffic_reports
+
+The response is made of an array of `traffic_reports`_, and another one of `disruptions`_.
+There are inner links between this 2 arrays: see the `inner-reference`_ section to use them.
+
+Objects
+#######
+
+.. _traffic_reports:
+
+Traffic_reports objects
+_______________________
+
+
+Traffic_reports is an array of some traffic_report object. 
+One traffic_report object is a complex object, made of a network, an array of lines and an array of stop_areas.
+A typical traffic_report object will contain:
+
+* 1 network which is the grouping object
+
+    * it can contain links to its disruptions. These disruptions are globals and might not be applied on lines or stop_areas.
+
+* 0..n lines 
+
+    * each line contains at least a link to its disruptions
+
+* 0..n stop_areas
+
+    * each stop_area contains at least a link to its disruptions
+
+It means that if a stop_area is used by many networks, it will appear many times.
+
+Here is a typical response
+
+.. code-block:: json
+
+    {
+    "traffic_reports": [
+        "network": {"name": "bob", "links": [], "id": "network:bob"},
+        "lines": [
+            {
+            "code": "1",
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-green",
+                "rel": "disruptions",
+                "templated": false
+                } ]
+            },
+            {
+            "code": "12",
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-pink",
+                "rel": "disruptions",
+                "templated": false
+                }]
+            },
+        ],
+        "stop_areas": [
+            {
+            "name": "bobito", 
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-red",
+                "rel": "disruptions",
+                "templated": false
+                }]
+            },
+        ],
+     ],
+     [
+        "network": {
+            "name": "bobette", 
+            "id": "network:bobette",
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-blue",
+                "rel": "disruptions",
+                "templated": false
+                }]
+            },
+        "lines": [
+            {
+            "code": "A",
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-green",
+                "rel": "disruptions",
+                "templated": false
+                } ]
+            },
+            {
+            "code": "C",
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-yellow",
+                "rel": "disruptions",
+                "templated": false
+                }]
+            },
+        "stop_areas": [
+            {
+            "name": "bobito", 
+             ... ,
+            "links": [ {
+                "internal": true,
+                "type": "disruption",
+                "id": "link-to-red",
+                "rel": "disruptions",
+                "templated": false
+                }]
+            },
+        ],
+
+    ],
+    "disruptions": [ 
+        {
+            "status": "active", 
+            "severity": {"color": "", "priority": 4, "name": "Information", "effect": "UNKNOWN_EFFECT"},
+            "messages": [ { "text": "green, super green", ...} ],
+            "id": "link-to-green"},
+            ...
+        },{
+            "status": "futur",
+            "messages": [ { "text": "pink, floyd pink", ... } ],
+            "id": "link-to-pink"},
+            ...
+        },{
+            "status": "futur",
+            "messages": [ { "text": "red, mine", ... } ],
+            "id": "link-to-red"},
+            ...
+        },{
+            "status": "futur",
+            "messages": [ { "text": "blue, grass", ... } ],
+            "id": "link-to-blue"},
+            ...
+        },{
+            "status": "futur",
+            "messages": [ { "text": "yellow, submarine", ... } 
+            "id": "link-to-yellow"},
+            ...}
+        ],
+    "link": { ... },
+    "pagination": { ... }
+    }
+
+This typical response means:
+
+* traffic_reports
+
+    * network "bob"
+
+        * line "1" > internal link to disruption "green"
+        * line "12" > internal link to disruption "pink"
+        * stop_area "bobito" > internal link to disruption "red"
+
+    * network "bobette" > internal link to disruption "blue"
+
+        * line "A" > internal link to disruption "green"
+        * line "C" > internal link to disruption "yellow"
+        * stop_area "bobito" > internal link to disruption "red"
+
+* disruptions (disruption target links)
+
+    * disruption "green"
+    * disruption "pink"
+    * disruption "red"
+    * disruption "blue"
+    * disruption "yellow"
+    * Each disruption contains the messages to show.
+
+Here is the details of the disruption object:
+
+.. _disruptions:
+
+Disruption object
+_________________
+
+===================== ========================================== ===================================================
+Field                 Type                                       Description
+===================== ========================================== ===================================================
+status                between: "past", "active" or "future"      state of the disruption         
+id                    string                                     Id of the disruption
+disruption_id         string                                     for traceability: Id of original input disruption
+severity              `severity`_                                gives some categorization element
+application_periods   array of `period`_                         dates where the current disruption is active
+messages              `message`_                                 text to provide to the traveler
+updated_at            `date-time`_                               date_time of last modifications 
+cause                 string                                     why is there such a disruption?
+===================== ========================================== ===================================================
 
 Objects
 =======
@@ -1033,10 +1449,10 @@ id           string                Identifier of the route
 name         string                Name of the route
 is_frequence bool                  Is the route has frequency or not
 line         `line`_               The line of this route
-direction    `place`_              The direction of this route
+direction    places_               The direction of this route
 ============ ===================== ==================================
 
-As "direction" is a `place`_ , it can be a poi in some data.
+As "direction" is a places_ , it can be a poi in some data.
 
 .. _stop_point:
 
@@ -1133,11 +1549,14 @@ id                   string                             Identifier of the compan
 name                 string                             Name of the company
 ==================== ============================= =================================
 
-.. _place:
+.. _places:
 
 Place
 #####
-A container containing either a `stop_point`_, `stop_area`_, `address`_, `poi`_, `admin`_
+
+A container containing either a `admin`_, `poi`_, `address`_, `stop_area`_, `stop_point`_,
+`network`_, `commercial_mode`_, `line`_, `route`_  
+
 
 ===================== ============================= =================================
 Field                 Type                          Description
@@ -1145,12 +1564,29 @@ Field                 Type                          Description
 name                  string                        The name of the embedded object
 id                    string                        The id of the embedded object
 embedded_type         `embedded_type_place`_        The type of the embedded object
-stop_point            *optional* `stop_point`_      Embedded Stop point
-stop_area             *optional* `stop_area`_       Embedded Stop area
-address               *optional* `address`_         Embedded address
-poi                   *optional* `poi`_             Embedded poi
 administrative_region *optional* `admin`_           Embedded administrative region
+stop_area             *optional* `stop_area`_       Embedded Stop area
+poi                   *optional* `poi`_             Embedded poi
+address               *optional* `address`_         Embedded address
+stop_point            *optional* `stop_point`_      Embedded Stop point
+network               *optional* `network`_         Embedded network
+commercial_mode       *optional* `commercial_mode`_ Embedded commercial_mode
+stop_area             *optional* `stop_area`_       Embedded Stop area
+line                  *optional* `line`_            Embedded line
+route                 *optional* `route`_           Embedded route
 ===================== ============================= =================================
+
++------------------------------------------------------------------------+
+| *Note*                                                                 |
+|                                                                        |
+|    Using /places API, navitia would returned objects among             |
+|    administrative_region, stop_area, poi, address and stop_point types |
+|                                                                        |
+|    Using /pt_objects API, navitia would returned objects among         |
+|    network, commercial_mode, stop_area, line and route types           |
+|                                                                        |
++------------------------------------------------------------------------+
+
 
 .. _embedded_type_place:
 
@@ -1230,10 +1666,75 @@ zip_code              string                      Zip code of the admin
 
 Cities are mainly on the 8 level, dependant on the country (http://wiki.openstreetmap.org/wiki/Tag:boundary%3Dadministrative)
 
+disruptions objects
+*******************
+
+.. _message:
+
+Messages
+########
+
+===================== ==================== ==========================================================
+Field                 Type                 Description
+===================== ==================== ==========================================================
+text                  string               a message to bring to a traveler
+channel               `channel`_           destination media. Be careful, no normalized enum for now
+===================== ==================== ==========================================================
+
+.. _severity:
+
+Severity
+########
+
+Severity object can be used to make visual grouping.
+
++--------------------+------------------+-----------------------------------------------------------------------+
+| Field              | Type             | Description                                                           |
++====================+==================+=======================================================================+
+| color              |  string          | HTML color for classification                                         |
++--------------------+------------------+-----------------------------------------------------------------------+
+| priority           |  integer         | given by the agency : 0 is strongest priority. it can be null         |
++--------------------+------------------+-----------------------------------------------------------------------+
+| name               |  string          | name of severity                                                      |
++--------------------+------------------+-----------------------------------------------------------------------+
+| effect             |  Enum            | Normalized value of the effect on the public transport object         |
+|                    |                  | See the GTFS RT documentation at                                      |
+|                    |                  | https://developers.google.com/transit/gtfs-realtime/reference#Effect  |
++--------------------+------------------+-----------------------------------------------------------------------+
+
+.. _channel:
+
+Channel
+#######
+
++---------------------+------------------+-----------------------------------------------------------------------+
+| Field               | Type             | Description                                                           |
++=====================+==================+=======================================================================+
+| id                  | string           | Identifier of the address                                             |
++---------------------+------------------+-----------------------------------------------------------------------+
+| content_type        | string           | Like text/html, you know? Otherwise, take a look at                   |
+|                     |                  | http://www.w3.org/Protocols/rfc1341/4_Content-Type.html               |
++---------------------+------------------+-----------------------------------------------------------------------+
+| name                | string           | name of the Channel                                                   |
++---------------------+------------------+-----------------------------------------------------------------------+
+
+.. _period:
+
+Period
+######
+
+===================== =============================================== ==============================================
+Field                 Type                                            Description
+===================== =============================================== ==============================================
+begin                 `date-time`_                                    Beginning date and time of an activity period
+end                   `date-time`_                                    Closing date and time of an activity period
+===================== =============================================== ==============================================
+
+
 Other objects
 *************
 
-.. _date_time_object:
+.. _date-time:
 
 date_time
 ############
@@ -1268,7 +1769,7 @@ stop_date_time
 ========== ===================================== ============
 Field      Type                                  Description
 ========== ===================================== ============
-date_time  `date_time <date_time_object>`_       A date time
+date_time  `date-time`_                          A date time
 stop_point stop_point_                           A stop point
 ========== ===================================== ============
 
@@ -1349,7 +1850,7 @@ but for the following journeys (or the previous ones if the user asked with ``da
 Those journeys have the ``next`` (or ``previous``) value in their tags.
 
 
-.. _journey_qualif:
+.. _journey-qualif:
 
 Journey qualification process
 *****************************
@@ -1396,15 +1897,22 @@ That's some kind of "responsive locomotion" (ɔ).
 So public transport lines can mix different methods to pickup travelers:
 
 * regular
+
     * line does not contain any estimated stop times, nor zonal stop point location. 
     * No need to call too.
+
 * odt_with_stop_time
+
     * line does not contain any estimated stop times, nor zonal stop point location.
     * But you will have to call to take it.
+
 * odt_with_stop_point
+
     * line can contain some estimated stop times, but no zonal stop point location.
     * And you will have to call to take it.
+
 * odt_with_zone
+
     * line can contain some estimated stop times, and zonal stop point location.
     * And you will have to call to take it
     * well, not really a public transport line, more a cab...

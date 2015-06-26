@@ -68,9 +68,8 @@ struct data_set {
             monday_cal->exceptions.push_back(exd);
         }
         b.data->pt_data->calendars.push_back(monday_cal);
-
         //add lines
-        b.vj("line:A", "", "", true, "vj1")
+        b.vj("line:A", "", "", true, "vj1", "", "", "physical_mode:Car")
                 ("stop_area:stop1", 10 * 3600 + 15 * 60, 10 * 3600 + 15 * 60)
                 ("stop_area:stop2", 11 * 3600 + 10 * 60, 11 * 3600 + 10 * 60);
         b.lines["line:A"]->calendar_list.push_back(wednesday_cal);
@@ -87,13 +86,47 @@ struct data_set {
                 {{1,2}, {2,2}, {4,5}},
                 {{10,20}, {20,20}, {40,50}}
             };
+            r->destination = b.sas.find("stop_area:stop2")->second;
         }
+        b.lines["line:A"]->codes["external_code"] = "A";
+        b.lines["line:A"]->codes["codeB"] = "B";
+        b.lines["line:A"]->codes["codeC"] = "C";
 
         b.data->build_uri();
 
         navitia::type::VehicleJourney* vj = b.data->pt_data->vehicle_journeys_map["vj1"];
         vj->validity_pattern->add(boost::gregorian::from_undelimited_string("20140101"),
                                   boost::gregorian::from_undelimited_string("20140111"), monday_cal->week_pattern);
+
+        //we add some comments
+        auto& comments = b.data->pt_data->comments;
+        comments.add(b.data->pt_data->routes_map["line:A:0"], "I'm a happy comment");
+        comments.add(b.lines["line:A"], "I'm a happy comment");
+        comments.add(b.sas["stop_area:stop1"], "comment on stop A");
+        comments.add(b.sas["stop_area:stop1"], "the stop is sad");
+        comments.add(b.data->pt_data->stop_points_map["stop_area:stop2"], "hello bob");
+        comments.add(b.data->pt_data->vehicle_journeys[0], "hello");
+        comments.add(b.data->pt_data->vehicle_journeys[0]->stop_time_list.front(),
+                                      "stop time is blocked");
+       // Company added
+        navitia::type::Company* cmp = new navitia::type::Company();
+        cmp->line_list.push_back(b.lines["line:A"]);
+        vj->company = cmp;
+        b.data->pt_data->companies.push_back(cmp);
+        cmp->idx = b.data->pt_data->companies.size();
+        cmp->name = "CMP1";
+        cmp->uri = "CMP1";
+        b.lines["line:A"]->company_list.push_back(cmp);
+
+        // LineGroup added
+        navitia::type::LineGroup* lg = new navitia::type::LineGroup();
+        lg->name = "A group";
+        lg->uri = "group:A";
+        lg->main_line = b.lines["line:A"];
+        lg->line_list.push_back(b.lines["line:A"]);
+        b.lines["line:A"]->line_group_list.push_back(lg);
+        comments.add(lg, "I'm a happy comment");
+        b.data->pt_data->line_groups.push_back(lg);
 
         b.data->complete();
     }

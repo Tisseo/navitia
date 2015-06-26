@@ -329,6 +329,7 @@ static_data * static_data::get() {
         boost::assign::insert(temp->types_string)
                 (Type_e::ValidityPattern, "validity_pattern")
                 (Type_e::Line, "line")
+                (Type_e::LineGroup, "line_group")
                 (Type_e::JourneyPattern, "journey_pattern")
                 (Type_e::VehicleJourney, "vehicle_journey")
                 (Type_e::StopPoint, "stop_point")
@@ -462,6 +463,20 @@ std::vector<idx_t> Network::get(Type_e type, const PT_Data &) const {
     std::vector<idx_t> result;
     switch(type) {
     case Type_e::Line: return indexes(line_list);
+    case Type_e::Company:{
+        std::set<idx_t> tmp_result;
+        for(const auto& ln: this->line_list){
+            for(const auto& cpy : ln->company_list){
+                tmp_result.insert(cpy->idx);
+            }
+         }
+        if(tmp_result.size() > 0){
+            for(const idx_t idx: tmp_result){
+                result.push_back(idx);
+            }
+        }
+    }
+        break;
     default: break;
     }
     return result;
@@ -472,6 +487,20 @@ std::vector<idx_t> Company::get(Type_e type, const PT_Data &) const {
     std::vector<idx_t> result;
     switch(type) {
     case Type_e::Line: return indexes(line_list);
+    case Type_e::Network:{
+        std::set<idx_t> tmp_result;
+        for(const auto& ln : this->line_list){
+            if(ln->network){
+                tmp_result.insert(ln->network->idx);
+            }
+        }
+        if(tmp_result.size() > 0){
+            for(const idx_t idx: tmp_result){
+                result.push_back(idx);
+            }
+        }
+    }
+        break;
     default: break;
     }
     return result;
@@ -515,6 +544,7 @@ std::vector<idx_t> Line::get(Type_e type, const PT_Data&) const {
     case Type_e::Network: result.push_back(network->idx); break;
     case Type_e::Route: return indexes(route_list);
     case Type_e::Calendar: return indexes(calendar_list);
+    case Type_e::LineGroup: return indexes(line_group_list);
     default: break;
     }
     return result;
@@ -530,6 +560,15 @@ type::hasOdtProperties Line::get_odt_properties() const{
     return result;
 }
 
+std::vector<idx_t> LineGroup::get(Type_e type, const PT_Data&) const {
+    std::vector<idx_t> result;
+    switch(type) {
+    case Type_e::Line: return indexes(line_list);
+    default: break;
+    }
+    return result;
+}
+
 std::vector<idx_t> Route::get(Type_e type, const PT_Data &) const {
     std::vector<idx_t> result;
     switch(type) {
@@ -539,30 +578,6 @@ std::vector<idx_t> Route::get(Type_e type, const PT_Data &) const {
     }
     return result;
 }
-
-idx_t Route::main_destination() const {
-   // StopPoint_idx, count
-    std::map<idx_t, size_t> stop_point_map;
-    std::pair<idx_t, size_t> best{invalid_idx, 0};
-    for(const JourneyPattern* jp : this->journey_pattern_list) {
-
-        jp->for_each_vehicle_journey([&](const VehicleJourney& vj) {
-            if((!vj.stop_time_list.empty())
-                && (vj.stop_time_list.back().journey_pattern_point != nullptr)
-                    && (vj.stop_time_list.back().journey_pattern_point->stop_point != nullptr)){
-                const StopPoint* sp = vj.stop_time_list.back().journey_pattern_point->stop_point;
-                stop_point_map[sp->idx] += 1;
-                size_t val = stop_point_map[sp->idx];
-                if (( best.first == invalid_idx) || (best.second < val)){
-                    best = {sp->idx, val};
-                }
-            }
-            return true;
-        });
-    }
-    return best.first;
-}
-
 
 type::hasOdtProperties Route::get_odt_properties() const{
     type::hasOdtProperties result;

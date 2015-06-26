@@ -34,6 +34,17 @@ www.navitia.io
 
 namespace ed { namespace connectors {
 
+template <typename C>
+typename C::mapped_type get_object(const C& map, const std::string& obj_id, const std::string& property) {
+    log4cplus::Logger logger = log4cplus::Logger::getInstance("log");
+    const auto o = find_or_default(obj_id, map);
+    if (! o) {
+        LOG4CPLUS_INFO(logger, "impossible to find " << obj_id
+                               << ", cannot add the " << property << ", skipping line");
+    }
+    return o;
+}
+
 void AgencyFusioHandler::init(Data& data) {
     AgencyGtfsHandler::init(data);
     if (id_c == -1) { id_c = csv.get_pos_col("network_id"); }
@@ -58,7 +69,7 @@ void AgencyFusioHandler::handle_line(Data& data, const csv_row& row, bool is_fir
     network->uri = row[id_c];
 
     if (is_valid(ext_code_c, row)) {
-        network->external_code = row[ext_code_c];
+        data.add_object_code(network, row[ext_code_c]);
     }
 
     network->name = row[name_c];
@@ -131,35 +142,36 @@ void StopsFusioHandler::handle_stop_point_without_area(Data& data) {
 }
 
 StopsGtfsHandler::stop_point_and_area StopsFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
+
     auto return_wrapper = StopsGtfsHandler::handle_line(data, row, is_first_line);
 
     if (is_valid(ext_code_c, row)) {
-        if ( return_wrapper.second != nullptr )
-            return_wrapper.second->external_code = row[ext_code_c];
-        else if ( return_wrapper.first != nullptr )
-                return_wrapper.first->external_code = row[ext_code_c];
+        if (return_wrapper.second) {
+            data.add_object_code(return_wrapper.second, row[ext_code_c]);
+        } else if (return_wrapper.first) {
+            data.add_object_code(return_wrapper.first, row[ext_code_c]);
+        }
     }
-
     if (is_valid(property_id_c, row)) {
         auto it_property = gtfs_data.hasProperties_map.find(row[property_id_c]);
-        if(it_property != gtfs_data.hasProperties_map.end()){
-            if( return_wrapper.first != nullptr){
+        if (it_property != gtfs_data.hasProperties_map.end()) {
+            if (return_wrapper.first != nullptr) {
                 return_wrapper.first->set_properties(it_property->second.properties());
             }
-            if( return_wrapper.second != nullptr){
+            if (return_wrapper.second != nullptr) {
                 return_wrapper.second->set_properties(it_property->second.properties());
             }
         }
     }
 
     if (is_valid(comment_id_c, row)) {
-        auto it_comment = gtfs_data.comment_map.find(row[comment_id_c]);
-        if(it_comment != gtfs_data.comment_map.end()){
-            if( return_wrapper.first != nullptr){
-                return_wrapper.first->comment = it_comment->second;
+        auto it_comment = data.comment_by_id.find(row[comment_id_c]);
+        if (it_comment != data.comment_by_id.end()) {
+            if (return_wrapper.first != nullptr) {
+                data.add_pt_object_comment(return_wrapper.first, row[comment_id_c]);
             }
-            if( return_wrapper.second != nullptr){
-                return_wrapper.second->comment = it_comment->second;
+            if (return_wrapper.second != nullptr){
+                data.add_pt_object_comment(return_wrapper.second, row[comment_id_c]);
             }
         }
     }
@@ -190,6 +202,7 @@ void RouteFusioHandler::init(Data& ) {
     comment_id_c = csv.get_pos_col("comment_id");
     contributor_id_c = csv.get_pos_col("contributor_id");
     geometry_id_c = csv.get_pos_col("geometry_id");
+    destination_id_c = csv.get_pos_col("destination_id");
     ignored = 0;
 }
 
@@ -213,19 +226,28 @@ void RouteFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
     ed_route->uri = row[route_id_c];
 
     if ( is_valid(ext_code_c, row) ){
-        ed_route->external_code = row[ext_code_c];
+        data.add_object_code(ed_route, row[ext_code_c]);
     }
 
     ed_route->name = row[route_name_c];
 
-    if ( is_valid(comment_id_c, row) ){
-        auto it_comment = gtfs_data.comment_map.find(row[comment_id_c]);
-        if(it_comment != gtfs_data.comment_map.end()){
-            ed_route->comment = it_comment->second;
+    if (is_valid(comment_id_c, row)) {
+        auto it_comment = data.comment_by_id.find(row[comment_id_c]);
+        if(it_comment != data.comment_by_id.end()){
+            data.add_pt_object_comment(ed_route, row[comment_id_c]);
         }
     }
     if (is_valid(geometry_id_c, row))
         ed_route->shape = find_or_default(row.at(geometry_id_c), data.shapes);
+
+    if (is_valid(destination_id_c, row)){
+        const auto search = gtfs_data.stop_area_map.find(row.at(destination_id_c));
+        if (search != gtfs_data.stop_area_map.end()){
+            ed_route->destination =  search->second;
+        }else{
+            LOG4CPLUS_WARN(logger, "impossible to find destination " << row.at(destination_id_c) << " for route " << row.at(route_id_c));
+        }
+    }
 
     gtfs_data.route_map[row[route_id_c]] = ed_route;
     data.routes.push_back(ed_route);
@@ -258,7 +280,7 @@ void TransfersFusioHandler::fill_stop_point_connection(ed::types::StopPointConne
 
 void StopTimeFusioHandler::init(Data& data) {
     StopTimeGtfsHandler::init(data);
-    itl_c = csv.get_pos_col("stop_times_itl");
+    itl_c = csv.get_pos_col("local_zone_id");
     desc_c = csv.get_pos_col("stop_desc");
     date_time_estimated_c = csv.get_pos_col("date_time_estimated");
     id_c = csv.get_pos_col("stop_time_id");
@@ -276,10 +298,16 @@ void StopTimeFusioHandler::handle_line(Data& data, const csv_row& row, bool is_f
         else
             stop_time->date_time_estimated = false;
 
-        if ( is_valid(desc_c, row) ){
-            auto it_comment = gtfs_data.comment_map.find(row[desc_c]);
-            if(it_comment != gtfs_data.comment_map.end()){
-                stop_time->comment = it_comment->second;
+
+        if (is_valid(id_c, row)) {
+            //if we have an id, we store the stoptime for futur use
+            gtfs_data.stop_time_map[row[id_c]].push_back(stop_time);
+        }
+
+        if (is_valid(desc_c, row)) {
+            auto it_comment = data.comment_by_id.find(row[desc_c]);
+            if (it_comment != data.comment_by_id.end()) {
+                data.add_pt_object_comment(stop_time, row[desc_c]);
             }
         }
 
@@ -288,12 +316,6 @@ void StopTimeFusioHandler::handle_line(Data& data, const csv_row& row, bool is_f
             if (local_traffic_zone > 0) {
                 stop_time->local_traffic_zone = local_traffic_zone;
             }
-        }
-        else
-            stop_time->local_traffic_zone = std::numeric_limits<uint16_t>::max();
-
-        if (is_valid(id_c, row)) {
-            gtfs_data.stop_time_map[row[id_c]].push_back(stop_time);
         }
     }
 }
@@ -361,7 +383,7 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
     ed::types::Route* route = it->second;
 
     auto vp_range = gtfs_data.tz.vp_by_name.equal_range(row[service_c]);
-    if(empty(vp_range)) {
+    if (empty(vp_range)) {
         LOG4CPLUS_WARN(logger, "Impossible to find the service " + row[service_c]
                        + " referenced by trip " + row[trip_c]);
         ignored++;
@@ -403,9 +425,6 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
         }
         vj->uri = vj_uri;
 
-        if(is_valid(ext_code_c, row)){
-            vj->external_code = row[ext_code_c];
-        }
         if(is_valid(headsign_c, row))
             vj->name = row[headsign_c];
         else
@@ -447,7 +466,7 @@ void TripsFusioHandler::handle_line(Data& data, const csv_row& row, bool is_firs
     //the vj might have been split over the dst,thus we loop over all split vj
     for (auto vj: split_vj) {
         if (is_valid(ext_code_c, row)) {
-            vj->external_code = row[ext_code_c];
+            data.add_object_code(vj, row[ext_code_c]);
         }
 
         //if a physical_mode is given we override the value
@@ -481,13 +500,13 @@ void TripsFusioHandler::handle_line(Data& data, const csv_row& row, bool is_firs
         }
 
         if (is_valid(comment_id_c, row)) {
-            auto it_comment = gtfs_data.comment_map.find(row[comment_id_c]);
-            if(it_comment != gtfs_data.comment_map.end()){
-                vj->comment = it_comment->second;
+            auto it_comment = data.comment_by_id.find(row[comment_id_c]);
+            if (it_comment != data.comment_by_id.end()) {
+                data.add_pt_object_comment(vj, row[comment_id_c]);
             }
         }
 
-        if(is_valid(odt_type_c, row)){
+        if (is_valid(odt_type_c, row)) {
             vj->vehicle_journey_type = static_cast<nt::VehicleJourneyType>(boost::lexical_cast<int>(row[odt_type_c]));
         }
 
@@ -540,8 +559,8 @@ void ContributorFusioHandler::handle_line(Data& data, const csv_row& row, bool i
 
 void LineFusioHandler::init(Data &){
     id_c = csv.get_pos_col("line_id");
-    name_c = csv.get_pos_col("line_name");
     external_code_c = csv.get_pos_col("external_code");
+    name_c = csv.get_pos_col("line_name");
     code_c =  csv.get_pos_col("line_code");
     forward_name_c =  csv.get_pos_col("forward_line_name");
     backward_name_c =  csv.get_pos_col("backward_line_name");
@@ -560,13 +579,10 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
                         "  file has more than one line and no line_id column");
         throw InvalidHeaders(csv.filename);
     }
-    ed::types::Line * line = new ed::types::Line();
+    ed::types::Line* line = new ed::types::Line();
     line->uri = row[id_c];
     line->name = row[name_c];
 
-    if (is_valid(external_code_c, row)) {
-        line->external_code = row[external_code_c];
-    }
     if (is_valid(code_c, row)) {
         line->code = row[code_c];
     }
@@ -598,9 +614,9 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
     }
 
     if (is_valid(comment_c, row)) {
-        auto itm = gtfs_data.comment_map.find(row[comment_c]);
-        if (itm != gtfs_data.comment_map.end()) {
-            line->comment = itm->second;
+        auto itm = data.comment_by_id.find(row[comment_c]);
+        if (itm != data.comment_by_id.end()) {
+            data.add_pt_object_comment(line, row[comment_c]);
         }
     }
 
@@ -632,9 +648,83 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
         }
     }
 
+    if (is_valid(external_code_c, row)) {
+        data.add_object_code(line, row[external_code_c]);
+        gtfs_data.line_map_by_external_code[row[external_code_c]] = line;
+    }
+
     data.lines.push_back(line);
     gtfs_data.line_map[line->uri] = line;
-    gtfs_data.line_map_by_external_code[line->external_code] = line;
+}
+
+void LineGroupFusioHandler::init(Data&) {
+    id_c = csv.get_pos_col("line_group_id");
+    name_c = csv.get_pos_col("line_group_name");
+    main_line_id_c = csv.get_pos_col("main_line_id");
+}
+
+void LineGroupFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(!(has_col(id_c, row) && has_col(name_c, row) && has_col(main_line_id_c, row))) {
+        LOG4CPLUS_WARN(logger, "LineGroupFusioHandler: Line ignored in " << csv.filename <<
+            " missing line_group_id, line_group_name or main_line_id column");
+        throw InvalidHeaders(csv.filename);
+    }
+    auto line = gtfs_data.line_map.find(row[main_line_id_c]);
+    if (line == gtfs_data.line_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupFusioHandler: Impossible to find the line " << row[main_line_id_c]);
+        return;
+    }
+    ed::types::LineGroup* line_group = new ed::types::LineGroup();
+    line_group->uri = row[id_c];
+    line_group->name = row[name_c];
+    line_group->main_line = line->second;
+
+    // Link main_line to line_group
+    ed::types::LineGroupLink line_group_link;
+    line_group_link.line_group = line_group;
+    line_group_link.line = line->second;
+
+    gtfs_data.linked_lines_by_line_group_uri[line_group->uri].insert(line->second->uri);
+
+    data.line_groups.push_back(line_group);
+    data.line_group_links.push_back(line_group_link);
+    gtfs_data.line_group_map[line_group->uri] = line_group;
+}
+
+void LineGroupLinksFusioHandler::init(Data&) {
+    line_group_id_c = csv.get_pos_col("line_group_id");
+    line_id_c = csv.get_pos_col("line_id");
+}
+
+void LineGroupLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(!(has_col(line_group_id_c, row) && has_col(line_id_c, row))) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Line ignored in " << csv.filename <<
+        " missing line_group_id or line_id column");
+        throw InvalidHeaders(csv.filename);
+    }
+    auto line_group = gtfs_data.line_group_map.find(row[line_group_id_c]);
+    if (line_group == gtfs_data.line_group_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Impossible to find the line_group " << row[line_group_id_c]);
+        return;
+    }
+
+    auto line = gtfs_data.line_map.find(row[line_id_c]);
+    if (line == gtfs_data.line_map.end()) {
+        LOG4CPLUS_WARN(logger, "LineGroupLinksFusioHandler: Impossible to find the line " << row[line_id_c]);
+        return;
+    }
+
+    auto linked_lines = gtfs_data.linked_lines_by_line_group_uri[line_group->second->uri];
+    if(linked_lines.find(line->second->uri) != linked_lines.end()) {
+        // Don't insert duplicates
+        return;
+    }
+
+    ed::types::LineGroupLink line_group_link;
+    line_group_link.line_group = line_group->second;
+    line_group_link.line = line->second;
+    gtfs_data.linked_lines_by_line_group_uri[line_group->second->uri].insert(line->second->uri);
+    data.line_group_links.push_back(line_group_link);
 }
 
 void CompanyFusioHandler::init(Data&) {
@@ -734,7 +824,7 @@ void CommentFusioHandler::init(Data&){
     comment_c = csv.get_pos_col("comment_name");
 }
 
-void CommentFusioHandler::handle_line(Data&, const csv_row& row, bool is_first_line){
+void CommentFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line){
     if(! is_first_line && ! has_col(id_c, row)) {
         LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
                         "  file has more than one comment and no comment_id column");
@@ -745,7 +835,7 @@ void CommentFusioHandler::handle_line(Data&, const csv_row& row, bool is_first_l
                         "  row has column comment for the id : " + row[id_c]);
         return;
     }
-    gtfs_data.comment_map[row[id_c]] = row[comment_c];
+    data.comment_by_id[row[id_c]] = row[comment_c];
 }
 
 
@@ -823,45 +913,28 @@ void ObjectPropertiesFusioHandler::handle_line(Data& data, const csv_row& row, b
                         " missing object_id or object_type or object_property_name or object_property_value column");
         return;
     }
-    nt::Header* object_with_idx;
-    if("line" == row[object_type_c]) {
-        auto line = gtfs_data.line_map.find(row[object_id_c]);
-        if (line == gtfs_data.line_map.end()) {
-            LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: Impossible to find the line " << row[object_id_c]);
-            return;
-        }
-        object_with_idx = line->second;
-    } else if ("route" == row[object_type_c]) {
-        auto route = gtfs_data.route_map.find(row[object_id_c]);
-        if (route == gtfs_data.route_map.end()) {
-            LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: Impossible to find the route " << row[object_id_c]);
-            return;
-        }
-        object_with_idx = route->second;
-    } else if ("stop_area" == row[object_type_c]) {
-        auto stop_area = gtfs_data.stop_area_map.find(row[object_id_c]);
-        if (stop_area == gtfs_data.stop_area_map.end()) {
-            LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: Impossible to find the stop area " << row[object_id_c]);
-            return;
-        }
-        object_with_idx = stop_area->second;
-    } else if ("stop_point" == row[object_type_c]) {
-        auto stop_point = gtfs_data.stop_map.find(row[object_id_c]);
-        if (stop_point == gtfs_data.stop_map.end()) {
-            LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: Impossible to find the stop point " << row[object_id_c]);
-            return;
-        }
-        object_with_idx = stop_point->second;
+    const nt::Header* object;
+    const auto& object_id = row[object_id_c];
+    const auto enum_type = get_type_enum(row[object_type_c]);
+    if (enum_type == nt::Type_e::Line) {
+        object = get_object(gtfs_data.line_map, object_id, "object property");
+        if (! object) { return; }
+    } else if (enum_type == nt::Type_e::Route) {
+        object = get_object(gtfs_data.route_map, object_id, "object property");
+        if (! object) { return; }
+    } else if (enum_type == nt::Type_e::StopArea) {
+        object = get_object(gtfs_data.stop_area_map, object_id, "object property");
+        if (! object) { return; }
+    } else if (enum_type == nt::Type_e::StopPoint) {
+        object = get_object(gtfs_data.stop_map, object_id, "object property");
+        if (! object) { return; }
     } else {
         LOG4CPLUS_WARN(logger, "ObjectPropertiesFusioHandler: type '" << row[object_type_c] << "' not supported");
         return;
     }
-    ed::types::ObjectProperty object_property;
-    object_property.object_with_idx = object_with_idx;
-    object_property.object_type = row[object_type_c];
-    object_property.property_name = row[property_name_c];
-    object_property.property_value = row[property_value_c];
-    data.object_properties.push_back(object_property);
+    const auto key = row[property_name_c];
+    const auto val = row[property_value_c];
+    data.object_properties[{object, enum_type}][key] = val;
 }
 
 void TripPropertiesFusioHandler::init(Data &){
@@ -988,7 +1061,6 @@ void GridCalendarFusioHandler::handle_line(Data& data, const csv_row& row, bool 
     }
     ed::types::Calendar* calendar = new ed::types::Calendar();
     calendar->uri = row[id_c];
-    calendar->external_code = row[id_c];
     calendar->name =  row[name_c];
     calendar->week_pattern[navitia::Monday] = is_active(monday_c, row);
     calendar->week_pattern[navitia::Tuesday] = is_active(tuesday_c, row);
@@ -1151,12 +1223,18 @@ void GridCalendarTripExceptionDatesFusioHandler::handle_line(Data&, const csv_ro
 }
 }
 
-void AdminStopAreaFusioHandler::init(Data&){
+void AdminStopAreaFusioHandler::init(Data& data){
     admin_c = csv.get_pos_col("admin_id");
     stop_area_c = csv.get_pos_col("station_id");
-
-    for (const auto& stop_area : gtfs_data.stop_area_map){
-        tmp_stop_area_map[stop_area.second->external_code] = stop_area.second;
+    for(const auto& object_code_map : data.object_codes){
+        for(auto& object_code: object_code_map.second){
+            if (object_code_map.first.type == nt::Type_e::StopArea && object_code.first == "external_code") {
+                const auto stop_area = gtfs_data.stop_area_map.find(object_code_map.first.pt_object->uri);
+                if (stop_area != gtfs_data.stop_area_map.end()){
+                    tmp_stop_area_map[object_code.second] = stop_area->second;
+                }
+            }
+        }
     }
 }
 
@@ -1193,36 +1271,7 @@ void CommentLinksFusioHandler::init(Data&){
     comment_id_c = csv.get_pos_col("comment_id");
 }
 
-template <typename T>
-bool add_comment(const std::unordered_map<std::string, T>& map, const std::string& obj_id, const std::string& comment) {
-
-    log4cplus::Logger logger = log4cplus::Logger::getInstance("log");
-    const auto it = map.find(obj_id);
-    if (it == map.end()) {
-        LOG4CPLUS_INFO(logger, "impossible to find " << obj_id << ", cannot add the comment, skipping line");
-        return false;
-    }
-    it->second->comment = comment;
-    return true;
-}
-
-template <typename T>
-bool add_comment(const std::unordered_map<std::string, std::vector<T>>& list_map, const std::string& obj_id, const std::string& comment) {
-
-    log4cplus::Logger logger = log4cplus::Logger::getInstance("log");
-    const auto it = list_map.find(obj_id);
-    if (it == list_map.end()) {
-        LOG4CPLUS_INFO(logger, "impossible to find " << obj_id << ", cannot add the comment, skipping line");
-        return false;
-    }
-    for (auto* obj: it->second) {
-        obj->comment = comment;
-    }
-
-    return true;
-}
-
-void CommentLinksFusioHandler::handle_line(Data&, const csv_row& row, bool) {
+void CommentLinksFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
     if(! has_col(object_id_c, row) || ! has_col(object_type_c, row) || ! has_col(comment_id_c, row)) {
         LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
                         "  impossible to find all needed fields");
@@ -1233,9 +1282,10 @@ void CommentLinksFusioHandler::handle_line(Data&, const csv_row& row, bool) {
     const auto object_type = row[object_type_c];
     const auto comment_id = row[comment_id_c];
 
+    // for coherence purpose we check that the comment exists
     std::string comment;
-    const auto comment_it = gtfs_data.comment_map.find(comment_id);
-    if (comment_it != gtfs_data.comment_map.end()) {
+    const auto comment_it = data.comment_by_id.find(comment_id);
+    if (comment_it != data.comment_by_id.end()) {
         comment = comment_it->second;
     } else {
         LOG4CPLUS_INFO(logger, "impossible to find comment " << comment_id << ", skipping line for "
@@ -1243,26 +1293,117 @@ void CommentLinksFusioHandler::handle_line(Data&, const csv_row& row, bool) {
         return;
     }
 
-    if (object_type == "stop_area") {
-        add_comment(gtfs_data.stop_area_map, object_id, comment);
-    } else if (object_type == "stop_point") {
-        add_comment(gtfs_data.stop_map, object_id, comment);
-    } else if (object_type == "line") {
-        add_comment(gtfs_data.line_map, object_id, comment);
-    } else if (object_type == "route") {
-        add_comment(gtfs_data.route_map, object_id, comment);
-    } else if (object_type == "trip") {
+    // and we check that the object exists
+    const nt::Type_e navitia_type = get_type_enum(object_type);
+    if (navitia_type == nt::Type_e::StopArea) {
+        const auto object = get_object(gtfs_data.stop_area_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::StopPoint) {
+        const auto object = get_object(gtfs_data.stop_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::Line) {
+        const auto object = get_object(gtfs_data.line_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::LineGroup) {
+        const auto object = get_object(gtfs_data.line_group_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::Route) {
+        const auto object = get_object(gtfs_data.route_map, object_id, "comment");
+        if (! object) { return; }
+        data.add_pt_object_comment(object, comment_id);
+    } else if (navitia_type == nt::Type_e::VehicleJourney) {
         const auto range = gtfs_data.tz.vj_by_name.equal_range(object_id);
         if (empty(range)) {
             LOG4CPLUS_INFO(logger, "impossible to find " << object_id << ", cannot add the comment, skipping line");
+            return;
         }
+        //the trips are split by dst, we add the comment on each one
         for (auto vj_it = range.first; vj_it != range.second; ++vj_it) {
-            vj_it->second->comment = comment;
+            data.add_pt_object_comment(vj_it->second, row[comment_id_c]);
         }
-    } else if (object_type == "stop_time") {
-        add_comment(gtfs_data.stop_time_map, object_id, comment);
+        return;
+    } else if (navitia_type == nt::Type_e::StopTime) {
+        // the stop time are also split by dst
+        const auto& list_st = gtfs_data.stop_time_map[object_id];
+        if (list_st.empty()) {
+            LOG4CPLUS_INFO(logger, "impossible to find the stoptime " << object_id << ", cannot add the comment, skipping line");
+            return;
+        }
+
+        //the stop times can be split by dst, so we add the comment on each stop time
+        for (const auto* st: list_st) {
+            data.add_pt_object_comment(st, row[comment_id_c]);
+        }
+        return;
     } else {
-        LOG4CPLUS_INFO(logger, "Unkown object type " << object_type << ", impossible to add a comment");
+        LOG4CPLUS_INFO(logger, "Unhandled object type " << object_type << ", impossible to add a comment");
+        return;
+    }
+}
+
+void ObjectCodesFusioHandler::init(Data&){
+    object_uri_c = csv.get_pos_col("object_id");
+    object_type_c = csv.get_pos_col("object_type");
+    code_c = csv.get_pos_col("object_code");
+    object_system_c = csv.get_pos_col("object_system");
+}
+
+
+void ObjectCodesFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(! has_col(object_uri_c, row) || ! has_col(object_type_c, row) || ! has_col(code_c, row) || ! has_col(object_system_c, row)) {
+        LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
+                        "  impossible to find all needed fields");
+        throw InvalidHeaders(csv.filename);
+    }
+
+    std::string key = row[object_system_c];
+    std::string object_type = boost::algorithm::to_lower_copy(row[object_type_c]);
+
+    if (boost::algorithm::to_lower_copy(key) == "navitia1") {
+        key = "external_code";
+    }
+
+    if (object_type == "line"){
+        const auto& it_object = gtfs_data.line_map.find(row[object_uri_c]);
+        if(it_object != gtfs_data.line_map.end()){
+            data.add_object_code(it_object->second, row[code_c], key);
+            if (key == "external_code"){
+                gtfs_data.line_map_by_external_code[row[code_c]] = it_object->second;
+            }
+        }
+    } else if (object_type == "route"){
+        const auto& it_object = gtfs_data.route_map.find(row[object_uri_c]);
+        if(it_object != gtfs_data.route_map.end()){
+            data.add_object_code(it_object->second, row[code_c], key);
+        }
+    } else if (object_type == "network"){
+        const auto& it_object = gtfs_data.network_map.find(row[object_uri_c]);
+        if(it_object != gtfs_data.network_map.end()){
+            data.add_object_code(it_object->second, row[code_c], key);
+        }
+    } else if (object_type == "trip"){
+        const auto& it_object = data.meta_vj_map.find(row[object_uri_c]);
+        if(it_object != data.meta_vj_map.end()){
+            for(const auto& vj : it_object->second.theoric_vj){
+                data.add_object_code(vj, row[code_c], key);
+            }
+        }
+    } else if (object_type == "stop_area"){
+        const auto& it_object = gtfs_data.stop_area_map.find(row[object_uri_c]);
+        if(it_object != gtfs_data.stop_area_map.end()){
+            data.add_object_code(it_object->second, row[code_c], key);
+        }
+    } else if (object_type == "stop_point"){
+        const auto& it_object = gtfs_data.stop_map.find(row[object_uri_c]);
+        if(it_object != gtfs_data.stop_map.end()){
+            data.add_object_code(it_object->second, row[code_c], key);
+        }
+    } else {
+        LOG4CPLUS_DEBUG(logger, "unknown object type " << object_type << " skipping object code");
     }
 }
 
@@ -1305,6 +1446,8 @@ void FusioParser::parse_files(Data& data) {
     parse<CommercialModeFusioHandler>(data, "commercial_modes.txt");
     parse<CommentFusioHandler>(data, "comments.txt");
     parse<LineFusioHandler>(data, "lines.txt");
+    parse<LineGroupFusioHandler>(data, "line_groups.txt");
+    parse<LineGroupLinksFusioHandler>(data, "line_group_links.txt");
     parse<StopPropertiesFusioHandler>(data, "stop_properties.txt");
     parse<StopsFusioHandler>(data, "stops.txt", true);
     parse<RouteFusioHandler>(data, "routes.txt", true);
@@ -1320,6 +1463,7 @@ void FusioParser::parse_files(Data& data) {
     parse<TripsFusioHandler>(data, "trips.txt", true);
     parse<StopTimeFusioHandler>(data, "stop_times.txt", true);
     parse<FrequenciesGtfsHandler>(data, "frequencies.txt");
+    parse<ObjectCodesFusioHandler>(data, "object_codes.txt");
     parse<grid_calendar::GridCalendarFusioHandler>(data, "grid_calendars.txt");
     parse<grid_calendar::PeriodFusioHandler>(data, "grid_periods.txt");
     parse<grid_calendar::ExceptionDatesFusioHandler>(data, "grid_exception_dates.txt");

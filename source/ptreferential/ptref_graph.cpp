@@ -56,6 +56,9 @@ Jointures::Jointures() {
     // À partir d'un network on peut avoir ses lignes
     boost::add_edge(vertex_map.at(Type_e::Line), vertex_map.at(Type_e::Network), g);
 
+    boost::add_edge(vertex_map.at(Type_e::Company), vertex_map.at(Type_e::Network), g);
+    boost::add_edge(vertex_map.at(Type_e::Network), vertex_map.at(Type_e::Company), g);
+
     // À partir d'une company, on peut avoir ses lignes
     boost::add_edge(vertex_map.at(Type_e::Line), vertex_map.at(Type_e::Company), g);
 
@@ -107,6 +110,10 @@ Jointures::Jointures() {
     //from line to calendar
     boost::add_edge(vertex_map[Type_e::Calendar], vertex_map[Type_e::Line], g);
     boost::add_edge(vertex_map[Type_e::Line], vertex_map[Type_e::Calendar], g);
+
+    // from line_group to lines
+    boost::add_edge(vertex_map[Type_e::LineGroup], vertex_map[Type_e::Line], g);
+    boost::add_edge(vertex_map[Type_e::Line], vertex_map[Type_e::LineGroup], g);
 }
 
 // Retourne un map qui indique pour chaque type par quel type on peut l'atteindre

@@ -25,7 +25,12 @@ Navitia is a service providing:
 
 The API can be found at http://api.navitia.io/
 
-For more information see http://www.navitia.io/ or twitter @navitia or google groups navitia
+For more information see
+
+* main web site http://www.navitia.io
+* twitter @navitia https://twitter.com/navitia
+* google groups navitia https://groups.google.com/d/forum/navitia
+* channel #navitia on irc.freenode.net
 
 Organisation
 ============
@@ -62,8 +67,6 @@ Tools
 #. Cmake for the build system
 
 #. Python for the api
-
-#. Doxygen and swagger for the automated documentation
 
 Installation
 ============

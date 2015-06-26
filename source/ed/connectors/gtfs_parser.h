@@ -35,6 +35,7 @@ www.navitia.io
 #include "utils/csv.h"
 #include "utils/logger.h"
 #include "utils/functions.h"
+#include <boost/container/flat_set.hpp>
 #include <boost/date_time/time_zone_base.hpp>
 #include <boost/date_time/local_time/local_time.hpp>
 #include "tz_db_wrapper.h"
@@ -45,6 +46,9 @@ www.navitia.io
   * http://code.google.com/intl/fr/transit/spec/transit_feed_specification.html
   */
 namespace ed { namespace connectors {
+
+/** Return the type enum corresponding to the string*/
+nt::Type_e get_type_enum(const std::string&);
 
 /**
  * handle all tz specific stuff
@@ -84,6 +88,7 @@ struct GtfsData {
     std::unordered_map<std::string, ed::types::StopArea*> stop_area_map;
     std::unordered_map<std::string, ed::types::Line*> line_map;
     std::unordered_map<std::string, ed::types::Line*> line_map_by_external_code;
+    std::unordered_map<std::string, ed::types::LineGroup*> line_group_map;
     std::unordered_map<std::string, ed::types::Route*> route_map;
     std::unordered_map<std::string, ed::types::MetaVehicleJourney*> metavj_by_external_code;
     std::unordered_map<std::string, ed::types::PhysicalMode*> physical_mode_map;
@@ -100,11 +105,16 @@ struct GtfsData {
     std::unordered_map<std::string, vector_sp> sa_spmap;
     std::set<std::string> vj_uri; //we store all vj_uri not to give twice the same uri (since we split some)
 
+    //for gtfs we group the comments together, so the key is the comment and the value is the id of the comment
+    std::unordered_map<std::string, std::string> comments_id_map;
+
+    // Store lines linked for each group to avoid duplicates
+    std::unordered_map<std::string, boost::container::flat_set<std::string>> linked_lines_by_line_group_uri;
+
     // timezone management
     TzHandler tz;
 
     // used only by fusio2ed
-    std::unordered_map<std::string, std::string> comment_map;
     std::unordered_map<std::string, std::string> odt_conditions_map;
     std::unordered_map<std::string, navitia::type::hasProperties> hasProperties_map;
     std::unordered_map<std::string, navitia::type::hasVehicleProperties> hasVehicleProperties_map;
@@ -230,7 +240,8 @@ struct StopsGtfsHandler : public GenericHandler {
     parent_c,
     wheelchair_c,
     platform_c,
-    timezone_c;
+    timezone_c,
+    ext_code_c;
 
     int ignored = 0;
     std::vector<types::StopPoint*> wheelchair_heritance;

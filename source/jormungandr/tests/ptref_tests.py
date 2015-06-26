@@ -57,6 +57,13 @@ class TestPtRef(AbstractTestFixture):
         assert vj['stop_times'][1]['arrival_time'] == '111000'
         assert vj['stop_times'][1]['departure_time'] == '111000'
 
+        #we added some comments on the vj, we should have them
+        com = get_not_null(vj, 'comments')
+        assert len(com) == 1
+        assert com[0]['type'] == 'standard'
+        assert com[0]['value'] == 'hello'
+
+
     def test_vj_depth_0(self):
         """default depth is 1"""
         response = self.query_region("v1/vehicle_journeys?depth=0")
@@ -99,6 +106,69 @@ class TestPtRef(AbstractTestFixture):
         geo = get_not_null(l, 'geojson')
         shape(geo)
 
+        com = get_not_null(l, 'comments')
+        assert len(com) == 1
+        assert com[0]['type'] == 'standard'
+        assert com[0]['value'] == "I'm a happy comment"
+
+        physical_modes = get_not_null(l, 'physical_modes')
+        assert len(physical_modes) == 1
+
+        is_valid_physical_mode(physical_modes[0], depth_check=1)
+
+        assert physical_modes[0]['id'] == 'physical_mode:Car'
+        assert physical_modes[0]['name'] == 'name physical_mode:Car'
+
+        line_group = get_not_null(l, 'line_groups')
+        assert len(line_group) == 1
+        is_valid_line_group(line_group[0], depth_check=0)
+        assert line_group[0]['name'] == 'A group'
+        assert line_group[0]['id'] == 'group:A'
+
+    def test_line_groups(self):
+        """test line group formating"""
+        # Test for each possible range to ensure main_line is always at a depth of 0
+        for depth in range(0,3):
+            response = self.query_region("line_groups?depth={0}".format(depth))
+
+            line_groups = get_not_null(response, 'line_groups')
+
+            assert len(line_groups) == 1
+
+            lg = line_groups[0]
+
+            is_valid_line_group(lg, depth_check=depth)
+
+            if depth > 0:
+                com = get_not_null(lg, 'comments')
+                assert len(com) == 1
+                assert com[0]['type'] == 'standard'
+                assert com[0]['value'] == "I'm a happy comment"
+
+        # test if line_groups are accessible through the ptref graph
+        response = self.query_region("routes/line:A:0/line_groups")
+        line_groups = get_not_null(response, 'line_groups')
+        assert len(line_groups) == 1
+        lg = line_groups[0]
+        is_valid_line_group(lg)
+
+    def test_line_codes(self):
+        """test line formating"""
+        response = self.query_region("v1/lines/line:A?show_codes=true")
+
+        lines = get_not_null(response, 'lines')
+
+        assert len(lines) == 1
+
+        l = lines[0]
+
+        codes = get_not_null(l, 'codes')
+
+        assert len(codes) == 3
+
+        is_valid_codes(codes)
+
+
     def test_route(self):
         """test line formating"""
         response = self.query_region("v1/routes")
@@ -114,6 +184,59 @@ class TestPtRef(AbstractTestFixture):
         geo = get_not_null(r, 'geojson')
         shape(geo)
 
+        com = get_not_null(r, 'comments')
+        assert len(com) == 1
+        assert com[0]['type'] == 'standard'
+        assert com[0]['value'] == "I'm a happy comment"
+
+    def test_stop_areas(self):
+        """test stop_areas formating"""
+        response = self.query_region("v1/stop_areas")
+
+        stops = get_not_null(response, 'stop_areas')
+
+        assert len(stops) == 2
+
+        s = next((s for s in stops if s['name'] == 'stop_area:stop1'))
+        is_valid_stop_area(s, depth_check=1)
+
+        com = get_not_null(s, 'comments')
+        assert len(com) == 2
+        assert com[0]['type'] == 'standard'
+        assert com[0]['value'] == "comment on stop A"
+        assert com[1]['type'] == 'standard'
+        assert com[1]['value'] == "the stop is sad"
+
+    def test_stop_points(self):
+        """test stop_areas formating"""
+        response = self.query_region("v1/stop_points")
+
+        stops = get_not_null(response, 'stop_points')
+
+        assert len(stops) == 2
+
+        s = next((s for s in stops if s['name'] == 'stop_area:stop2'))
+        is_valid_stop_area(s, depth_check=1)
+
+        com = get_not_null(s, 'comments')
+        assert len(com) == 1
+        assert com[0]['type'] == 'standard'
+        assert com[0]['value'] == "hello bob"
+
+    def test_company_default_depth(self):
+        """default depth is 1"""
+        response = self.query_region("v1/companies")
+
+        companies = get_not_null(response, 'companies')
+
+        for company in companies:
+            is_valid_company(company, depth_check=1)
+
+        #we check afterward that we have the right data
+        #we know there is only one vj in the dataset
+        assert len(companies) == 1
+        company = companies[0]
+        assert company['id'] == 'CMP1'
 
 @dataset(["main_routing_test"])
 class TestPtRefPlace(AbstractTestFixture):

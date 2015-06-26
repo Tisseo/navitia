@@ -160,7 +160,7 @@ int main(int argc, char * argv[])
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
     if(vm.count("version")){
-        std::cout << argv[0] << " V" << navitia::config::kraken_version << " "
+        std::cout << argv[0] << " " << navitia::config::project_version << " "
                   << navitia::config::navitia_build_type << std::endl;
         return 0;
     }
@@ -212,6 +212,7 @@ int main(int argc, char * argv[])
     data.meta->publication_date = pt::microsec_clock::local_time();
 
     LOG4CPLUS_INFO(logger, "line: " << data.pt_data->lines.size());
+    LOG4CPLUS_INFO(logger, "line_groups: " << data.pt_data->line_groups.size());
     LOG4CPLUS_INFO(logger, "route: " << data.pt_data->routes.size());
     LOG4CPLUS_INFO(logger, "journey_pattern: " << data.pt_data->journey_patterns.size());
     LOG4CPLUS_INFO(logger, "stoparea: " << data.pt_data->stop_areas.size());

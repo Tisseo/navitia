@@ -56,6 +56,7 @@ static nt::Type_e get_type(pbnavitia::NavitiaType pb_type) {
     case pbnavitia::STOP_AREA: return nt::Type_e::StopArea;
     case pbnavitia::STOP_POINT: return nt::Type_e::StopPoint;
     case pbnavitia::LINE: return nt::Type_e::Line;
+    case pbnavitia::LINE_GROUP: return nt::Type_e::LineGroup;
     case pbnavitia::ROUTE: return nt::Type_e::Route;
     case pbnavitia::JOURNEY_PATTERN: return nt::Type_e::JourneyPattern;
     case pbnavitia::NETWORK: return nt::Type_e::Network;
@@ -121,7 +122,7 @@ pbnavitia::Response Worker::status() {
     auto status = result.mutable_status();
     const auto d = data_manager.get_data();
     status->set_data_version(d->version);
-    status->set_navitia_version(config::kraken_version);
+    status->set_navitia_version(config::project_version);
     status->set_loaded(d->loaded);
     status->set_last_load_status(d->last_load);
     status->set_last_load_at(pt::to_iso_string(d->last_load_at));

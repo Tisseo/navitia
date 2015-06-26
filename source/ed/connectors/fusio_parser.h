@@ -56,8 +56,7 @@ struct AgencyFusioHandler : public AgencyGtfsHandler {
 
 struct StopsFusioHandler : public StopsGtfsHandler {
     StopsFusioHandler(GtfsData& gdata, CsvReader& reader) : StopsGtfsHandler(gdata, reader) {}
-    int ext_code_c,
-        property_id_c,
+    int property_id_c,
         comment_id_c,
         visible_c,
         geometry_id_c;
@@ -77,7 +76,8 @@ struct RouteFusioHandler : public GenericHandler {
         comment_id_c,
         commercial_mode_id_c,
         contributor_id_c,
-        geometry_id_c;
+        geometry_id_c,
+        destination_id_c;
     int ignored;
     void init(Data&);
     void handle_line(Data& data, const csv_row& line, bool is_first_line);
@@ -164,6 +164,25 @@ struct LineFusioHandler : public GenericHandler{
     void init(Data &);
     void handle_line(Data& data, const csv_row& line, bool is_first_line);
     const std::vector<std::string> required_headers() const { return {"line_id", "line_name", "commercial_mode_id"}; }
+};
+
+struct LineGroupFusioHandler : public GenericHandler{
+    LineGroupFusioHandler(GtfsData& gdata, CsvReader& reader) : GenericHandler(gdata, reader) {}
+    int id_c,
+    name_c,
+    main_line_id_c;
+    void init(Data &);
+    void handle_line(Data& data, const csv_row& line, bool is_first_line);
+    const std::vector<std::string> required_headers() const { return {"line_group_id", "line_group_name", "main_line_id"}; }
+};
+
+struct LineGroupLinksFusioHandler : public GenericHandler{
+    LineGroupLinksFusioHandler(GtfsData& gdata, CsvReader& reader) : GenericHandler(gdata, reader) {}
+    int line_group_id_c,
+    line_id_c;
+    void init(Data &);
+    void handle_line(Data& data, const csv_row& line, bool is_first_line);
+    const std::vector<std::string> required_headers() const { return {"line_group_id", "line_id"}; }
 };
 
 struct CompanyFusioHandler : public GenericHandler {
@@ -334,6 +353,15 @@ struct CommentLinksFusioHandler: public GenericHandler {
     void init(Data&);
     void handle_line(Data& data, const csv_row& row, bool is_first_line);
     const std::vector<std::string> required_headers() const { return {"object_id", "object_type", "comment_id"}; }
+};
+
+struct ObjectCodesFusioHandler: public GenericHandler {
+    ObjectCodesFusioHandler(GtfsData& gdata, CsvReader& reader): GenericHandler(gdata, reader) {}
+    int object_uri_c, object_type_c, code_c, object_system_c;
+
+    void init(Data&);
+    void handle_line(Data& data, const csv_row& row, bool is_first_line);
+    const std::vector<std::string> required_headers() const { return {"object_id", "object_type", "object_code", "object_system"}; }
 };
 /**
  * custom parser

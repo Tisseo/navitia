@@ -70,7 +70,7 @@ int main(int argc, char * argv[])
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
     if(vm.count("version")){
-        std::cout << argv[0] << " V" << navitia::config::kraken_version << " "
+        std::cout << argv[0] << " " << navitia::config::project_version << " "
                   << navitia::config::navitia_build_type << std::endl;
         return 0;
     }
@@ -97,7 +97,7 @@ int main(int argc, char * argv[])
     }
 
     pt::ptime start;
-    int read, complete, clean, sort, save, fare(0);
+    int read, complete, clean, sort, save, fare(0), main_destination(0);
 
     ed::Data data;
 
@@ -142,6 +142,10 @@ int main(int argc, char * argv[])
     data.sort();
     sort = (pt::microsec_clock::local_time() - start).total_milliseconds();
 
+    start = pt::microsec_clock::local_time();
+    data.build_route_destination();
+    main_destination = (pt::microsec_clock::local_time() - start).total_milliseconds();
+
     data.normalize_uri();
 
     if(vm.count("fare") || boost::filesystem::exists(fare_dir + "/fares.csv")) {
@@ -156,6 +160,7 @@ int main(int argc, char * argv[])
     }
 
     LOG4CPLUS_INFO(logger, "line: " << data.lines.size());
+    LOG4CPLUS_INFO(logger, "line_group: " << data.line_groups.size());
     LOG4CPLUS_INFO(logger, "route: " << data.routes.size());
     LOG4CPLUS_INFO(logger, "journey_pattern: " << data.journey_patterns.size());
     LOG4CPLUS_INFO(logger, "stoparea: " << data.stop_areas.size());
@@ -180,6 +185,7 @@ int main(int argc, char * argv[])
     if (vm.count("fare")) {
         LOG4CPLUS_INFO(logger, "\t fares loaded in : " << fare << "ms");
     }
+    LOG4CPLUS_INFO(logger, "\t Destination of routes " << main_destination << "ms");
     LOG4CPLUS_INFO(logger, "\t enregistrement des données " << save << "ms");
 
     return 0;

@@ -46,6 +46,19 @@ using nt::idx_t;
 
 namespace ed{ namespace types{
 
+struct pt_object_header {
+    pt_object_header (const nt::Header* h, nt::Type_e t): pt_object(h), type(t) {}
+    pt_object_header() = default;
+    const nt::Header* pt_object = nullptr;
+    nt::Type_e type = nt::Type_e::Unknown;
+    bool operator<(const pt_object_header& other) const { return pt_object < other.pt_object; }
+    bool operator==(const pt_object_header& other) const { return pt_object == other.pt_object; }
+};
+
+inline std::ostream& operator<<(std::ostream& os, const pt_object_header pt) {
+    return os << pt.pt_object->uri;
+}
+
 // On importe quelques éléments de Navitia::type pour éviter les redondances
 using nt::Nameable;
 using nt::Header;
@@ -104,7 +117,6 @@ struct Calendar : public Nameable, public Header {
     const static nt::Type_e type = nt::Type_e::Calendar;
     typedef std::bitset<7> Week;
     Week week_pattern;
-    std::string external_code;
     std::vector<Line*> line_list;
     std::vector<boost::gregorian::date_period> period_list;
     std::vector<navitia::type::ExceptionDate> exceptions;
@@ -133,7 +145,6 @@ struct MetaVehicleJourney;
 
 struct StopArea : public Header, Nameable, hasProperties{
     const static nt::Type_e type = nt::Type_e::StopArea;
-    std::string external_code;
     nt::GeographicalCoord coord;
     std::pair<std::string, boost::local_time::time_zone_ptr> time_zone_with_name;
 
@@ -152,7 +163,6 @@ struct Contributor : public Header, Nameable{
 
 struct Network : public Header, Nameable{
     const static nt::Type_e type = nt::Type_e::Network;
-    std::string external_code;
     std::string address_name;
     std::string address_number;
     std::string address_type_name;
@@ -195,7 +205,6 @@ struct PhysicalMode : public Header, Nameable{
 
 struct Line : public Header, Nameable {
     const static nt::Type_e type = nt::Type_e::Line;
-    std::string external_code;
     std::string code;
     std::string forward_name;
     std::string backward_name;
@@ -215,11 +224,24 @@ struct Line : public Header, Nameable {
 
 };
 
+struct LineGroup : public Header, Nameable {
+    const static nt::Type_e type = nt::Type_e::LineGroup;
+    std::string name;
+    Line* main_line;
+
+    bool operator<(const LineGroup & other) const;
+};
+
+struct LineGroupLink {
+    LineGroup* line_group;
+    Line* line;
+};
+
 struct Route : public Header, Nameable{
     const static nt::Type_e type = nt::Type_e::Route;
-    std::string external_code;
     Line * line;
     nt::MultiLineString shape;
+    StopArea* destination = nullptr;
 
     bool operator<(const Route& other) const;
 };
@@ -239,7 +261,6 @@ struct JourneyPattern : public Header, Nameable{
 
 struct VehicleJourney: public Header, Nameable, hasVehicleProperties{
     const static nt::Type_e type = nt::Type_e::VehicleJourney;
-    std::string external_code;
     JourneyPattern* journey_pattern = nullptr;
     Company* company = nullptr;
     PhysicalMode* physical_mode = nullptr; // Read in journey_pattern
@@ -289,7 +310,6 @@ struct JourneyPatternPoint : public Header, Nameable{
 
 struct StopPoint : public Header, Nameable, hasProperties{
     const static nt::Type_e type = nt::Type_e::StopPoint;
-    std::string external_code;
     nt::GeographicalCoord coord;
     int fare_zone;
     bool is_zonal = false;
@@ -305,13 +325,14 @@ struct StopPoint : public Header, Nameable, hasProperties{
     bool operator<(const StopPoint& other) const;
 };
 
-struct StopTime : public Nameable {
+struct StopTime {
+    size_t idx;
     int arrival_time; /// Number of seconds from midnight can be negative when
     int departure_time; /// we shift in UTC conversion
     VehicleJourney* vehicle_journey;
     JourneyPatternPoint* journey_pattern_point;
-    StopPoint * tmp_stop_point;// ne pas remplir obligatoirement
-    int order;
+    StopPoint* tmp_stop_point;// not mandatory
+    unsigned int order;
     bool ODT;
     bool pick_up_allowed;
     bool drop_off_allowed;
@@ -319,11 +340,10 @@ struct StopTime : public Nameable {
     bool wheelchair_boarding;
     bool date_time_estimated;
 
-    uint16_t local_traffic_zone;
+    uint16_t local_traffic_zone = std::numeric_limits<uint16_t>::max();
 
     StopTime(): arrival_time(0), departure_time(0), vehicle_journey(NULL), journey_pattern_point(NULL), tmp_stop_point(NULL), order(0),
-        ODT(false), pick_up_allowed(false), drop_off_allowed(false), is_frequency(false), wheelchair_boarding(false),date_time_estimated(false),
-                local_traffic_zone(std::numeric_limits<uint16_t>::max()) {}
+        ODT(false), pick_up_allowed(false), drop_off_allowed(false), is_frequency(false), wheelchair_boarding(false),date_time_estimated(false) {}
 
     bool operator<(const StopTime& other) const;
     void shift_times(int n_days) {
@@ -378,7 +398,7 @@ struct Admin{
     std::string name;
     std::string postcode;
     navitia::type::GeographicalCoord coord;
-    std::vector<std::string> postal_codes;
+    std::set<std::string> postal_codes;
     Admin():id(0), is_used(false), level("8"){}
 };
 struct Edge;
@@ -444,11 +464,17 @@ struct AdminStopArea{
     std::vector<const StopArea*> stop_area;
 };
 
-struct ObjectProperty{
-    Header* object_with_idx = nullptr;
-    std::string object_type;
-    std::string property_name;
-    std::string property_value;
-};
+#define ASSOCIATE_ED_TYPE(type_name, collection_name) \
+        inline nt::Type_e get_associated_enum(const ed::types::type_name&) { return nt::Type_e::type_name; } \
+        inline nt::Type_e get_associated_enum(const ed::types::type_name*) { return nt::Type_e::type_name; }
 
+ITERATE_NAVITIA_PT_TYPES(ASSOCIATE_ED_TYPE)
+inline nt::Type_e get_associated_enum(const ed::types::StopTime&) { return nt::Type_e::StopTime; }
+inline nt::Type_e get_associated_enum(const ed::types::StopTime*) { return nt::Type_e::StopTime; }
+
+
+template <typename T>
+pt_object_header make_pt_object(const T& h) {
+    return pt_object_header(h, get_associated_enum(h));
+}
 }}//end namespace ed::types
