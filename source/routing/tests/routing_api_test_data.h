@@ -160,6 +160,8 @@ struct routing_api_data {
         admin->insee = "32107";
         admin->level = 8;
         admin->postal_codes.push_back("32100");
+        admin->coord = nt::GeographicalCoord(D.lon(), D.lat());
+        admin->idx = 0;
 
         navitia::georef::Way* way;
         way = new navitia::georef::Way();
@@ -369,24 +371,28 @@ struct routing_api_data {
         poi_1->coord = B;
         poi_1->poitype_idx = 0;
         poi_1->idx = 0;
+        poi_1->admin_list.push_back(admin);
         navitia::georef::POI* poi_2 = new navitia::georef::POI();
         poi_2->uri = "station_2";
         poi_2->name = "second station";
         poi_2->coord = G;
         poi_2->poitype_idx = 0;
         poi_2->idx = 1;
+        poi_2->admin_list.push_back(admin);
         navitia::georef::POI* poi_3 = new navitia::georef::POI();
         poi_3->uri = "parking_1";
         poi_3->name = "first parking";
         poi_3->coord = D;
         poi_3->poitype_idx = 1;
         poi_3->idx = 2;
+        poi_3->admin_list.push_back(admin);
         navitia::georef::POI* poi_4 = new navitia::georef::POI();
         poi_4->uri = "parking_2";
         poi_4->name = "second parking";
         poi_4->coord = E;
         poi_4->poitype_idx = 1;
         poi_4->idx = 3;
+        poi_4->admin_list.push_back(admin);
 
         b.data->geo_ref->pois.push_back(poi_1);
         b.data->geo_ref->pois.push_back(poi_2);
@@ -433,6 +439,8 @@ struct routing_api_data {
             }
         }
 
+        b.data->complete();
+        b.manage_admin();
         b.finish();
         b.data->build_uri();
         b.data->pt_data->index();
@@ -444,7 +452,7 @@ struct routing_api_data {
 
         //add bike sharing edges
         b.data->geo_ref->default_time_bss_pickup = 30_s;
-        b.data->geo_ref->default_time_bss_putback = 45_s;
+        b.data->geo_ref->default_time_bss_putback = 40_s;
         b.data->geo_ref->add_bss_edges(B);
         b.data->geo_ref->add_bss_edges(G);
 
@@ -766,7 +774,7 @@ struct routing_api_data {
     navitia::type::GeographicalCoord S = {10, 10, false};
     navitia::type::GeographicalCoord D = {0, 30, false};
 
-    ed::builder b = {"20120614"};
+    ed::builder b = {"20120614", "routing api data"};
     navitia::type::EntryPoint origin;
     navitia::type::EntryPoint destination;
     std::vector<uint64_t> datetimes = {navitia::test::to_posix_timestamp("20120614T080000")};

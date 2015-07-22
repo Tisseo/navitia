@@ -35,6 +35,7 @@ from datetime import datetime
 import logging
 import re
 from shapely.geometry import shape
+import sys
 
 
 """
@@ -50,7 +51,6 @@ def check_url(tester, url, might_have_additional_args=False, **kwargs):
     else
         we don't want an error on the url
     """
-    #tester = app.test_client(tester)
     response = tester.get(url, **kwargs)
 
     assert response, "response for url {} is null".format(url)
@@ -59,7 +59,7 @@ def check_url(tester, url, might_have_additional_args=False, **kwargs):
             .format(json.dumps(json.loads(response.data), indent=2))
     else:
         eq_(response.status_code, 200, "invalid return code, response : {}"
-            .format(json.dumps(json.loads(response.data), indent=2)))
+            .format(json.dumps(json.loads(response.data, encoding='utf-8'), indent=2)))
     return response
 
 
@@ -259,7 +259,7 @@ def get_links_dict(response):
     return links
 
 
-def check_links(object, tester):
+def check_links(object, tester, href_mandatory=True):
     """
     get the links as dict ordered by 'rel' and check:
      - all links must have the attributes:
@@ -283,13 +283,14 @@ def check_links(object, tester):
         internal = get_bool('internal')
         templated = get_bool('templated')
 
-        if not internal:
-            assert 'href' in link, "no href in link"
+        if href_mandatory:
+            if not internal:
+                assert 'href' in link, "no href in link"
 
-        if not templated and not internal:
-            #we check that the url is valid
-            assert check_url(tester, link['href'].replace('http://localhost', ''),
-                             might_have_additional_args=False), "href's link must be a valid url"
+            if not templated and not internal:
+                #we check that the url is valid
+                assert check_url(tester, link['href'].replace('http://localhost', ''),
+                                 might_have_additional_args=False), "href's link must be a valid url"
 
         if internal:
             assert 'rel' in link
@@ -369,11 +370,15 @@ def query_from_str(str):
     {'bobette': 'tata', 'bobinos': 'tutu', 'bob': 'toto'}
     >>> query_from_str("toto/tata?bob=toto&bob=tata&bob=titi&bob=tata&bobinos=tutu")
     {'bobinos': 'tutu', 'bob': ['toto', 'tata', 'titi', 'tata']}
+
+    Note: the query can be encoded, so the split it either on the encoded or the decoded value
     """
     query = {}
-    last_elt = str.split("?")[-1]
-    for s in last_elt.split("&"):
-        k, v = s.split("=")
+    last_elt = str.split('?' if '?' in str else '%3F')[-1]
+
+    for s in last_elt.split('&' if '&' in last_elt else '%26'):
+        k, v = s.split("=" if '=' in s else '%3D')
+
         if k in query:
             old_val = query[k]
             if isinstance(old_val, list):
@@ -386,8 +391,19 @@ def query_from_str(str):
     return query
 
 
+def is_valid_feed_publisher(feed_publisher):
+    get_not_null(feed_publisher, 'id')
+    get_not_null(feed_publisher, 'name')
+    get_not_null(feed_publisher, 'license')
+    get_not_null(feed_publisher, 'url')
+
+
 def is_valid_journey_response(response, tester, query_str):
-    query_dict = query_from_str(query_str)
+    if isinstance(query_str, basestring):
+        query_dict = query_from_str(query_str)
+    else:
+        query_dict = query_str
+
     journeys = get_not_null(response, "journeys")
 
     all_sections = unique_dict('id')
@@ -437,7 +453,11 @@ def is_valid_journey_response(response, tester, query_str):
 
                 continue
 
-            assert query_dict[k] == v, "we must have the same query"
+            eq_(query_dict[k], v)
+
+    feed_publishers = get_not_null(response, "feed_publishers")
+    for feed_publisher in feed_publishers:
+        is_valid_feed_publisher(feed_publisher)
 
 
 def is_valid_journey(journey, tester, query):
@@ -446,6 +466,9 @@ def is_valid_journey(journey, tester, query):
     request = get_valid_datetime(journey['requested_date_time'])
 
     assert arrival >= departure
+    # test if duration time is consistent with arrival and departure
+    # as we sometimes loose a second in rounding section duration, tolerance is added
+    assert (arrival - departure).seconds - journey['duration'] <= len(journey['sections']) - 1
 
     if 'datetime_represents' not in query or query['datetime_represents'] == "departure":
         #for 'departure after' query, the departure must be... after \o/
@@ -466,6 +489,7 @@ def is_valid_journey(journey, tester, query):
         g = s.get('geojson')
         g is None or shape(g)
 
+    assert last_arrival == arrival
     assert get_valid_datetime(journey['sections'][-1]['arrival_date_time']) == last_arrival
 
 
@@ -608,6 +632,35 @@ def is_valid_line_group(line_group, depth_check=1):
         for l in line_group.get('lines', []):
             is_valid_line(l, depth_check - 1)
 
+
+def is_valid_poi(poi, depth_check=1):
+    get_not_null(poi, 'name')
+    poi_type = get_not_null(poi, 'poi_type')
+    get_not_null(poi_type, 'id')
+    get_not_null(poi_type, 'name')
+    get_not_null(poi, 'label')
+    get_not_null(poi, 'id')
+    is_valid_coord(get_not_null(poi, 'coord'))
+    for admin in get_not_null(poi, 'administrative_regions'):
+        is_valid_admin(admin, depth_check-1)
+    is_valid_address(get_not_null(poi, 'address'), depth_check - 1)
+
+
+def is_valid_admin(admin, depth_check=1):
+    if depth_check < 0:
+        return
+    get_not_null(admin, 'insee')
+    name = get_not_null(admin, 'name')
+    zip_code = get_not_null(admin, 'zip_code')
+    lbl = get_not_null(admin, 'label')
+    is_valid_label(lbl)
+    assert name in lbl and zip_code in lbl  # so name of the admin and it's zip code must be in the label
+
+    get_not_null(admin, 'id')
+    get_valid_int(get_not_null(admin, 'level'))
+    is_valid_coord(get_not_null(admin, 'coord'))
+
+
 def is_valid_codes(codes):
     for code in codes:
         get_not_null(code, "type")
@@ -642,22 +695,89 @@ def is_valid_place(place, depth_check=1):
         is_valid_label(n)
         assert stop_point['label'] == n
     elif type == "poi":
-        poi = get_not_null(place, "poi")
-        # TODO
-        #is_valid_poi(poi, depth_check)
+        is_valid_poi(get_not_null(place, "poi"), depth_check)
     else:
         assert(False, "invalid type")
 
 
+def is_valid_pt_objects_response(response, depth_check=1):
+    for pt_obj in get_not_null(response, 'pt_objects'):
+        is_valid_pt_object(pt_obj, depth_check)
+
+
+def is_valid_pt_object(pt_object, depth_check=1):
+    n = get_not_null(pt_object, "name")
+    get_not_null(pt_object, "id")
+    get_not_null(pt_object, "quality")
+    pt_obj_type = get_not_null(pt_object, "embedded_type")
+
+    assert pt_obj_type in ('line',
+                           'route',
+                           'network',
+                           'commercial_mode',
+                           'admin',
+                           'vehicle_journey',
+                           'calendar',
+                           'company',
+                           "stop_area",
+                           "stop_point",
+                           "poi",
+                           "address")
+
+    # if it's a line, it should pass the 'is_valid_line' test,
+    # if it's a stop_area, it should pass the 'is_valid_stop_area' test ...
+    check_method_to_call = getattr(sys.modules[__name__], 'is_valid_' + pt_obj_type)
+    check_method_to_call(get_not_null(pt_object, pt_obj_type), depth_check)
+
+    # check the pt_object label
+    if pt_obj_type in ('stop_area', 'stop_point'):
+        #for stops name should be the label
+        assert get_not_null(pt_object, pt_obj_type)['label'] == n
+    if pt_obj_type == 'line':
+        # the line network, commercial_mode, code and name should be in the label
+        check_embedded_line_label(n, pt_obj_type['line'], depth_check)
+    if pt_obj_type == 'route':
+        # the line network, commercial_mode, code and name should be in the label
+        check_embedded_route_label(n, pt_obj_type['route'], depth_check)
+
+
+def check_embedded_line_label(label, line, depth_check):
+    is_valid_label(label)
+    #the label must contains
+    # the network name, the commercial mode name, the line id, and the line name
+    if depth_check > 0:
+        assert get_not_null(line, 'commercial_mode')['name'] in label
+        assert get_not_null(line, 'network')['name'] in label
+    assert get_not_null(line, 'code') in label
+    assert get_not_null(line, 'name') in label
+
+
+def check_embedded_route_label(label, route, depth_check):
+    is_valid_label(label)
+    #the label must contains
+    # the line's network name, the commercial mode name, the line id, and the route name
+    assert get_not_null(route, 'name') in label
+    if depth_check > 0:
+        line = get_not_null(route, 'line')
+        assert get_not_null(line, 'code') in label
+
+        if depth_check > 1:
+            assert get_not_null(line, 'commercial_mode')['name'] in label
+            assert get_not_null(line, 'network')['name'] in label
+
 
 def is_valid_address(address, depth_check=1):
+    if depth_check < 0:
+        return
     id = get_not_null(address, "id")
     lon, lat = id.split(';')
     is_valid_lon(lon)
     is_valid_lat(lat)
     get_not_null(address, "house_number")
     get_not_null(address, "name")
-    get_not_null(address, "administrative_regions") # TODO test
+    if depth_check >= 1:
+        for admin in get_not_null(address, "administrative_regions"):
+            is_valid_admin(admin, depth_check)
     coord = get_not_null(address, "coord")
     is_valid_coord(coord)
 
@@ -808,4 +928,11 @@ def get_all_disruptions(elem, response):
     utils.walk_dict(elem, disruptions_filler)
 
     return disruption_by_obj
+
+
+def is_valid_stop_date_time(stop_date_time):
+    get_not_null(stop_date_time, 'arrival_date_time')
+    assert get_valid_datetime(stop_date_time['arrival_date_time'])
+    get_not_null(stop_date_time, 'departure_date_time')
+    assert get_valid_datetime(stop_date_time['departure_date_time'])
 

@@ -102,7 +102,9 @@ void fill_address(const T* obj, const nt::Data& data,
     }
 }
 
-void fill_property(const std::string& name, const std::string& value, pbnavitia::Property* property) {
+static void fill_property(const std::string& name,
+                          const std::string& value,
+                          pbnavitia::Property* property) {
     property->set_name(name);
     property->set_value(value);
 }
@@ -972,7 +974,7 @@ static void finalize_section(pbnavitia::Section* section,
 }
 
 
-pbnavitia::GeographicalCoord get_coord(const pbnavitia::PtObject& pt_object) {
+static pbnavitia::GeographicalCoord get_coord(const pbnavitia::PtObject& pt_object) {
     switch(pt_object.embedded_type()) {
     case pbnavitia::NavitiaType::STOP_AREA: return pt_object.stop_area().coord();
     case pbnavitia::NavitiaType::STOP_POINT: return pt_object.stop_point().coord();
@@ -1071,18 +1073,28 @@ void fill_pb_placemark(const type::EntryPoint& point, const type::Data &data,
 }
 
 void fill_crowfly_section(const type::EntryPoint& origin, const type::EntryPoint& destination,
-                          type::Mode_e mode,
-                          boost::posix_time::ptime time, const type::Data& data, EnhancedResponse& response,
-                          pbnavitia::Journey* pb_journey, const pt::ptime& now,
-                          const pt::time_period& action_period) {
+                          const time_duration& crow_fly_duration, type::Mode_e mode,
+                          boost::posix_time::ptime origin_time, const type::Data& data,
+                          EnhancedResponse& response, pbnavitia::Journey* pb_journey,
+                          const pt::ptime& now, const pt::time_period& action_period) {
     pbnavitia::Section* section = pb_journey->add_sections();
     section->set_id(response.register_section());
     fill_pb_placemark(origin, data, section->mutable_origin(), 2, now, action_period);
     fill_pb_placemark(destination, data, section->mutable_destination(), 2, now, action_period);
-    section->set_begin_date_time(navitia::to_posix_timestamp(time));
-    section->set_duration(0);
-    section->set_length(0);
-    section->set_end_date_time(navitia::to_posix_timestamp(time));
+    section->set_begin_date_time(navitia::to_posix_timestamp(origin_time));
+    section->set_duration(crow_fly_duration.total_seconds());
+    if (crow_fly_duration.total_seconds() > 0) {
+        section->set_length(origin.coordinates.distance_to(destination.coordinates));
+        auto* new_coord = section->add_shape();
+        new_coord->set_lon(origin.coordinates.lon());
+        new_coord->set_lat(origin.coordinates.lat());
+        new_coord = section->add_shape();
+        new_coord->set_lon(destination.coordinates.lon());
+        new_coord->set_lat(destination.coordinates.lat());
+    } else {
+        section->set_length(0);
+    }
+    section->set_end_date_time(navitia::to_posix_timestamp(origin_time + crow_fly_duration.to_posix()));
     section->set_type(pbnavitia::SectionType::CROW_FLY);
 
     //we want to store the transportation mode used
@@ -1242,6 +1254,18 @@ get_pb_exception_type(const navitia::type::ExceptionDate::ExceptionType exceptio
     }
 }
 
+static bool is_partial_terminus(const navitia::type::StopTime* stop_time){
+    return stop_time->vehicle_journey
+            && stop_time->vehicle_journey->journey_pattern
+            && stop_time->vehicle_journey->journey_pattern->route
+            && stop_time->vehicle_journey->journey_pattern->route->destination
+            && (!stop_time->journey_pattern_point->journey_pattern->journey_pattern_point_list.empty())
+            && stop_time->journey_pattern_point->journey_pattern->journey_pattern_point_list.back()->stop_point
+            && stop_time->journey_pattern_point->journey_pattern->journey_pattern_point_list.back()->stop_point->stop_area
+            && (stop_time->vehicle_journey->journey_pattern->route->destination
+                != stop_time->journey_pattern_point->journey_pattern->journey_pattern_point_list.back()->stop_point->stop_area);
+}
+
 void fill_pb_object(const navitia::type::StopTime* stop_time,
                     const nt::Data& data,
                     pbnavitia::ScheduleStopTime* rs_date_time, int max_depth,
@@ -1266,14 +1290,14 @@ void fill_pb_object(const navitia::type::StopTime* stop_time,
     pbnavitia::Properties* hn = rs_date_time->mutable_properties();
     fill_pb_object(stop_time, data, hn, max_depth, now, action_period);
 
-    if ((stop_time->vehicle_journey)
-            && (stop_time->vehicle_journey->journey_pattern)
-            && (stop_time->vehicle_journey->journey_pattern->route)
-            && (stop_time->vehicle_journey->journey_pattern->route->destination)){
+    // partial terminus
+    if (is_partial_terminus(stop_time)) {
+        auto sa = stop_time->journey_pattern_point->journey_pattern->journey_pattern_point_list.back()->stop_point->stop_area;
         pbnavitia::Destination* destination = hn->mutable_destination();
         std::hash<std::string> hash_fn;
-        destination->set_uri("destination:"+std::to_string(hash_fn(stop_time->vehicle_journey->journey_pattern->route->destination->name)));
-        destination->set_destination(stop_time->vehicle_journey->journey_pattern->route->destination->name);
+        destination->set_uri("destination:"+std::to_string(hash_fn(sa->name)));
+        destination->set_destination(sa->name);
+        rs_date_time->set_dt_status(pbnavitia::ResponseStatus::partial_terminus);
     }
     for (const auto& comment: data.pt_data->comments.get(*stop_time)) {
         fill_pb_object(comment, data, hn->add_notes(), max_depth, now, action_period);

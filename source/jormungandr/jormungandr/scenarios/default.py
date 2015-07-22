@@ -243,9 +243,6 @@ class Scenario(simple.Scenario):
             #we delete after the merge, else we will have duplicate non_pt journey in the count
             self.delete_journeys(resp, request, final_filter=False)
 
-            if not request['debug']:
-                self._delete_non_optimal_journey(resp)
-
             nb_typed_journeys = count_typed_journeys(resp.journeys)
             cpt_attempt += 1
 
@@ -293,27 +290,6 @@ class Scenario(simple.Scenario):
             return None
         return (asap_journey.duration * instance.factor_too_long_journey) + instance.min_duration_too_long_journey
 
-    def _delete_non_optimal_journey(self, resp):
-        """
-        remove all journeys with a greater fallback duration with a specific mode than the corresponding non_pt journey
-        """
-        logger = logging.getLogger(__name__)
-        reference_journeys = {'non_pt_bss': None, 'non_pt_bike': None, 'non_pt_walk': None}
-        type_func = {'non_pt_bss': bss_duration, 'non_pt_bike': bike_duration, 'non_pt_walk': walking_duration}
-        to_delete = []
-        for journey in resp.journeys:
-            if journey.type in reference_journeys:
-                reference_journeys[journey.type] = journey
-        for idx, journey in enumerate(resp.journeys):
-            for type, func in type_func.iteritems():
-                if not reference_journeys[type] or reference_journeys[type] == journey:
-                    continue
-                if func(journey) >= func(reference_journeys[type]):
-                    to_delete.append(idx)
-                    logger.debug('delete journey %s because it has more fallback than %s', journey.type, type)
-                    break
-        self.erase_journeys(resp, to_delete)
-
 
     def choose_best(self, resp):
         """
@@ -353,6 +329,11 @@ class Scenario(simple.Scenario):
         # we have to add the additional fares too
         # if at least one journey has the ticket we add it
         initial_response.tickets.extend([t for t in new_response.tickets if t.id in tickets_to_add])
+
+        initial_feed_publishers = {}
+        for fp in initial_response.feed_publishers:
+            initial_feed_publishers[fp.id] = fp
+        initial_response.feed_publishers.extend([fp for fp in new_response.feed_publishers if fp.id not in initial_feed_publishers])
 
     def erase_journeys(self, resp, to_delete):
         """

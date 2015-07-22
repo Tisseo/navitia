@@ -42,7 +42,7 @@ from fields import stop_point, stop_area, line, physical_mode, \
     commercial_mode, company, network, pagination, place,\
     PbField, stop_date_time, enum_type, NonNullList, NonNullNested,\
     display_informations_vj, error,\
-    SectionGeoJson, Co2Emission, PbEnum
+    SectionGeoJson, Co2Emission, PbEnum, feed_publisher
 
 from jormungandr.interfaces.parsers import option_value, date_time_format
 #from exceptions import RegionNotFound
@@ -219,11 +219,13 @@ ticket = {
     "cost": NonNullNested(cost),
     "links": TicketLinks(attribute="section_id")
 }
+
 journeys = {
     "journeys": NonNullList(NonNullNested(journey)),
     "error": PbField(error, attribute='error'),
     "tickets": fields.List(NonNullNested(ticket)),
     "disruptions": DisruptionsField,
+    "feed_publishers": fields.List(NonNullNested(feed_publisher)),
 }
 
 
@@ -512,8 +514,8 @@ class Journeys(ResourceUri, ResourceUtc):
         self.parsers["get"] = reqparse.RequestParser(
             argument_class=ArgumentDoc)
         parser_get = self.parsers["get"]
-        parser_get.add_argument("from", type=str, dest="origin")
-        parser_get.add_argument("to", type=str, dest="destination")
+        parser_get.add_argument("from", type=unicode, dest="origin")
+        parser_get.add_argument("to", type=unicode, dest="destination")
         parser_get.add_argument("datetime", type=date_time_format)
         parser_get.add_argument("datetime_represents", dest="clockwise",
                                 type=dt_represents, default=True)
@@ -590,7 +592,7 @@ class Journeys(ResourceUri, ResourceUtc):
             profile = travelers_profile[args['traveler_type']]
             profile.override_params(args)
 
-        if args['max_duration_to_pt']:
+        if args['max_duration_to_pt'] is not None:
             #retrocompatibility: max_duration_to_pt override all individual value by mode
             args['max_walking_duration_to_pt'] = args['max_duration_to_pt']
             args['max_bike_duration_to_pt'] = args['max_duration_to_pt']
@@ -624,9 +626,8 @@ class Journeys(ResourceUri, ResourceUtc):
                     abort(503, message="Unable to compute journeys "
                                        "from this object")
 
-        if not args["origin"]:  #@vlara really ? I though we could do reverse isochrone ?
-            #shoudl be in my opinion if not args["origin"] and not args["destination"]:
-            abort(400, message="from argument is required")
+        if not (args['destination'] or args['origin']):
+            abort(400, message="you should at least provide either a 'from' or a 'to' argument")
 
         #we transform the origin/destination url to add information
         if args['origin']:
@@ -644,8 +645,7 @@ class Journeys(ResourceUri, ResourceUtc):
         else:
             possible_regions = [region]
 
-        api = None
-        if args['destination']:
+        if args['destination'] and args['origin']:
             api = 'journeys'
         else:
             api = 'isochrone'

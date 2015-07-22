@@ -78,7 +78,7 @@ template <typename T>
 void add_gtfs_comment(GtfsData& gtfs_data, Data& data, const T& obj, const std::string& comment) {
     std::string& comment_id = gtfs_data.comments_id_map[comment];
     if (comment_id.empty()) {
-        comment_id = "comment__" + gtfs_data.comments_id_map.size();
+        comment_id = "comment__" + boost::lexical_cast<std::string>(gtfs_data.comments_id_map.size());
     }
     data.add_pt_object_comment(obj, comment_id);
 
@@ -273,6 +273,31 @@ int time_to_int(const std::string & time) {
         return -1;
     }
     return result;
+}
+
+void FeedInfoGtfsHandler::init(Data&) {
+    feed_publisher_name_c = csv.get_pos_col("feed_publisher_name");
+    feed_publisher_url_c = csv.get_pos_col("feed_publisher_url");
+    feed_start_date_c = csv.get_pos_col("feed_start_date");
+    feed_end_date_c = csv.get_pos_col("feed_end_date");
+}
+
+void FeedInfoGtfsHandler::handle_line(Data& data, const csv_row& row, bool) {
+    if(has_col(feed_end_date_c, row)) {
+        data.add_feed_info("feed_end_date", row[feed_end_date_c]);
+    }
+
+    if(has_col(feed_start_date_c, row)) {
+        data.add_feed_info("feed_start_date", row[feed_start_date_c]);
+    }
+
+    if(has_col(feed_publisher_name_c, row)) {
+        data.add_feed_info("feed_publisher_name", row[feed_publisher_name_c]);
+    }
+
+    if(has_col(feed_publisher_url_c, row)) {
+        data.add_feed_info("feed_publisher_url", row[feed_publisher_url_c]);
+    }
 }
 
 void AgencyGtfsHandler::init(Data&) {
@@ -631,7 +656,7 @@ void TransfersGtfsHandler::handle_line(Data& data, const csv_row& row, bool) {
             ++data.count_too_long_connections;
             return;
         }
-    } catch (boost::bad_lexical_cast& e) {
+    } catch (boost::bad_lexical_cast&) {
         LOG4CPLUS_WARN(logger, "Invalid connection time: " + row[time_c]);
         return;
     }
@@ -1348,6 +1373,7 @@ boost::gregorian::date_period GenericGtfsParser::find_production_date(const std:
 void GtfsParser::parse_files(Data& data) {
     fill_default_modes(data);
 
+    parse<FeedInfoGtfsHandler>(data, "feed_info.txt");
     parse<ShapesGtfsHandler>(data, "shapes.txt");
     parse<AgencyGtfsHandler>(data, "agency.txt", true);
     parse<DefaultContributorHandler>(data);
