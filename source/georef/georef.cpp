@@ -169,7 +169,16 @@ nt::GeographicalCoord Way::nearest_coord(const int number, const Graph& graph) c
 nt::MultiLineString Way::make_multiline(const Graph& graph) const {
     nt::MultiLineString multiline;
     for (auto edge: this->edges) {
-        multiline.push_back({graph[edge.first].coord, graph[edge.second].coord});
+        Edge e = graph[boost::edge(edge.first, edge.second, graph).first];
+        /*
+            Check if the edge way is the same that the current way.
+            Since boost::edge return only one edge between two vertices, if there is parallel edges, we aren't
+            sure it's the right one, and the geom_idx could be out of bounds.
+        */
+        if(e.geom_idx != nt::invalid_idx && e.way_idx == this->idx)
+            multiline.push_back(this->geoms[e.geom_idx]);
+        else
+            multiline.push_back({graph[edge.first].coord, graph[edge.second].coord});
         boost::range::sort(multiline.back());
     }
     auto cmp = [](const nt::LineString& a, const nt::LineString& b) -> bool {
@@ -324,7 +333,11 @@ void ProjectionData::init(const type::GeographicalCoord & coord, const GeoRef & 
     const type::GeographicalCoord& vertex1_coord = sn.graph[vertices[Direction::Source]].coord;
     const type::GeographicalCoord& vertex2_coord = sn.graph[vertices[Direction::Target]].coord;
     // On projette le nœud sur le segment
-    this->projected = coord.project(vertex1_coord, vertex2_coord).first;
+    Edge e = sn.graph[nearest_edge];
+    if(e.geom_idx != nt::invalid_idx)
+        this->projected = type::project(sn.ways[e.way_idx]->geoms[e.geom_idx], coord);
+    else
+        this->projected = coord.project(vertex1_coord, vertex2_coord).first;
     // On calcule la distance « initiale » déjà parcourue avant d'atteindre ces extrémité d'où on effectue le calcul d'itinéraire
     distances[Direction::Source] = projected.distance_to(vertex1_coord);
     distances[Direction::Target] = projected.distance_to(vertex2_coord);
