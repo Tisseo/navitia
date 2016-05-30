@@ -30,13 +30,19 @@ www.navitia.io
 
 #include "maintenance_worker.h"
 
-#include "fill_disruption_from_chaos.h"
+#include "make_disruption_from_chaos.h"
+#include "apply_disruption.h"
+#include "realtime.h"
 #include "type/task.pb.h"
 #include "type/pt_data.h"
 #include <boost/algorithm/string/join.hpp>
 #include <boost/optional.hpp>
 #include <sys/stat.h>
 #include <signal.h>
+#include <SimpleAmqpClient/Envelope.h>
+#include <chrono>
+#include <thread>
+#include "utils/get_hostname.h"
 
 namespace nt = navitia::type;
 namespace pt = boost::posix_time;
@@ -53,84 +59,207 @@ void MaintenanceWorker::load(){
     LOG4CPLUS_INFO(logger, "Loading database from file: " + database);
     if(this->data_manager.load(database, chaos_database, contributors)){
         auto data = data_manager.get_data();
+        data->is_realtime_loaded = false;
         data->meta->instance_name = conf.instance_name();
+    }
+    load_realtime();
+}
+
+
+void MaintenanceWorker::load_realtime(){
+    if(!conf.is_realtime_enabled()){
+        return;
+    }
+    if(!channel){
+        data_manager.get_data()->is_realtime_loaded = false;
+        throw std::runtime_error("not connected to rabbitmq");
+    }
+    if(data_manager.get_data()->is_realtime_loaded){
+        //realtime data are already loaded, we don't have anything todo
+        LOG4CPLUS_TRACE(logger, "realtime data already loaded, skipping init");
+        return;
+    }
+    data_manager.get_data()->is_realtime_loaded = false;
+    LOG4CPLUS_INFO(logger, "loading realtime data");
+    //                                             name, passive, durable, exclusive, auto_delete
+    std::string queue_name = channel->DeclareQueue("", false, false, true, true);
+    LOG4CPLUS_DEBUG(logger, "queue used as callback for realtime data: " << queue_name);
+    pbnavitia::Task task;
+    task.set_action(pbnavitia::LOAD_REALTIME);
+    auto* lr = task.mutable_load_realtime();
+    lr->set_queue_name(queue_name);
+    for(auto topic: conf.rt_topics()){
+        lr->add_contributors(topic);
+    }
+    auto data = data_manager.get_data();
+    lr->set_begin_date(bg::to_iso_string(data->meta->production_date.begin()));
+    lr->set_end_date(bg::to_iso_string(data->meta->production_date.end()));
+    std::string stream;
+    task.SerializeToString(&stream);
+    auto message = AmqpClient::BasicMessage::Create(stream);
+    //we ask for realtime data
+    channel->BasicPublish(conf.broker_exchange(), "task.load_realtime.INSTANCE", message);
+
+    std::string consumer_tag = this->channel->BasicConsume(queue_name, "");
+    AmqpClient::Envelope::ptr_t envelope{};
+    //waiting for a full gtfs-rt
+    if(channel->BasicConsumeMessage(consumer_tag, envelope, conf.kirin_timeout())){
+        this->handle_rt_in_batch({envelope});
+        data_manager.get_data()->is_realtime_loaded = true;
+    }else{
+        LOG4CPLUS_WARN(logger, "no realtime data receive before timeout: going without it!");
     }
 }
 
 
 void MaintenanceWorker::operator()(){
     LOG4CPLUS_INFO(logger, "Starting background thread");
-    load();
 
+    try{
+        this->listen_rabbitmq();
+    }catch(const std::runtime_error& ex){
+        LOG4CPLUS_ERROR(logger, "Connection to rabbitmq failed: " << ex.what());
+        data_manager.get_data()->is_connected_to_rabbitmq = false;
+        sleep(10);
+    }
     while(true){
         try{
             this->init_rabbitmq();
             this->listen_rabbitmq();
         }catch(const std::runtime_error& ex){
-            LOG4CPLUS_ERROR(logger, std::string("Connection to rabbitmq failed: ") << ex.what());
+            LOG4CPLUS_ERROR(logger, "Connection to rabbitmq failed: " << ex.what());
             data_manager.get_data()->is_connected_to_rabbitmq = false;
             sleep(10);
         }
     }
 }
 
-void MaintenanceWorker::handle_task(AmqpClient::Envelope::ptr_t envelope){
-    LOG4CPLUS_TRACE(logger, "Task received");
-    pbnavitia::Task task;
-    bool result = task.ParseFromString(envelope->Message()->Body());
-    if(!result){
-        LOG4CPLUS_WARN(logger, "Protobuf is not valid!");
-        return;
-    }
-    switch(task.action()){
-        case pbnavitia::RELOAD:
-            load(); break;
-        default:
-            LOG4CPLUS_TRACE(logger, "Task ignored");
+void MaintenanceWorker::handle_task_in_batch(const std::vector<AmqpClient::Envelope::ptr_t>& envelopes){
+    for (auto& envelope: envelopes) {
+        LOG4CPLUS_TRACE(logger, "Task received");
+        pbnavitia::Task task;
+        bool result = task.ParseFromString(envelope->Message()->Body());
+        if(!result){
+            LOG4CPLUS_WARN(logger, "Protobuf is not valid!");
+            return;
+        }
+        switch(task.action()){
+            case pbnavitia::RELOAD:
+                load();
+                // For now, we have only one type of task: reload_kraken. We don't want that this command
+                // is executed several times in stride for nothing.
+                return;
+            default:
+                LOG4CPLUS_TRACE(logger, "Task ignored");
+        }
     }
 }
 
-void MaintenanceWorker::handle_rt(AmqpClient::Envelope::ptr_t envelope){
-    LOG4CPLUS_DEBUG(logger, "realtime info received!");
-    transit_realtime::FeedMessage feed_message;
-    if(! feed_message.ParseFromString(envelope->Message()->Body())){
-        LOG4CPLUS_WARN(logger, "protobuf not valid!");
-        return;
-    }
-    boost::shared_ptr<nt::Data> data;
-    LOG4CPLUS_TRACE(logger, "received entity: " << feed_message.DebugString());
-    for(const auto& entity: feed_message.entity()){
-        if (!data) {
-            data = data_manager.get_data_clone();
-            data->last_rt_data_loaded = pt::microsec_clock::universal_time();
+
+void MaintenanceWorker::handle_rt_in_batch(const std::vector<AmqpClient::Envelope::ptr_t>& envelopes){
+    boost::shared_ptr<nt::Data> data{};
+    for (auto& envelope: envelopes) {
+        LOG4CPLUS_DEBUG(logger, "realtime info received!");
+        assert(envelope);
+        transit_realtime::FeedMessage feed_message;
+        if(! feed_message.ParseFromString(envelope->Message()->Body())){
+            LOG4CPLUS_WARN(logger, "protobuf not valid!");
+            return;
         }
-        if(entity.is_deleted()){
-            LOG4CPLUS_DEBUG(logger, "deletion of disruption " << entity.id());
-            delete_disruption(entity.id(), *data->pt_data, *data->meta);
-        }else if(entity.HasExtension(chaos::disruption)){
-            LOG4CPLUS_DEBUG(logger, "add/update of disruption " << entity.id());
-            add_disruption(entity.GetExtension(chaos::disruption), *data->pt_data, *data->meta);
-        }else{
-            LOG4CPLUS_WARN(logger, "unsupported gtfs rt feed");
+        LOG4CPLUS_TRACE(logger, "received entity: " << feed_message.DebugString());
+        for(const auto& entity: feed_message.entity()){
+            if (!data) {
+                data = data_manager.get_data_clone();
+                data->last_rt_data_loaded = pt::microsec_clock::universal_time();
+            }
+            if (entity.is_deleted()) {
+                LOG4CPLUS_DEBUG(logger, "deletion of disruption " << entity.id());
+                delete_disruption(entity.id(), *data->pt_data, *data->meta);
+            } else if(entity.HasExtension(chaos::disruption)) {
+                LOG4CPLUS_DEBUG(logger, "add/update of disruption " << entity.id());
+                make_and_apply_disruption(entity.GetExtension(chaos::disruption), *data->pt_data, *data->meta);
+            } else if(entity.has_trip_update()) {
+                LOG4CPLUS_DEBUG(logger, "RT trip update" << entity.id());
+                handle_realtime(entity.id(),
+                                navitia::from_posix_timestamp(feed_message.header().timestamp()),
+                                entity.trip_update(),
+                                *data);
+            } else {
+                LOG4CPLUS_WARN(logger, "unsupported gtfs rt feed");
+            }
         }
     }
-    if (data) { data->build_raptor(); data_manager.set_data(std::move(data)); }
-    LOG4CPLUS_DEBUG(logger, "data updated");
+    if (data) {
+        LOG4CPLUS_INFO(logger, "rebuilding data raptor");
+        data->build_raptor(conf.raptor_cache_size());
+        data_manager.set_data(std::move(data));
+        LOG4CPLUS_INFO(logger, "data updated");
+    }
+}
+
+std::vector<AmqpClient::Envelope::ptr_t>
+MaintenanceWorker::consume_in_batch(const std::string& consume_tag,
+        size_t max_nb,
+        size_t timeout_ms,
+        bool no_ack){
+    assert(consume_tag != "");
+    assert(max_nb);
+
+    std::vector<AmqpClient::Envelope::ptr_t> envelopes;
+    envelopes.reserve(max_nb);
+    size_t consumed_nb = 0;
+    while(consumed_nb < max_nb) {
+        AmqpClient::Envelope::ptr_t envelope{};
+
+        /* !
+         * The emptiness is tested thanks to the timeout. We consider that the queue is empty when
+         * BasicConsumeMessage() timeout.
+         * */
+        bool queue_is_empty = !channel->BasicConsumeMessage(consume_tag, envelope, timeout_ms);
+        if (queue_is_empty) break;
+
+        if (envelope) {
+            envelopes.push_back(envelope);
+            if (! no_ack) channel->BasicAck(envelope);
+            ++ consumed_nb;
+        }
+    }
+    return envelopes;
 }
 
 void MaintenanceWorker::listen_rabbitmq(){
-    std::string task_tag = this->channel->BasicConsume(this->queue_name_task);
-    std::string rt_tag = this->channel->BasicConsume(this->queue_name_rt);
+    if(!channel){
+        throw std::runtime_error("not connected to rabbitmq");
+    }
+    bool no_local = true;
+    bool no_ack = false;
+    std::string task_tag = this->channel->BasicConsume(this->queue_name_task, "", no_local, no_ack);
+    std::string rt_tag = this->channel->BasicConsume(this->queue_name_rt, "", no_local, no_ack);
 
     LOG4CPLUS_INFO(logger, "start event loop");
     data_manager.get_data()->is_connected_to_rabbitmq = true;
     while(true){
-        auto envelope = this->channel->BasicConsumeMessage(std::vector<std::string>({task_tag, rt_tag}));
-        if(envelope->ConsumerTag() == task_tag){
-            handle_task(envelope);
-        }else if(envelope->ConsumerTag() == rt_tag){
-            handle_rt(envelope);
+        auto now = pt::microsec_clock::universal_time();
+        //We don't want to try to load realtime data every second
+        if(now > this->next_try_realtime_loading){
+            this->next_try_realtime_loading = now + pt::milliseconds(conf.kirin_retry_timeout());
+            this->load_realtime();
         }
+        size_t timeout_ms = conf.broker_timeout();
+
+        // Arbitrary Number: we suppose that disruptions can be handled very quickly so that,
+        // in theory, we can handle a batch of 5000 disruptions in one time very quickly too.
+        size_t max_batch_nb = 5000;
+
+        auto rt_envelopes = consume_in_batch(rt_tag, max_batch_nb, timeout_ms, no_ack);
+        handle_rt_in_batch(rt_envelopes);
+
+        auto task_envelopes = consume_in_batch(task_tag, 1, timeout_ms, no_ack);
+        handle_task_in_batch(task_envelopes);
+
+        // Since consume_in_batch is non blocking, we don't want that the worker loops for nothing, when the
+        // queue is empty.
+        std::this_thread::sleep_for(std::chrono::seconds(conf.broker_sleeptime()));
     }
 }
 
@@ -142,24 +271,40 @@ void MaintenanceWorker::init_rabbitmq(){
     std::string username = conf.broker_username();
     std::string password = conf.broker_password();
     std::string vhost = conf.broker_vhost();
+
+    std::string hostname = get_hostname();
+    this->queue_name_task = (boost::format("kraken_%s_%s_task") % hostname % instance_name).str();
+    this->queue_name_rt = (boost::format("kraken_%s_%s_rt") % hostname % instance_name).str();
     //connection
     LOG4CPLUS_DEBUG(logger, boost::format("connection to rabbitmq: %s@%s:%s/%s") % username % host % port % vhost);
     this->channel = AmqpClient::Channel::Create(host, port, username, password, vhost);
+    if(!is_initialized){
+        //first we have to delete the queues, binding can change between two run, and it's don't seem possible
+        //to unbind a queue if we don't know at what topic it's subscribed
+        //if the queue doesn't exist an exception is throw...
+        try{
+            channel->DeleteQueue(queue_name_task);
+        }catch(const std::runtime_error&){}
+        try{
+            channel->DeleteQueue(queue_name_rt);
+        }catch(const std::runtime_error&){}
 
-    this->channel->DeclareExchange(exchange_name, "topic", false, true, false);
+        this->channel->DeclareExchange(exchange_name, "topic", false, true, false);
 
-    //creation of a tempory queue for this kraken
-    this->queue_name_task = channel->DeclareQueue("", false, false, true, true);
-    LOG4CPLUS_INFO(logger, "queue for tasks: " << this->queue_name_task);
-    //binding the queue to the exchange for all task for this instance
-    channel->BindQueue(queue_name_task, exchange_name, instance_name+".task.*");
+        //creation of queues for this kraken
+        channel->DeclareQueue(this->queue_name_task, false, true, false, false);
+        LOG4CPLUS_INFO(logger, "queue for tasks: " << this->queue_name_task);
+        //binding the queue to the exchange for all task for this instance
+        channel->BindQueue(queue_name_task, exchange_name, instance_name+".task.*");
 
-    this->queue_name_rt = channel->DeclareQueue("", false, false, true, true);
-    LOG4CPLUS_INFO(logger, "queue for disruptions: " << this->queue_name_rt);
-    //binding the queue to the exchange for all task for this instance
-    LOG4CPLUS_INFO(logger, "subscribing to [" << boost::algorithm::join(conf.rt_topics(), ", ") << "]");
-    for(auto topic: conf.rt_topics()){
-        channel->BindQueue(queue_name_rt, exchange_name, topic);
+        channel->DeclareQueue(this->queue_name_rt, false, true, false, false);
+        LOG4CPLUS_INFO(logger, "queue for disruptions: " << this->queue_name_rt);
+        //binding the queue to the exchange for all task for this instance
+        LOG4CPLUS_INFO(logger, "subscribing to [" << boost::algorithm::join(conf.rt_topics(), ", ") << "]");
+        for(auto topic: conf.rt_topics()){
+            channel->BindQueue(queue_name_rt, exchange_name, topic);
+        }
+        is_initialized = true;
     }
     LOG4CPLUS_DEBUG(logger, "connected to rabbitmq");
 }
@@ -167,6 +312,20 @@ void MaintenanceWorker::init_rabbitmq(){
 MaintenanceWorker::MaintenanceWorker(DataManager<type::Data>& data_manager, kraken::Configuration conf) :
         data_manager(data_manager),
         logger(log4cplus::Logger::getInstance(LOG4CPLUS_TEXT("background"))),
-        conf(conf){}
+        conf(conf),
+        next_try_realtime_loading(pt::microsec_clock::universal_time()){
+    try{
+        this->init_rabbitmq();
+    }catch(const std::runtime_error& ex){
+        LOG4CPLUS_ERROR(logger, "Connection to rabbitmq failed: " << ex.what());
+        data_manager.get_data()->is_connected_to_rabbitmq = false;
+    }
+    try{
+        load();
+    }catch(const std::runtime_error& ex){
+        LOG4CPLUS_ERROR(logger, "Connection to rabbitmq failed: " << ex.what());
+        data_manager.get_data()->is_connected_to_rabbitmq = false;
+    }
+}
 
 }

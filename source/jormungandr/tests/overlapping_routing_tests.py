@@ -26,19 +26,22 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 import logging
 from navitiacommon import models
 
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 
 
 class MockKraken:
-    def __init__(self, kraken_instance, is_free):
+    def __init__(self, kraken_instance, is_free, priority):
         self.is_free = is_free
         self.kraken_instance = kraken_instance
+        self.priority = priority
 
-@dataset(["main_routing_test", "empty_routing_test"])
+
+@dataset({"main_routing_test": {}, "empty_routing_test": {'priority': 5}})
 class TestOverlappingCoverage(AbstractTestFixture):
     """
     Test the answer if 2 coverages are overlapping
@@ -46,9 +49,9 @@ class TestOverlappingCoverage(AbstractTestFixture):
     def setup(self):
         from jormungandr import i_manager
         self.instance_map = {
-            'main_routing_test': MockKraken(i_manager.instances['main_routing_test'], True),
+            'main_routing_test': MockKraken(i_manager.instances['main_routing_test'], True, 0),
             #the bad one is the non free one, so it will be chosen first
-            'empty_routing_test': MockKraken(i_manager.instances['empty_routing_test'], False),
+            'empty_routing_test': MockKraken(i_manager.instances['empty_routing_test'], False, 0),
         }
         self.real_method = models.Instance.get_by_name
 
@@ -71,7 +74,7 @@ class TestOverlappingCoverage(AbstractTestFixture):
         """
         response = self.query("/v1/{q}".format(q=journey_basic_query))
 
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)
 
         assert len(response['feed_publishers']) == 1
         assert response['feed_publishers'][0]['name'] == u'routing api data'
@@ -80,8 +83,8 @@ class TestOverlappingCoverage(AbstractTestFixture):
         # has been called, so we call it back with debug and then we can check the region called field
         debug_query = "/v1/{q}&debug=true".format(q=journey_basic_query)
         response = self.query(debug_query)
-        is_valid_journey_response(response, self.tester, debug_query)
-        assert set(response['debug']['regions_called']) == {"main_routing_test", "empty_routing_test"}
+        self.is_valid_journey_response(response, debug_query)
+        eq_(set(response['debug']['regions_called']), {"main_routing_test", "empty_routing_test"})
 
     def test_journeys_on_empty(self):
         """
@@ -160,4 +163,4 @@ class TestOverlappingCoverage(AbstractTestFixture):
         """
         response, error_code = self.query_no_assert("/v1/coord/-0.9;-0.9", display=True)
         assert error_code == 404
-        assert response['regions'] == ["empty_routing_test", "main_routing_test"]
+        assert set(response['regions']) == {"empty_routing_test", "main_routing_test"}

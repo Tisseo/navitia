@@ -275,14 +275,14 @@ BOOST_AUTO_TEST_CASE(t10) {
     bool error = false;
     for(auto journey_pattern : vec_tmp) {
         try {
-            t.match_journey_pattern(journey_pattern);
+            t.stop_times_order_helper(journey_pattern);
         } catch(const Thermometer::cant_match&) {
             error = true;
         }
     }
 
-    BOOST_REQUIRE_EQUAL(t.get_thermometer().size(), 97);
-    BOOST_REQUIRE_EQUAL(error, false);
+    BOOST_CHECK_EQUAL(t.get_thermometer().size(), 96);
+    BOOST_CHECK_EQUAL(error, false);
 }
 
 
@@ -324,6 +324,42 @@ BOOST_AUTO_TEST_CASE(tmp) {
     auto result = t.get_thermometer();
 
     BOOST_REQUIRE_EQUAL(result.size(), 10);
+}
+
+
+BOOST_AUTO_TEST_CASE(t13) {
+    Thermometer t;
+    std::vector<vector_idx> req;
+    req.push_back({1,2});
+    req.push_back({3,2});
+    req.push_back({0,3,2});
+    req.push_back({0,1,2});
+
+    t.generate_thermometer(req);
+    auto result = t.get_thermometer();
+
+    BOOST_REQUIRE_EQUAL(result.size(), 4);
+    BOOST_CHECK_EQUAL(result[0], 0);
+    BOOST_CHECK_EQUAL(result[1], 1);
+    BOOST_CHECK_EQUAL(result[2], 3);
+    BOOST_CHECK_EQUAL(result[3], 2);
+}
+
+BOOST_AUTO_TEST_CASE(t14) {
+    Thermometer t;
+    std::vector<vector_idx> req;
+    req.push_back({1,2});
+    req.push_back({3,2});
+    req.push_back({0,1,2});
+    req.push_back({0,3,2});
+
+    t.generate_thermometer(req);
+    auto result = t.get_thermometer();
+
+    BOOST_REQUIRE_EQUAL(result[0], 0);
+    BOOST_REQUIRE_EQUAL(result[1], 3);
+    BOOST_REQUIRE_EQUAL(result[2], 1);
+    BOOST_REQUIRE_EQUAL(result[3], 2);
 }
 
 //        BOOST_AUTO_TEST_CASE(lower_bound){

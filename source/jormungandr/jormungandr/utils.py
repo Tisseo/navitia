@@ -27,17 +27,19 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 import calendar
 from collections import deque
 from datetime import datetime
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.internal.containers import RepeatedScalarFieldContainer
-from jormungandr import i_manager
-import logging
 import pytz
-from jormungandr.exceptions import RegionNotFound
-from navitiacommon import response_pb2
-
+from jormungandr.timezone import get_timezone
+from navitiacommon import response_pb2, type_pb2
+from builtins import range, zip
+from importlib import import_module
+import logging
+from jormungandr.exceptions import ConfigException
+DATETIME_FORMAT = "%Y%m%dT%H%M%S"
 
 def str_to_time_stamp(str):
     """
@@ -45,7 +47,7 @@ def str_to_time_stamp(str):
     the string must be in the YYYYMMDDTHHMMSS format
     like 20170534T124500
     """
-    date = datetime.strptime(str, "%Y%m%dT%H%M%S")
+    date = datetime.strptime(str, DATETIME_FORMAT)
 
     return date_to_timestamp(date)
 
@@ -57,58 +59,25 @@ def date_to_timestamp(date):
     return int(calendar.timegm(date.utctimetuple()))
 
 
-class ResourceUtc:
-    def __init__(self):
-        self._tz = None
+def timestamp_to_datetime(timestamp):
+    dt = datetime.utcfromtimestamp(timestamp)
 
-    def tz(self):
-        if not self._tz:
-            instance = i_manager.instances.get(self.region, None)
+    timezone = get_timezone()
+    if timezone:
+        dt = pytz.utc.localize(dt)
+        return dt.astimezone(timezone)
+    return None
 
-            if not instance:
-                raise RegionNotFound(self.region)
 
-            tz_name = instance.timezone  # TODO store directly the tz?
+def dt_to_str(dt):
+    return dt.strftime(DATETIME_FORMAT)
 
-            if not tz_name:
-                logging.Logger(__name__).warn("unknown timezone for region {}"
-                                              .format(self.region))
-                return None
-            self._tz = (pytz.timezone(tz_name),)
-        return self._tz[0]
 
-    def convert_to_utc(self, original_datetime):
-        """
-        convert the original_datetime in the args to UTC
-
-        for that we need to 'guess' the timezone wanted by the user
-
-        For the moment We only use the default instance timezone.
-
-        It won't obviously work for multi timezone instances, we'll have to do
-        something smarter.
-
-        We'll have to consider either the departure or the arrival of the journey
-        (depending on the `clockwise` param)
-        and fetch the tz of this point.
-        we'll have to store the tz for stop area and the coord for admin, poi, ...
-        """
-
-        if self.tz() is None:
-            return original_datetime
-
-        utctime = self.tz().normalize(self.tz().localize(original_datetime)).astimezone(pytz.utc)
-
-        return utctime
-
-    def format(self, value):
-        dt = datetime.utcfromtimestamp(value)
-
-        if self.tz() is not None:
-            dt = pytz.utc.localize(dt)
-            dt = dt.astimezone(self.tz())
-            return dt.strftime("%Y%m%dT%H%M%S")
-        return None  # for the moment I prefer not to display anything instead of something wrong
+def timestamp_to_str(timestamp):
+    dt = timestamp_to_datetime(timestamp)
+    if dt:
+        return dt_to_str(dt)
+    return None
 
 
 def walk_dict(tree, visitor):
@@ -125,19 +94,19 @@ def walk_dict(tree, visitor):
     ... 'titi': [{'a':1}, {'b':1}]}
 
     >>> def my_visitor(name, val):
-    ...     print "{}={}".format(name, val)
+    ...     print("{}={}".format(name, val))
 
     >>> walk_dict(bob, my_visitor)
-    titi={'b': 1}
+    titi={u'b': 1}
     b=1
-    titi={'a': 1}
+    titi={u'a': 1}
     a=1
     tete=ltuple2
     tete=ltuple1
     tete=tuple1
     tutu=1
-    toto={'bobette': 13, 'bob': 12, 'nested_bob': {'bob': 3}}
-    nested_bob={'bob': 3}
+    toto={u'bobette': 13, u'bob': 12, u'nested_bob': {u'bob': 3}}
+    nested_bob={u'bob': 3}
     bob=3
     bob=12
     bobette=13
@@ -145,14 +114,14 @@ def walk_dict(tree, visitor):
     tata=1
 
     >>> def my_stoper_visitor(name, val):
-    ...     print "{}={}".format(name, val)
+    ...     print("{}={}".format(name, val))
     ...     if name == 'tete':
     ...         return True
 
     >>> walk_dict(bob, my_stoper_visitor)
-    titi={'b': 1}
+    titi={u'b': 1}
     b=1
-    titi={'a': 1}
+    titi={u'a': 1}
     a=1
     tete=ltuple2
     """
@@ -162,8 +131,8 @@ def walk_dict(tree, visitor):
         if isinstance(elt, (list, tuple)):
             for val in elt:
                 queue.append((name, val))
-        elif hasattr(elt, 'iteritems'):
-            for k, v in elt.iteritems():
+        elif hasattr(elt, 'items'):
+            for k, v in elt.items():
                 queue.append((k, v))
         elif first:  # for the first elt, we add it even if it is no collection
             queue.append((name, elt))
@@ -235,3 +204,56 @@ def walk_protobuf(pb_object, visitor):
         visitor(elem[0], elem[1])
 
         add_elt(elem[0], elem[1])
+
+
+def realtime_level_to_pbf(level):
+    if level == 'base_schedule':
+        return type_pb2.BASE_SCHEDULE
+    elif level == 'adapted_schedule':
+        return type_pb2.ADAPTED_SCHEDULE
+    elif level == 'realtime':
+        return type_pb2.REALTIME
+    else:
+        raise ValueError('Impossible to convert in pbf')
+
+
+#we can't use reverse(enumerate(list)) without creating a temporary
+#list, so we define our own reverse enumerate
+def reverse_enumerate(l):
+    return zip(range(len(l)-1, -1, -1), reversed(l))
+
+
+def pb_del_if(l, pred):
+    '''
+    Delete the elements such as pred(e) is true in a protobuf list.
+    Return the number of elements deleted.
+    '''
+    nb = 0
+    for i, e in reverse_enumerate(l):
+        if pred(e):
+            del l[i]
+            nb += 1
+    return nb
+
+
+def create_object(class_path, **kwargs):
+    log = logging.getLogger(__name__)
+    try:
+        if '.' not in class_path:
+            log.warn('impossible to build object {}, wrongly formated class'.format(class_path))
+            raise ConfigException(class_path)
+
+        module_path, name = class_path.rsplit('.', 1)
+        module = import_module(module_path)
+        attr = getattr(module, name)
+    except ImportError:
+        log.warn('impossible to build object {}, cannot find class'.format(class_path))
+        raise ConfigException(class_path)
+
+    try:
+        obj = attr(**kwargs)  # call to the contructor, with all the args
+    except TypeError as e:
+        log.warn('impossible to build object {}, wrong arguments: {}'.format(class_path, e.message))
+        raise ConfigException(class_path)
+
+    return obj

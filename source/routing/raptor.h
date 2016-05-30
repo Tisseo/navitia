@@ -35,6 +35,7 @@ www.navitia.io
 #include "type/type.h"
 #include "type/data.h"
 #include "type/datetime.h"
+#include "type/rt_level.h"
 #include "routing.h"
 #include "utils/timer.h"
 #include "boost/dynamic_bitset.hpp"
@@ -44,28 +45,34 @@ www.navitia.io
 
 namespace navitia { namespace routing {
 
+DateTime limit_bound(const bool clockwise, const DateTime departure_datetime, const DateTime bound);
+
+struct StartingPointSndPhase {
+    SpIdx sp_idx;
+    unsigned count;
+    DateTime end_dt;
+    unsigned fallback_dur;
+    bool has_priority;
+};
+
 /*
  * Use to save routing test to launch stay_in
  */
 struct RoutingState {
     const type::VehicleJourney* vj = nullptr;
-    JppIdx boarding_jpp_idx = JppIdx();
     uint16_t l_zone = std::numeric_limits<uint16_t>::max();
     DateTime workingDate = DateTimeUtils::inf;
 
-    RoutingState(const type::VehicleJourney* vj, JppIdx boarding_jpp_idx, uint16_t l_zone, DateTime workingDate) :
-        vj(vj), boarding_jpp_idx(boarding_jpp_idx), l_zone(l_zone), workingDate(workingDate) {}
+    RoutingState(const type::VehicleJourney* vj, uint16_t l_zone, DateTime workingDate) :
+        vj(vj), l_zone(l_zone), workingDate(workingDate) {}
 };
 
 /** Worker Raptor : une instance par thread, les données sont modifiées par le calcul */
 struct RAPTOR
 {
-    typedef std::pair<SpIdx, navitia::time_duration> stop_point_duration;
-    typedef std::vector<stop_point_duration> vec_stop_point_duration;
-
     const navitia::type::Data& data;
 
-    NextStopTime next_st;
+    std::shared_ptr<const CachedNextStopTime> next_st;
 
     /// Contains the different labels used by raptor.
     /// Each element of index i in this vector represents the labels with i transfers
@@ -81,19 +88,18 @@ struct RAPTOR
     boost::dynamic_bitset<> valid_journey_patterns;
     dataRAPTOR::JppsFromSp jpps_from_sp;
     /// Order of the first journey_pattern point of each journey_pattern
-    IdxMap<type::JourneyPattern, int> Q;
+    IdxMap<JourneyPattern, int> Q;
 
     // set to store if the stop_point is valid
     boost::dynamic_bitset<> valid_stop_points;
 
     explicit RAPTOR(const navitia::type::Data& data) :
         data(data),
-        next_st(data),
         best_labels_pts(data.pt_data->stop_points),
         best_labels_transfers(data.pt_data->stop_points),
         count(0),
-        valid_journey_patterns(data.pt_data->journey_patterns.size()),
-        Q(data.pt_data->journey_patterns),
+        valid_journey_patterns(data.dataRaptor->jp_container.nb_jps()),
+        Q(data.dataRaptor->jp_container.get_jps_values()),
         valid_stop_points(data.pt_data->stop_points.size())
     {
         labels.assign(10, data.dataRaptor->labels_const);
@@ -103,19 +109,12 @@ struct RAPTOR
     void clear(bool clockwise, DateTime bound);
 
     ///Initialize starting points
-    void init(const vec_stop_point_duration& dep,
+    void init(const map_stop_point_duration& dep,
               const DateTime bound,
               const bool clockwise,
               const type::Properties& properties);
 
     // pt_data object getters by typed idx
-    const type::JourneyPattern* get_jp(JpIdx idx) const {
-        return data.pt_data->journey_patterns[idx.val];
-    }
-    const type::JourneyPatternPoint* get_jpp(JppIdx jpp_idx) const {
-        return data.pt_data->journey_pattern_points[jpp_idx.val];
-    }
-
     const type::StopPoint* get_sp(SpIdx idx) const {
         return data.pt_data->stop_points[idx.val];
     }
@@ -127,7 +126,8 @@ struct RAPTOR
             int departure_hour,
             int departure_day,
             DateTime bound,
-            bool disruption_active,
+            const nt::RTLevel rt_level,
+            const navitia::time_duration& transfer_penalty,
             bool clockwise = true,
             const type::AccessibiliteParams& accessibilite_params = type::AccessibiliteParams(),
             uint32_t max_transfers = std::numeric_limits<uint32_t>::max(),
@@ -140,32 +140,18 @@ struct RAPTOR
     * à une heure donnée.
     */
     std::vector<Path>
-    compute_all(const vec_stop_point_duration& departs,
-                const vec_stop_point_duration& destinations,
+    compute_all(const map_stop_point_duration& departs,
+                const map_stop_point_duration& destinations,
                 const DateTime& departure_datetime,
-                bool disruption_active,
+                const nt::RTLevel rt_level,
+                const navitia::time_duration& transfer_penalty,
                 const DateTime& bound = DateTimeUtils::inf,
                 const uint32_t max_transfers = 10,
                 const type::AccessibiliteParams& accessibilite_params = type::AccessibiliteParams(),
                 const std::vector<std::string>& forbidden = std::vector<std::string>(),
                 bool clockwise = true,
-                const boost::optional<navitia::time_duration>& direct_path_dur = boost::none);
-
-
-    /** Calcul d'itinéraires multiples dans le sens horaire à partir de plusieurs
-     * stop points de départs, vers plusieurs stoppoints d'arrivée,
-     * à une heure donnée.
-     */
-    std::vector<std::pair<type::EntryPoint, std::vector<Path>>>
-    compute_nm_all(const std::vector<std::pair<type::EntryPoint, vec_stop_point_duration>>& departures,
-                   const std::vector<std::pair<type::EntryPoint, vec_stop_point_duration>>& arrivals,
-                   const DateTime& departure_datetime,
-                   bool disruption_active, 
-                   const DateTime& bound,
-                   const uint32_t max_transfers,
-                   const type::AccessibiliteParams& accessibilite_params,
-                   const std::vector<std::string>& forbidden_uri,
-                   bool clockwise);
+                const boost::optional<navitia::time_duration>& direct_path_dur = boost::none,
+                const size_t max_extra_second_pass = 0);
 
 
     /** Calcul l'isochrone à partir de tous les points contenus dans departs,
@@ -173,27 +159,26 @@ struct RAPTOR
      *  Renvoie toutes les arrivées vers tous les stop points.
      */
     void
-    isochrone(const vec_stop_point_duration& departures_,
+    isochrone(const map_stop_point_duration& departures_,
               const DateTime& departure_datetime,
               const DateTime& bound = DateTimeUtils::min,
               uint32_t max_transfers = 10,
               const type::AccessibiliteParams& accessibilite_params = type::AccessibiliteParams(),
               const std::vector<std::string>& forbidden = std::vector<std::string>(),
               bool clockwise = true,
-              bool disruption_active = false);
+              const nt::RTLevel rt_level = nt::RTLevel::Base);
 
 
     /// Désactive les journey_patterns qui n'ont pas de vj valides la veille, le jour, et le lendemain du calcul
     /// Gère également les lignes, modes, journey_patterns et VJ interdits
     void set_valid_jp_and_jpp(uint32_t date,
-                              const type::AccessibiliteParams& accessibilite_params,
+                              const type::AccessibiliteParams&,
                               const std::vector<std::string>& forbidden,
-                              bool disruption_active);
+                              const nt::RTLevel rt_level);
 
     ///Boucle principale, parcourt les journey_patterns,
-    void boucleRAPTOR(const type::AccessibiliteParams& accessibilite_params,
-                      bool clockwise,
-                      bool disruption_active,
+    void boucleRAPTOR(bool clockwise,
+                      const nt::RTLevel rt_level,
                       const uint32_t max_transfers);
 
     /// Apply foot pathes to labels
@@ -203,14 +188,13 @@ struct RAPTOR
     /// Returns true if we improve at least one label, false otherwise
     template<typename Visitor>
     bool apply_vj_extension(const Visitor& v,
-                            const bool disruption_active,
+                            const nt::RTLevel rt_level,
                             const RoutingState& state);
 
     ///Main loop
     template<typename Visitor>
     void raptor_loop(Visitor visitor,
-                     const type::AccessibiliteParams& accessibilite_params,
-                     bool disruption_active,
+                     const nt::RTLevel rt_level,
                      uint32_t max_transfers=std::numeric_limits<uint32_t>::max());
 
     /// Return the round that has found the best solution for this stop point
@@ -219,16 +203,16 @@ struct RAPTOR
 
     /// First raptor loop
     /// externalized for testing purposes
-    void first_raptor_loop(const vec_stop_point_duration& dep,
+    void first_raptor_loop(const map_stop_point_duration& dep,
                            const DateTime& departure_datetime,
-                           bool disruption_active,
+                           const nt::RTLevel rt_level,
                            const DateTime& bound,
                            const uint32_t max_transfers,
                            const type::AccessibiliteParams& accessibilite_params,
                            const std::vector<std::string>& forbidden_uri,
                            bool clockwise);
 
-    ~RAPTOR() {}
+    ~RAPTOR() = default;
 };
 
 

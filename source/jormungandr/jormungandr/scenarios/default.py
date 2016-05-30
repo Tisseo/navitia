@@ -27,13 +27,14 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
+
 import copy
 import navitiacommon.type_pb2 as type_pb2
 import navitiacommon.request_pb2 as request_pb2
 import navitiacommon.response_pb2 as response_pb2
-from jormungandr.renderers import render_from_protobuf
 from jormungandr.interfaces.common import pb_odt_level
-from qualifier import qualifier_one
+from jormungandr.scenarios.qualifier import qualifier_one
 from datetime import datetime, timedelta
 import itertools
 from flask import current_app
@@ -44,8 +45,13 @@ from jormungandr.scenarios import simple
 import logging
 from jormungandr.scenarios.helpers import walking_duration, bss_duration, bike_duration, car_duration, pt_duration
 from jormungandr.scenarios.helpers import select_best_journey_by_time, select_best_journey_by_duration, max_duration_fallback_modes
+from jormungandr.scenarios.helpers import fallback_mode_comparator
+from jormungandr.utils import pb_del_if, date_to_timestamp
 
 non_pt_types = ['non_pt_walk', 'non_pt_bike', 'non_pt_bss']
+
+def is_admin(entrypoint):
+    return entrypoint.startswith('admin:')
 
 class Scenario(simple.Scenario):
 
@@ -53,6 +59,7 @@ class Scenario(simple.Scenario):
         """Parse the request dict and create the protobuf version"""
         req = request_pb2.Request()
         req.requested_api = requested_type
+        req._current_datetime = date_to_timestamp(request["_current_datetime"])
         if "origin" in request and request["origin"]:
             if requested_type != type_pb2.NMPLANNER:
                 origins = ([request["origin"]], [0])
@@ -99,11 +106,21 @@ class Scenario(simple.Scenario):
             sn_params.destination_filter = ""
         req.journeys.max_duration = request["max_duration"]
         req.journeys.max_transfers = request["max_transfers"]
-        req.journeys.wheelchair = request["wheelchair"]
-        req.journeys.disruption_active = request["disruption_active"]
-        req.journeys.show_codes = request["show_codes"]
+        if request["max_extra_second_pass"]:
+            req.journeys.max_extra_second_pass = request["max_extra_second_pass"]
+        req.journeys.wheelchair = request["wheelchair"] or False  # default value is no wheelchair
+
+        if request['data_freshness'] == 'realtime':
+            req.journeys.realtime_level = type_pb2.REALTIME
+        elif request['data_freshness'] == 'adapted_schedule':
+            req.journeys.realtime_level = type_pb2.ADAPTED_SCHEDULE
+        else:
+            req.journeys.realtime_level = type_pb2.BASE_SCHEDULE
+
         if "details" in request and request["details"]:
             req.journeys.details = request["details"]
+
+        req.journeys.walking_transfer_penalty = request['_walking_transfer_penalty']
 
         self.origin_modes = request["origin_mode"]
 
@@ -127,7 +144,6 @@ class Scenario(simple.Scenario):
 
         return req
 
-
     def call_kraken(self, req, instance, tag=None):
         resp = None
 
@@ -135,10 +151,14 @@ class Scenario(simple.Scenario):
             for all combinaison of departure and arrival mode we call kraken
         """
         logger = logging.getLogger(__name__)
-        # filter walking if bss in mode ?
         for o_mode, d_mode in itertools.product(self.origin_modes, self.destination_modes):
             req.journeys.streetnetwork_params.origin_mode = o_mode
             req.journeys.streetnetwork_params.destination_mode = d_mode
+            if o_mode == 'car' or (is_admin(req.journeys.origin[0].place) and is_admin(req.journeys.destination[0].place)):
+                # we don't want direct path for car or for admin to admin journeys
+                req.journeys.streetnetwork_params.enable_direct_path = False
+            else:
+                req.journeys.streetnetwork_params.enable_direct_path = True
             local_resp = instance.send_and_receive(req)
             if local_resp.response_type == response_pb2.ITINERARY_FOUND:
 
@@ -202,6 +222,14 @@ class Scenario(simple.Scenario):
         max_attempts = 2 if not request["min_nb_journeys"] else request["min_nb_journeys"]*2
         at_least_one_journey_found = False
         forbidden_uris = []
+
+        #call to kraken must be done with fallback mode in the right order:
+        #walking, then bss, then bike, and finally car
+        #in some case a car journey can be equivalent to a walking journey, typically when crowfly are used
+        #and only the first one is kept, and we want the walking one to be kept!
+        self.origin_modes.sort(fallback_mode_comparator)
+        self.destination_modes.sort(fallback_mode_comparator)
+
         while ((request["min_nb_journeys"] and request["min_nb_journeys"] > nb_typed_journeys) or\
             (not request["min_nb_journeys"] and nb_typed_journeys == 0)) and cpt_attempt < max_attempts:
             tmp_resp = self.call_kraken(next_request, instance)
@@ -211,25 +239,14 @@ class Scenario(simple.Scenario):
                     resp = tmp_resp
                 break
             at_least_one_journey_found = True
-            last_best = next((j for j in tmp_resp.journeys if j.type == 'rapid'), None)
 
-            new_datetime = None
-            one_minute = 60
             if request['clockwise']:
-                #since dates are now posix time stamp, we only have to add the additional seconds
-                if not last_best:
-                    last_best = min(tmp_resp.journeys, key=lambda j: j.departure_date_time)
-                    #In this case there is no journeys, so we stop
-                    if not last_best:
-                        break
-                new_datetime = last_best.departure_date_time + one_minute
+                new_datetime = self.next_journey_datetime(tmp_resp.journeys)
             else:
-                if not last_best:
-                    last_best = max(tmp_resp.journeys, key=lambda j: j.arrival_date_time)
-                    #In this case there is no journeys, so we stop
-                    if not last_best:
-                        break
-                new_datetime = last_best.arrival_date_time - one_minute
+                new_datetime = self.previous_journey_datetime(tmp_resp.journeys)
+
+            if new_datetime is None:
+                break
 
             next_request, forbidden_uris = self.change_request(pb_req, tmp_resp, forbidden_uris)
             next_request.journeys.datetimes[0] = new_datetime
@@ -254,10 +271,12 @@ class Scenario(simple.Scenario):
         self.choose_best(resp)
         self.delete_journeys(resp, request, final_filter=True)  # filter one last time to remove similar journeys
 
-        if len(resp.journeys) == 0 and at_least_one_journey_found and not resp.HasField("error"):
+        if len(resp.journeys) == 0 and at_least_one_journey_found and not resp.HasField(b"error"):
             error = resp.error
             error.id = response_pb2.Error.no_solution
             error.message = "No journey found, all were filtered"
+
+        self._compute_pagination_links(resp, instance)
 
         return resp
 
@@ -276,6 +295,41 @@ class Scenario(simple.Scenario):
                 logger.debug('delete journey %s because it is longer than %s', journey.type, max_duration)
         self.erase_journeys(resp, to_delete)
 
+    @staticmethod
+    def next_journey_datetime(journeys):
+        """
+        by default to get the next journey, we add one minute to:
+        the best if we have one, else to the journey that has the earliest departure
+        """
+        if not journeys:
+            return None
+        last_best = next((j for j in journeys if j.type in ('best', 'rapid')), None) or \
+                    min(journeys, key=lambda j: j.departure_date_time)
+
+        if not last_best:
+            return None
+
+        one_minute = 60
+        #since dates are now posix time stamp, we only have to add the additional seconds
+        return last_best.departure_date_time + one_minute
+
+    @staticmethod
+    def previous_journey_datetime(journeys):
+        """
+        by default to get the previous journey, we substract one minute to:
+        the best if we have one, else to the journey that has the tardiest arrival
+        """
+        if not journeys:
+            return None
+        last_best = next((j for j in journeys if j.type in ('best', 'rapid')), None) or \
+                    max(journeys, key=lambda j: j.arrival_date_time)
+
+        if not last_best:
+            return None
+
+        one_minute = 60
+        #since dates are now posix time stamp, we only have to add the additional seconds
+        return last_best.arrival_date_time - one_minute
 
     def _find_max_duration(self, journeys, instance, clockwise):
         """
@@ -283,13 +337,14 @@ class Scenario(simple.Scenario):
         We can search the earliest one (by default) or the shortest one.
         Restriction are put on the fallback mode used, by default only walking is allowed.
         """
+        if not journeys:
+            return None
         criteria = {'time': select_best_journey_by_time, 'duration': select_best_journey_by_duration}
         fallback_modes = max_duration_fallback_modes[instance.max_duration_fallback_mode]
         asap_journey = criteria[instance.max_duration_criteria](journeys, clockwise, fallback_modes)
         if not asap_journey:
             return None
         return (asap_journey.duration * instance.factor_too_long_journey) + instance.min_duration_too_long_journey
-
 
     def choose_best(self, resp):
         """
@@ -310,8 +365,8 @@ class Scenario(simple.Scenario):
             return
 
         #if the initial response was an error we remove the error since we have result now
-        if initial_response.HasField('error'):
-            initial_response.ClearField('error')
+        if initial_response.HasField(b'error'):
+            initial_response.ClearField(b'error')
 
         #we don't want to add a journey already there
         tickets_to_add = set()
@@ -335,6 +390,12 @@ class Scenario(simple.Scenario):
             initial_feed_publishers[fp.id] = fp
         initial_response.feed_publishers.extend([fp for fp in new_response.feed_publishers if fp.id not in initial_feed_publishers])
 
+        # handle impacts
+        for i in new_response.impacts:
+            if any(other.uri == i.uri for other in initial_response.impacts):
+                continue
+            initial_response.impacts.extend([i])
+
     def erase_journeys(self, resp, to_delete):
         """
         remove a list of journeys from a response and delete all referenced objects like by example the tickets
@@ -345,12 +406,7 @@ class Scenario(simple.Scenario):
                 deleted_sections.add(section.id)
             del resp.journeys[idx]
 
-        ticket_to_delete = set()
-        for idx, t in enumerate(resp.tickets):
-            if len(set(t.section_id) - deleted_sections) == 0:
-                ticket_to_delete.add(idx)
-        for idx in sorted(ticket_to_delete, reverse=True):
-            del resp.tickets[idx]
+        pb_del_if(resp.tickets, lambda t: set(t.section_id).issubset(deleted_sections))
 
     def delete_journeys(self, resp, request, final_filter):
         """
@@ -373,7 +429,7 @@ class Scenario(simple.Scenario):
                                    and len(request['origin']) > 1:
                 return #for n-m calculation we don't want to filter
 
-        if resp.HasField("error"):
+        if resp.HasField(b"error"):
             return #we don't filter anything if errors
 
         #filter on journey type (the qualifier)
@@ -423,18 +479,6 @@ class Scenario(simple.Scenario):
     def journeys(self, request, instance):
         return self.__on_journeys(type_pb2.PLANNER, request, instance)
 
-    def nm_journeys(self, request, instance):
-        updated_request_with_default(request, instance)
-        req = self.parse_journey_request(type_pb2.NMPLANNER, request)
-
-        # call to kraken
-        # TODO: check mode size
-        req.journeys.streetnetwork_params.origin_mode = self.origin_modes[0]
-        req.journeys.streetnetwork_params.destination_mode = self.destination_modes[0]
-        resp = instance.send_and_receive(req)
-
-        return resp
-
     def isochrone(self, request, instance):
         updated_request_with_default(request, instance)
         req = self.parse_journey_request(type_pb2.ISOCHRONE, request)
@@ -444,6 +488,11 @@ class Scenario(simple.Scenario):
         req.journeys.streetnetwork_params.origin_mode = self.origin_modes[0]
         req.journeys.streetnetwork_params.destination_mode = self.destination_modes[0]
         resp = instance.send_and_receive(req)
+
+        if not request['debug']:
+            # on isochrone we can filter the number of max journeys
+            if request["max_nb_journeys"] and len(resp.journeys) > request["max_nb_journeys"]:
+                del resp.journeys[request["max_nb_journeys"]:]
 
         return resp
 

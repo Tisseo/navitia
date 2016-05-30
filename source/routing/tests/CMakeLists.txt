@@ -36,3 +36,15 @@ target_link_libraries(co2_emission_test ed data types routing fare pb_lib thermo
   autocomplete utils workers
   ${BOOST_LIBS} log4cplus pthread protobuf)
 ADD_BOOST_TEST(co2_emission_test)
+
+add_executable(journey_pattern_container_test journey_pattern_container_test.cpp)
+target_link_libraries(journey_pattern_container_test ${BOOST_LIBS} routing ed data)
+ADD_BOOST_TEST(journey_pattern_container_test)
+
+add_executable(get_stop_times_test get_stop_times_test.cpp)
+target_link_libraries(get_stop_times_test ed data fare georef routing types utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
+ADD_BOOST_TEST(get_stop_times_test)
+
+add_executable(isochron_test isochron_test.cpp)
+target_link_libraries(isochron_test ed data fare georef routing types utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
+ADD_BOOST_TEST(isochron_test)

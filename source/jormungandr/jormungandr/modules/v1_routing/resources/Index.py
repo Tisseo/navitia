@@ -28,6 +28,7 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 
 from flask import url_for
 from jormungandr.interfaces.v1.make_links import create_external_link
@@ -56,6 +57,10 @@ class Index(ModuleResource):
                 create_external_link(self.module_name + '.journeys',
                                      rel='journeys',
                                      description='Compute journeys'),
+                # TODO: Activate for national autocomplete
+                # create_external_link(self.module_name + '.places',
+                #                      rel='places',
+                #                     description='Autocomplete api'),
             ]
         }
         return response, 200

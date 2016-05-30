@@ -75,6 +75,12 @@ struct OSMNode {
         return this->osm_id < other.osm_id;
     }
 
+    bool almost_equal(const OSMNode& other) const {
+        // check if the nodes are quite at the same location
+        auto distance = 10; // about 0.5m
+        return std::abs(this->ilon - other.ilon) < distance && std::abs(this->ilat - other.ilat) < distance;
+    }
+
     // Even if it's const, it modifies the variable used_more_than_once,
     // cause it's mutable, and doesn't affect the operator <
     void set_used_more_than_once() const {
@@ -155,7 +161,7 @@ struct OSMRelation {
     }
 
     void build_geometry(OSMCache& cache) const;
-    void build_polygon(OSMCache& cache, std::set<u_int64_t> explored_ids = std::set<u_int64_t>()) const;
+    void build_polygon(OSMCache& cache) const;
 };
 
 struct OSMWay {
@@ -266,7 +272,7 @@ struct AssociateStreetRelation {
 
 
 typedef std::set<OSMWay>::const_iterator it_way;
-typedef std::map<const OSMRelation*, std::set<it_way>> rel_ways;
+typedef std::map<std::set<const OSMRelation*>, std::set<it_way>> rel_ways;
 typedef std::set<OSMRelation>::const_iterator admin_type;
 typedef std::pair<admin_type, double> admin_distance;
 
@@ -314,10 +320,13 @@ struct ReadWaysVisitor {
     OSMCache& cache;
 
     ReadWaysVisitor(OSMCache& cache) : cache(cache) {}
+    ~ReadWaysVisitor();
 
     void node_callback(uint64_t , double , double , const CanalTP::Tags& ) {}
     void relation_callback(uint64_t , const CanalTP::Tags& , const CanalTP::References& ) {}
     void way_callback(uint64_t osm_id, const CanalTP::Tags& tags, const std::vector<uint64_t>& nodes);
+
+    size_t filtered_private_way = 0;
 };
 
 
@@ -368,6 +377,11 @@ inline std::string to_string(OsmObjectType t) {
     }
 }
 
+struct poi_type_comp{
+    std::vector<std::string> order = {"amenity", "tourism", "leisure", "aeroway", "railway", "shop"};
+    bool operator()(const std::string& a, const std::string& b);
+};
+
 struct PoiHouseNumberVisitor {
     const size_t max_inserts_without_bulk = 20000;
     ed::EdPersistor& persistor;
@@ -378,25 +392,23 @@ struct PoiHouseNumberVisitor {
     std::set<std::string> properties_to_ignore;
     size_t n_inserted_pois = 0;
     size_t n_inserted_house_numbers = 0;
+    std::set<std::string, poi_type_comp> tags_types;
 
     PoiHouseNumberVisitor(EdPersistor& persistor, /*const*/ OSMCache& cache,
-            Georef& data, const bool parse_pois) :
+            Georef& data, const bool parse_pois, const std::map<std::string, std::string>& poi_types) :
         persistor(persistor), cache(cache), data(data), parse_pois(parse_pois)  {
-        data.poi_types =
-         {
-            {"amenity:college" , new ed::types::PoiType(0,  "école")},
-            {"amenity:university" , new ed::types::PoiType(1, "université")},
-            {"amenity:theatre" , new ed::types::PoiType(2, "théâtre")},
-            {"hospital" , new ed::types::PoiType(3, "hôpital")},
-            {"amenity:post_office" , new ed::types::PoiType(4, "bureau de poste")},
-            {"amenity:bicycle_rental" , new ed::types::PoiType(5, "station vls")},
-            {"amenity:bicycle_parking" , new ed::types::PoiType(6, "Parking vélo")},
-            {"amenity:parking" , new ed::types::PoiType(7, "Parking")},
-            {"amenity:police" , new ed::types::PoiType(8, "Police, Gendarmerie")},
-            {"amenity:townhall" , new ed::types::PoiType(9, "Mairie")},
-            {"leisure:garden" , new ed::types::PoiType(10, "Jardin")},
-            {"leisure:park" , new ed::types::PoiType(11, "Zone Parc. Zone verte ouverte, pour déambuler. habituellement municipale")}
-        };
+        uint32_t idx = 0;
+        for(auto type: poi_types){
+            data.poi_types[type.first] = new ed::types::PoiType(idx, type.second);
+            ++idx;
+        }
+        for(auto tag: data.poi_types){
+            std::vector<std::string> strs;
+            boost::algorithm::split(strs, tag.first, boost::is_any_of(":"));
+            if(strs.size() > 1){
+                tags_types.insert(strs[0]);
+            }
+        }
         properties_to_ignore.insert("name");
         properties_to_ignore.insert("amenity");
         properties_to_ignore.insert("leisure");
@@ -417,6 +429,7 @@ struct PoiHouseNumberVisitor {
     void fill_poi(const u_int64_t osm_id, const CanalTP::Tags& tags, const double lon, const double lat, OsmObjectType t);
     void fill_housenumber(const u_int64_t osm_id, const CanalTP::Tags& tags, const double lon, const double lat);
     void insert_house_numbers();
+    void insert_data();
     void finish();
 
 

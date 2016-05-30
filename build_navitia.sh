@@ -109,6 +109,9 @@ then
     exit 1
 fi
 
+#Be sure that basic dependencies are installed
+sudo apt-get install -y unzip wget
+
 if [ -z "$gtfs_data_dir" ] || [ -z "$osm_file" ]
 then
     echo "no gtfs or osm file given, we'll take a default data set, Paris"
@@ -145,11 +148,18 @@ git submodule update --init
 if [ -n "$install_dependencies" ]
 then
     echo "** installing all dependencies"
-    sudo apt-get install -y git g++ cmake liblog4cplus-dev libzmq-dev libosmpbf-dev libboost-all-dev libpqxx3-dev libgoogle-perftools-dev libprotobuf-dev python-pip libproj-dev protobuf-compiler libgeos-c1 
+    sudo apt-get install -y g++ cmake liblog4cplus-dev libzmq-dev libosmpbf-dev libboost-all-dev libpqxx3-dev libgoogle-perftools-dev libprotobuf-dev python-pip libproj-dev protobuf-compiler libgeos-c1
 
     postgresql_package='postgresql-9.3'
     postgresql_postgis_package='postgis postgresql-9.3-postgis-2.1 postgresql-9.3-postgis-scripts'
     distrib=`lsb_release -si`
+    version=`lsb_release -sr`
+
+    # Fix Ubuntu 15.04 package
+    if [ "$distrib" = "Ubuntu" -a "$version" = "15.04" ]; then
+      postgresql_package='postgresql-9.4'
+      postgresql_postgis_package='postgis postgresql-9.4-postgis-2.1 postgresql-9.4-postgis-scripts'
+    fi
 
     if [ "$distrib" = "Debian" ] && grep -q '^7\.' /etc/debian_version; then
             # on Debian, we must add the APT repository of PostgreSQL project
@@ -168,8 +178,6 @@ then
 
     sudo pip install -r "$navitia_dir"/source/jormungandr/requirements.txt
     sudo pip install -r "$navitia_dir"/source/tyr/requirements.txt
-    #we want a custom protobuff version
-    sudo pip install -U protobuf==2.5.0
 fi
 
 #the build procedure is explained is the install documentation
@@ -191,7 +199,6 @@ echo "** setting up the database"
 kraken_db_name='navitia'
 db_owner='navitia'
 
-kraken_db_name='navitia'
 # for the default build we give ownership of the base to a 'navitia' user, but you can do whatever you want here
 encap=$(sudo -i -u postgres psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$db_owner'")  # we check if there is already a user 
 if [ -z "$encap" ]; then
@@ -214,6 +221,19 @@ fi
 # a -x dbname option
 cd "$navitia_dir"/source/sql
 PYTHONPATH=. alembic -x dbname="postgresql://$db_owner:$kraken_db_user_password@localhost/$kraken_db_name" upgrade head
+cd
+
+# Install jormungandr database and upgrade it's schema
+# WARNING : default name is "jormungandr", so it should be the same in your SQLALCHEMY_DATABASE_URI on default_settings.py
+if ! sudo -i -u postgres psql -l | grep -q "^ jormungandr"; then
+    sudo -i -u postgres createdb jormungandr -O "$db_owner"
+    sudo -i -u postgres psql -c "create extension postgis; " jormungandr
+else
+    echo "db jormungandr already exists"
+fi
+
+cd "$navitia_dir"/source/tyr
+PYTHONPATH=.:../navitiacommon/ TYR_CONFIG_FILE=default_settings.py ./manage_tyr.py db upgrade
 cd
 
 #====================

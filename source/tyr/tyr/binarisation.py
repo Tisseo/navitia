@@ -41,13 +41,32 @@ from flask import current_app
 import kombu
 from shapely.geometry import MultiPolygon
 from shapely import wkt
+from zipfile import BadZipfile
 import sqlalchemy
 
 from navitiacommon.launch_exec import launch_exec
 import navitiacommon.task_pb2
 from tyr import celery, redis
+from rabbit_mq_handler import RabbitMqHandler
+from navitiacommon import models, utils
 from navitiacommon import models
-from tyr.helper import get_instance_logger
+from tyr.helper import get_instance_logger, get_named_arg
+from contextlib import contextmanager
+import glob
+
+
+def unzip_if_needed(filename):
+    if not os.path.isdir(filename):
+        # if it's not a directory, we consider it's a zip, and we unzip it
+        working_directory = os.path.dirname(filename)
+        try:
+            zip_file = zipfile.ZipFile(filename)
+            zip_file.extractall(path=working_directory)
+        except BadZipfile:
+            return filename  # the file is not a zip, we don't do anything
+    else:
+        working_directory = filename
+    return working_directory
 
 
 def move_to_backupdirectory(filename, working_directory):
@@ -58,7 +77,8 @@ def move_to_backupdirectory(filename, working_directory):
     """
     now = datetime.datetime.now()
     working_directory += "/" + now.strftime("%Y%m%d-%H%M%S%f")
-    os.mkdir(working_directory, 0755)
+    # this works even if the intermediate 'backup' dir does not exists
+    os.makedirs(working_directory, 0755)
     destination = working_directory + '/' + os.path.basename(filename)
     shutil.move(filename, destination)
     return destination
@@ -78,11 +98,7 @@ class Lock(object):
     def __call__(self, func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            job_id = None
-            if 'job_id' in kwargs:
-                job_id = kwargs['job_id']
-            else:
-                job_id = args[func.func_code.co_varnames.index('job_id')]
+            job_id = get_named_arg('job_id', func, args, kwargs)
             logging.debug('args: %s -- kwargs: %s', args, kwargs)
             job = models.Job.query.get(job_id)
             logger = get_instance_logger(job.instance)
@@ -100,11 +116,28 @@ class Lock(object):
                     lock.release()
         return wrapper
 
+@contextmanager
+def collect_metric(task_type, job, dataset_uid):
+    begin = datetime.datetime.utcnow()
+    yield
+    end = datetime.datetime.utcnow()
+    try:
+        logger = logging.getLogger(__name__)
+        dataset = models.DataSet.find_by_uid(dataset_uid)
+        metric = models.Metric()
+        metric.job = job
+        metric.dataset = dataset
+        metric.type = task_type
+        metric.duration = end-begin
+        models.db.session.add(metric)
+        models.db.session.commit()
+    except:
+        logger = logging.getLogger(__name__)
+        logger.exception('unable to persist Metrics data: ')
 
-#TODO bind task
 @celery.task(bind=True)
 @Lock(timeout=30*60)
-def fusio2ed(self, instance_config, filename, job_id):
+def fusio2ed(self, instance_config, filename, job_id, dataset_uid):
     """ Unzip fusio file and launch fusio2ed """
 
     job = models.Job.query.get(job_id)
@@ -112,10 +145,7 @@ def fusio2ed(self, instance_config, filename, job_id):
 
     logger = get_instance_logger(instance)
     try:
-        working_directory = os.path.dirname(filename)
-
-        zip_file = zipfile.ZipFile(filename)
-        zip_file.extractall(path=working_directory)
+        working_directory = unzip_if_needed(filename)
 
         params = ["-i", working_directory]
         if instance_config.aliases_file:
@@ -129,7 +159,9 @@ def fusio2ed(self, instance_config, filename, job_id):
         connection_string = make_connection_string(instance_config)
         params.append("--connection-string")
         params.append(connection_string)
-        res = launch_exec("fusio2ed", params, logger)
+        res = None
+        with collect_metric('fusio2ed', job, dataset_uid):
+            res = launch_exec("fusio2ed", params, logger)
         if res != 0:
             raise ValueError('fusio2ed failed')
     except:
@@ -141,7 +173,7 @@ def fusio2ed(self, instance_config, filename, job_id):
 
 @celery.task(bind=True)
 @Lock(30*60)
-def gtfs2ed(self, instance_config, gtfs_filename, job_id):
+def gtfs2ed(self, instance_config, gtfs_filename, job_id, dataset_uid):
     """ Unzip gtfs file launch gtfs2ed """
 
     job = models.Job.query.get(job_id)
@@ -149,10 +181,7 @@ def gtfs2ed(self, instance_config, gtfs_filename, job_id):
 
     logger = get_instance_logger(instance)
     try:
-        working_directory = os.path.dirname(gtfs_filename)
-
-        zip_file = zipfile.ZipFile(gtfs_filename)
-        zip_file.extractall(path=working_directory)
+        working_directory = unzip_if_needed(gtfs_filename)
 
         params = ["-i", working_directory]
         if instance_config.aliases_file:
@@ -166,7 +195,9 @@ def gtfs2ed(self, instance_config, gtfs_filename, job_id):
         connection_string = make_connection_string(instance_config)
         params.append("--connection-string")
         params.append(connection_string)
-        res = launch_exec("gtfs2ed", params, logger)
+        res = None
+        with collect_metric('gtfs2ed', job, dataset_uid):
+            res = launch_exec("gtfs2ed", params, logger)
         if res != 0:
             raise ValueError('gtfs2ed failed')
     except:
@@ -178,18 +209,31 @@ def gtfs2ed(self, instance_config, gtfs_filename, job_id):
 
 @celery.task(bind=True)
 @Lock(timeout=30*60)
-def osm2ed(self, instance_config, osm_filename, job_id):
+def osm2ed(self, instance_config, osm_filename, job_id, dataset_uid):
     """ launch osm2ed """
 
     job = models.Job.query.get(job_id)
     instance = job.instance
 
+    if os.path.isdir(osm_filename):
+        osm_filename = glob.glob('{}/*.pbf'.format(osm_filename))[0]
+
     logger = get_instance_logger(instance)
     try:
         connection_string = make_connection_string(instance_config)
-        res = launch_exec('osm2ed',
-                ["-i", osm_filename, "--connection-string", connection_string],
-                logger)
+        res = None
+        args = ["-i", osm_filename, "--connection-string", connection_string]
+        for poi_type in instance.poi_types:
+            args.append('-p')
+            if poi_type.name:
+                args.append(u'{}={}'.format(poi_type.uri, poi_type.name))
+            else:
+                args.append(poi_type.uri)
+
+        with collect_metric('osm2ed', job, dataset_uid):
+            res = launch_exec('osm2ed',
+                    args,
+                    logger)
         if res != 0:
             #@TODO: exception
             raise ValueError('osm2ed failed')
@@ -201,22 +245,21 @@ def osm2ed(self, instance_config, osm_filename, job_id):
 
 @celery.task(bind=True)
 @Lock(timeout=30*60)
-def geopal2ed(self, instance_config, filename, job_id):
+def geopal2ed(self, instance_config, filename, job_id, dataset_uid):
     """ launch geopal2ed """
 
     job = models.Job.query.get(job_id)
     instance = job.instance
     logger = get_instance_logger(instance)
     try:
-        working_directory = os.path.dirname(filename)
-
-        zip_file = zipfile.ZipFile(filename)
-        zip_file.extractall(path=working_directory)
+        working_directory = unzip_if_needed(filename)
 
         connection_string = make_connection_string(instance_config)
-        res = launch_exec('geopal2ed',
-                ["-i", working_directory, "--connection-string", connection_string],
-                logger)
+        res = None
+        with collect_metric('geopal2ed', job, dataset_uid):
+            res = launch_exec('geopal2ed',
+                    ["-i", working_directory, "--connection-string", connection_string],
+                    logger)
         if res != 0:
             #@TODO: exception
             raise ValueError('geopal2ed failed')
@@ -228,22 +271,21 @@ def geopal2ed(self, instance_config, filename, job_id):
 
 @celery.task(bind=True)
 @Lock(timeout=10*60)
-def poi2ed(self, instance_config, filename, job_id):
+def poi2ed(self, instance_config, filename, job_id, dataset_uid):
     """ launch poi2ed """
 
     job = models.Job.query.get(job_id)
     instance = job.instance
     logger = get_instance_logger(instance)
     try:
-        working_directory = os.path.dirname(filename)
-
-        zip_file = zipfile.ZipFile(filename)
-        zip_file.extractall(path=working_directory)
+        working_directory = unzip_if_needed(filename)
 
         connection_string = make_connection_string(instance_config)
-        res = launch_exec('poi2ed',
-                ["-i", working_directory, "--connection-string", connection_string],
-                logger)
+        res = None
+        with collect_metric('poi2ed', job, dataset_uid):
+            res = launch_exec('poi2ed',
+                    ["-i", working_directory, "--connection-string", connection_string],
+                    logger)
         if res != 0:
             #@TODO: exception
             raise ValueError('poi2ed failed')
@@ -255,7 +297,7 @@ def poi2ed(self, instance_config, filename, job_id):
 
 @celery.task(bind=True)
 @Lock(timeout=10*60)
-def synonym2ed(self, instance_config, filename, job_id):
+def synonym2ed(self, instance_config, filename, job_id, dataset_uid):
     """ launch synonym2ed """
 
     job = models.Job.query.get(job_id)
@@ -264,9 +306,11 @@ def synonym2ed(self, instance_config, filename, job_id):
     logger = get_instance_logger(instance)
     try:
         connection_string = make_connection_string(instance_config)
-        res = launch_exec('synonym2ed',
-                ["-i", filename, "--connection-string", connection_string],
-                logger)
+        res = None
+        with collect_metric('synonym2ed', job, dataset_uid):
+            res = launch_exec('synonym2ed',
+                    ["-i", filename, "--connection-string", connection_string],
+                    logger)
         if res != 0:
             #@TODO: exception
             raise ValueError('synonym2ed failed')
@@ -357,7 +401,7 @@ def load_bounding_shape(instance_name, instance_conf, shape_path):
 
 @celery.task(bind=True)
 @Lock(timeout=10*60)
-def shape2ed(self, instance_config, filename, job_id):
+def shape2ed(self, instance_config, filename, job_id, dataset_uid):
     """load a street network shape into ed"""
     job = models.Job.query.get(job_id)
     instance = job.instance
@@ -376,15 +420,10 @@ def reload_data(self, instance_config, job_id):
         task = navitiacommon.task_pb2.Task()
         task.action = navitiacommon.task_pb2.RELOAD
 
-        connection = kombu.Connection(current_app.config['CELERY_BROKER_URL'])
-        exchange = kombu.Exchange(instance_config.exchange, 'topic',
-                                  durable=True)
-        producer = connection.Producer(exchange=exchange)
+        rabbit_mq_handler = RabbitMqHandler(current_app.config['CELERY_BROKER_URL'], instance_config.exchange, "topic")
 
         logger.info("reload kraken")
-        producer.publish(task.SerializeToString(),
-                routing_key=instance.name + '.task.reload')
-        connection.release()
+        rabbit_mq_handler.publish(task.SerializeToString(), instance.name + '.task.reload')
     except:
         logger.exception('')
         job.state = 'failed'
@@ -416,7 +455,9 @@ def ed2nav(self, instance_config, job_id, custom_output_dir):
         if 'CITIES_DATABASE_URI' in current_app.config and current_app.config['CITIES_DATABASE_URI']:
             argv.extend(["--cities-connection-string", current_app.config['CITIES_DATABASE_URI']])
 
-        res = launch_exec('ed2nav', argv, logger)
+        res = None
+        with collect_metric('ed2nav', job, None):
+            res = launch_exec('ed2nav', argv, logger)
         if res != 0:
             raise ValueError('ed2nav failed')
     except:
@@ -425,9 +466,10 @@ def ed2nav(self, instance_config, job_id, custom_output_dir):
         models.db.session.commit()
         raise
 
+
 @celery.task(bind=True)
 @Lock(timeout=10*60)
-def fare2ed(self, instance_config, filename, job_id):
+def fare2ed(self, instance_config, filename, job_id, dataset_uid):
     """ launch fare2ed """
 
     job = models.Job.query.get(job_id)
@@ -435,10 +477,8 @@ def fare2ed(self, instance_config, filename, job_id):
 
     logger = get_instance_logger(instance)
     try:
-        working_directory = os.path.dirname(filename)
 
-        zip_file = zipfile.ZipFile(filename)
-        zip_file.extractall(path=working_directory)
+        working_directory = unzip_if_needed(filename)
 
         res = launch_exec("fare2ed", ['-f', working_directory,
                                       '--connection-string',
@@ -447,6 +487,60 @@ def fare2ed(self, instance_config, filename, job_id):
         if res != 0:
             #@TODO: exception
             raise ValueError('fare2ed failed')
+    except:
+        logger.exception('')
+        job.state = 'failed'
+        models.db.session.commit()
+        raise
+
+
+MIMIR_INDEX = 'munin'  # TODO better handle this index
+
+@celery.task(bind=True)
+def bano2mimir(self, autocomplete_instance, filename, job_id, dataset_uid):
+    """ launch bano2mimir """
+    logger = logging.getLogger("autocomplete")
+    job = models.Job.query.get(job_id)
+    cnx_string = current_app.config['MIMIR_URL'] + '/' + MIMIR_INDEX
+    working_directory = unzip_if_needed(filename)
+    try:
+        res = launch_exec("bano2mimir",
+                          ['-i', working_directory, '--connection-string', cnx_string],
+                          logger)
+        if res != 0:
+            #@TODO: exception
+            raise ValueError('bano2mimir failed')
+    except:
+        logger.exception('')
+        job.state = 'failed'
+        models.db.session.commit()
+        raise
+
+
+@celery.task(bind=True)
+def osm2mimir(self, autocomplete_instance, filename, job_id, dataset_uid):
+    """ launch osm2mimir """
+    logger = logging.getLogger("autocomplete")
+    logger.debug('running osm2mimir for {}'.format(job_id))
+    job = models.Job.query.get(job_id)
+    cnx_string = current_app.config['MIMIR_URL'] + '/' + MIMIR_INDEX
+    working_directory = unzip_if_needed(filename)
+    autocomplete_instance = models.db.session.merge(autocomplete_instance)#reatache the object
+    try:
+        params = ['-i', working_directory, '--connection-string', cnx_string]
+        for lvl in autocomplete_instance.admin_level:
+            params.append('--level')
+            params.append(str(lvl))
+        if autocomplete_instance.admin in utils.admin_source_types:
+            params.append('--import-admin')
+        if autocomplete_instance.street in utils.street_source_types:
+            params.append('--import-way')
+        res = launch_exec("osm2mimir",
+                          params,
+                          logger)
+        if res != 0:
+            #@TODO: exception
+            raise ValueError('osm2mimir failed')
     except:
         logger.exception('')
         job.state = 'failed'

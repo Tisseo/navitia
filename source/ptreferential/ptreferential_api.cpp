@@ -33,110 +33,113 @@ www.navitia.io
 #include "type/pb_converter.h"
 #include "type/data.h"
 #include "type/pt_data.h"
+#include "type/meta_data.h"
+#include "routing/dataraptor.h"
 
 namespace pt = boost::posix_time;
 
 namespace navitia{ namespace ptref{
+/// build the protobuf response of a pt ref query
 
-static pbnavitia::Response extract_data(const type::Data & data,
-                                        type::Type_e requested_type,
-                                        std::vector<type::idx_t> & rows,
-                                        const int depth, const bool show_codes,
-                                        boost::posix_time::ptime current_time) {
-    pbnavitia::Response result;
-    auto action_period = pt::time_period(current_time, pt::seconds(1));
-    for(auto idx : rows){
+static pbnavitia::Response extract_data(const type::Data& data,
+                                        const type::Type_e requested_type,
+                                        const type::Indexes& rows,
+                                        const int depth,
+                                        const boost::posix_time::ptime& current_time) {
+    const auto& action_period = data.meta->production_period();
         switch(requested_type){
         case Type_e::ValidityPattern:
-            fill_pb_object(data.pt_data->validity_patterns[idx], data,
-                           result.add_validity_patterns(), depth, current_time, action_period);
-            break;
+            return get_response(data.get_data<nt::ValidityPattern>(rows), data, depth, current_time);
         case Type_e::Line:
-            fill_pb_object(data.pt_data->lines[idx], data, result.add_lines(),
-                           depth, current_time, action_period, show_codes);
-            break;
+            return get_response(data.get_data<nt::Line>(rows), data, depth, current_time);
         case Type_e::LineGroup:
-            fill_pb_object(data.pt_data->line_groups[idx], data, result.add_line_groups(),
-                           depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::JourneyPattern:
-            fill_pb_object(data.pt_data->journey_patterns[idx], data,
-                           result.add_journey_patterns(), depth, current_time, action_period);
-            break;
-        case Type_e::StopPoint:
-            fill_pb_object(data.pt_data->stop_points[idx], data,
-                           result.add_stop_points(), depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::StopArea:
-            fill_pb_object(data.pt_data->stop_areas[idx], data,
-                           result.add_stop_areas(), depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::Network:
-            fill_pb_object(data.pt_data->networks[idx], data,
-                           result.add_networks(), depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::PhysicalMode:
-            fill_pb_object(data.pt_data->physical_modes[idx], data,
-                           result.add_physical_modes(), depth, current_time, action_period);
-            break;
-        case Type_e::CommercialMode:
-            fill_pb_object(data.pt_data->commercial_modes[idx], data,
-                           result.add_commercial_modes(), depth, current_time, action_period);
-            break;
-        case Type_e::JourneyPatternPoint:
-            fill_pb_object(data.pt_data->journey_pattern_points[idx], data,
-                           result.add_journey_pattern_points(), depth, current_time, action_period);
-            break;
-        case Type_e::Company:
-            fill_pb_object(data.pt_data->companies[idx], data,
-                           result.add_companies(), depth, current_time, action_period);
-            break;
-        case Type_e::Route:
-            fill_pb_object(data.pt_data->routes[idx], data,
-                    result.add_routes(), depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::POI:
-            fill_pb_object(data.geo_ref->pois[idx], data,
-                           result.add_pois(), depth, current_time, action_period);
-            break;
-        case Type_e::POIType:
-            fill_pb_object(data.geo_ref->poitypes[idx], data,
-                           result.add_poi_types(), depth, current_time, action_period);
-            break;
-        case Type_e::Connection:
-            fill_pb_object(data.pt_data->stop_point_connections[idx], data,
-                           result.add_connections(), depth, current_time, action_period);
-            break;
-        case Type_e::VehicleJourney:
-            fill_pb_object(data.pt_data->vehicle_journeys[idx], data,
-                           result.add_vehicle_journeys(), depth, current_time, action_period, show_codes);
-            break;
-        case Type_e::Calendar:
-            fill_pb_object(data.pt_data->calendars[idx], data,
-                           result.add_calendars(), depth, current_time, action_period, show_codes);
-            break;
-        default: break;
+            return get_response(data.get_data<nt::LineGroup>(rows), data, depth, current_time);
+        case Type_e::JourneyPattern:{
+            navitia::PbCreator pb_creator(data, current_time, action_period);
+            for(const auto& idx : rows){
+                const auto& pair_jp = data.dataRaptor->jp_container.get_jps()[idx];
+                auto* pb_jp = pb_creator.add_journey_patterns();
+                pb_creator.fill(&pair_jp, pb_jp, depth);
+            }
+            return pb_creator.get_response();
         }
-    }
-    return result;
+        case Type_e::StopPoint:
+            return get_response(data.get_data<nt::StopPoint>(rows), data, depth, current_time, action_period);
+        case Type_e::StopArea:
+            return get_response(data.get_data<nt::StopArea>(rows), data, depth, current_time, action_period);
+        case Type_e::Network:
+            return get_response(data.get_data<nt::Network>(rows), data, depth, current_time, action_period);
+        case Type_e::PhysicalMode:
+            return get_response(data.get_data<nt::PhysicalMode>(rows), data, depth, current_time, action_period);
+        case Type_e::CommercialMode:
+            return get_response(data.get_data<nt::CommercialMode>(rows), data, depth, current_time, action_period);
+        case Type_e::JourneyPatternPoint:{
+            navitia::PbCreator pb_creator(data, current_time, action_period);
+            for(const auto& idx : rows){
+                const auto& pair_jpp = data.dataRaptor->jp_container.get_jpps()[idx];
+                auto* pb_jpp = pb_creator.add_journey_pattern_points();
+                pb_creator.fill(&pair_jpp, pb_jpp, depth);
+            }
+            return pb_creator.get_response();
+        }
+        case Type_e::Company:
+            return get_response(data.get_data<nt::Company>(rows), data, depth, current_time, action_period);
+        case Type_e::Route:
+            return get_response(data.get_data<nt::Route>(rows), data, depth, current_time, action_period);
+        case Type_e::POI:
+            return get_response(data.get_data<georef::POI>(rows), data, depth, current_time, action_period);
+        case Type_e::POIType:
+            return get_response(data.get_data<georef::POIType>(rows), data, depth, current_time, action_period);
+        case Type_e::Connection:
+            return get_response(data.get_data<nt::StopPointConnection>(rows), data, depth, current_time, action_period);
+        case Type_e::VehicleJourney:
+            return get_response(data.get_data<nt::VehicleJourney>(rows), data, depth, current_time, action_period);
+        case Type_e::Calendar:
+            return get_response(data.get_data<nt::Calendar>(rows), data, depth, current_time, action_period);
+        case Type_e::MetaVehicleJourney:{
+            navitia::PbCreator pb_creator(data, current_time, action_period);
+            for(const auto& idx : rows){
+                const auto* meta_vj = data.pt_data->meta_vjs[Idx<type::MetaVehicleJourney>(idx)];
+                auto* pb_trip = pb_creator.add_trips();
+                pb_creator.fill(meta_vj, pb_trip, depth);
+            }
+            return pb_creator.get_response();
+        }
+        case Type_e::Impact:{
+            navitia::PbCreator pb_creator(data, current_time, action_period);
+            for(const auto& idx : rows){
+                auto impact = data.pt_data->disruption_holder.get_weak_impacts()[idx].lock();
+                auto* pb_impact = pb_creator.add_impacts();
+                pb_creator.fill(impact.get(), pb_impact, depth);
+
+            }
+            return pb_creator.get_response();
+        }
+        case Type_e::Contributor:
+            return get_response(data.get_data<nt::Contributor>(rows), data, depth, current_time, action_period);
+        case Type_e::Dataset:
+            return get_response(data.get_data<nt::Dataset>(rows), data, depth, current_time, action_period);
+        default: return {};
+        }
 }
 
 
-pbnavitia::Response query_pb(type::Type_e requested_type,
+pbnavitia::Response query_pb(const type::Type_e requested_type,
                              const std::string& request,
                              const std::vector<std::string>& forbidden_uris,
                              const type::OdtLevel_e odt_level,
                              const int depth,
-                             const bool show_codes,
                              const int startPage,
                              const int count,
+                             const boost::optional<boost::posix_time::ptime>& since,
+                             const boost::optional<boost::posix_time::ptime>& until,
                              const type::Data& data,
-                             boost::posix_time::ptime current_time){
-    std::vector<type::idx_t> final_indexes;
+                             const boost::posix_time::ptime& current_datetime) {
+    type::Indexes final_indexes;
     pbnavitia::Response pb_response;
     int total_result;
     try {
-        final_indexes = make_query(requested_type, request, forbidden_uris, odt_level, data);
+        final_indexes = make_query(requested_type, request, forbidden_uris, odt_level, since, until, data);
     } catch(const parsing_error &parse_error) {
         fill_pb_error(pbnavitia::Error::unable_to_parse, "Unable to parse :" + parse_error.more, pb_response.mutable_error());
         return pb_response;
@@ -147,7 +150,7 @@ pbnavitia::Response query_pb(type::Type_e requested_type,
     total_result = final_indexes.size();
     final_indexes = paginate(final_indexes, count, startPage);
 
-    pb_response = extract_data(data, requested_type, final_indexes, depth, show_codes, current_time);
+    pb_response = extract_data(data, requested_type, final_indexes, depth, current_datetime);
     auto pagination = pb_response.mutable_pagination();
     pagination->set_totalresult(total_result);
     pagination->set_startpage(startPage);

@@ -38,8 +38,9 @@ www.navitia.io
 #include <boost/date_time/gregorian/greg_serialize.hpp>
 #include <boost/date_time/posix_time/time_serialize.hpp>
 #include <boost/serialization/bitset.hpp>
-#include <boost/serialization/vector.hpp>
+#include "utils/serialization_vector.h"
 #include <boost/serialization/map.hpp>
+#include <boost/serialization/set.hpp>
 #include <boost/variant.hpp>
 #include <boost/serialization/variant.hpp>
 
@@ -54,7 +55,7 @@ www.navitia.io
 
 namespace navitia { namespace type {
 
-namespace new_disruption {
+namespace disruption {
 
 enum class Effect {
   NO_SERVICE = 0,
@@ -66,6 +67,17 @@ enum class Effect {
   OTHER_EFFECT,
   UNKNOWN_EFFECT,
   STOP_MOVED
+};
+
+enum class ChannelType {
+    web = 0,
+    sms,
+    email,
+    mobile,
+    notification,
+    twitter,
+    facebook,
+    unknown_type
 };
 
 inline std::string to_string(Effect effect) {
@@ -95,6 +107,21 @@ inline Effect from_string(const std::string& str) {
     if (str == "UNKNOWN_EFFECT") { return Effect::UNKNOWN_EFFECT; }
     if (str == "STOP_MOVED") { return Effect::STOP_MOVED; }
     throw navitia::exception("unhandled effect case");
+}
+
+inline std::string to_string(ChannelType ct) {
+    switch (ct) {
+    case ChannelType::web: return "web";
+    case ChannelType::sms: return "sms";
+    case ChannelType::email: return "email";
+    case ChannelType::mobile: return "mobile";
+    case ChannelType::notification: return "notification";
+    case ChannelType::twitter: return "twitter";
+    case ChannelType::facebook: return "facebook";
+    case ChannelType::unknown_type: return "unknown_type";
+    default:
+        throw navitia::exception("unhandled channeltype case");
+    }
 }
 
 struct Cause {
@@ -131,27 +158,37 @@ struct UnknownPtObj {
     void serialize(Archive&, const unsigned int) {}
 };
 struct LineSection {
-    const Line* line = nullptr;
-    const StopArea* start_point = nullptr;
-    const StopArea* end_point = nullptr;
+    Line* line = nullptr;
+    StopArea* start_point = nullptr;
+    StopArea* end_point = nullptr;
+    std::vector<Route*> routes;
     template<class Archive>
     void serialize(Archive& ar, const unsigned int) {
-        ar & line & start_point & end_point;
+        ar & line & start_point & end_point & routes;
     }
 };
 typedef boost::variant<
     UnknownPtObj,
-    const Network *,
-    const StopArea *,
+    Network*,
+    StopArea*,
+    StopPoint*,
     LineSection,
-    const Line *,
-    const Route *
+    Line*,
+    Route*,
+    MetaVehicleJourney*
     > PtObj;
 
 PtObj make_pt_obj(Type_e type,
                   const std::string &uri,
-                  const PT_Data& pt_data,
+                  PT_Data& pt_data,
                   const boost::shared_ptr<Impact> &impact = {});
+
+PtObj make_line_section(const std::string& line_uri,
+                        const std::string& start_stop_uri,
+                        const std::string& end_stop_uri,
+                        const std::vector<std::string>& route_uris,
+                        PT_Data& pt_data,
+                        const boost::shared_ptr<Impact>& impact = {});
 
 struct Disruption;
 
@@ -164,11 +201,39 @@ struct Message {
     boost::posix_time::ptime created_at;
     boost::posix_time::ptime updated_at;
 
+    std::set<ChannelType> channel_types;
+
     template<class Archive>
     void serialize(Archive& ar, const unsigned int) {
-        ar & text & created_at & updated_at & channel_id & channel_name & channel_content_type;
+        ar & text & created_at & updated_at & channel_id & channel_name & channel_content_type& channel_types;
     }
 };
+
+struct StopTimeUpdate {
+    StopTimeUpdate() {}
+    StopTimeUpdate(const StopTime& st, const std::string& c): stop_time(st), cause(c) {}
+    StopTime stop_time;
+    std::string cause; //TODO factorize this cause with a pool
+    // enum ADDED/DELETED/UPDATE
+
+    template<class Archive>
+    void serialize(Archive& ar, const unsigned int) {
+        ar & stop_time & cause;
+    }
+};
+
+namespace detail {
+struct AuxInfoForMetaVJ {
+    std::vector<StopTimeUpdate> stop_times;
+    // get the corresponding stoptime in the base vj. return null if nothing found
+    const StopTime* get_base_stop_time(const StopTimeUpdate&) const;
+
+    template<class Archive>
+    void serialize(Archive& ar, const unsigned int) {
+        ar & stop_times;
+    }
+};
+}
 
 struct Impact {
     std::string uri;
@@ -176,6 +241,7 @@ struct Impact {
     boost::posix_time::ptime updated_at;
 
     // the application period define when the impact happen
+    // i.e. the canceled base schedule period for vj
     std::vector<boost::posix_time::time_period> application_periods;
 
     boost::shared_ptr<Severity> severity;
@@ -184,9 +250,7 @@ struct Impact {
 
     std::vector<Message> messages;
 
-    // Used when an informed entity is a stop_area
-    // We need to store it, to be able to delete it afterward
-    std::vector<const JourneyPattern*> impacted_journey_patterns;
+    detail::AuxInfoForMetaVJ aux_info;
 
     //link to the parent disruption
     //Note: it is a raw pointer because an Impact is owned by it's disruption
@@ -195,10 +259,14 @@ struct Impact {
 
     template<class Archive>
     void serialize(Archive& ar, const unsigned int) {
-        ar & uri & created_at & updated_at & application_periods & severity & informed_entities & messages & impacted_journey_patterns & disruption;
+        ar & uri & created_at & updated_at & application_periods
+           & severity & informed_entities & messages & disruption
+           & aux_info;
     }
 
     bool is_valid(const boost::posix_time::ptime& current_time, const boost::posix_time::time_period& action_period) const;
+
+    const type::ValidityPattern get_impact_vp(const boost::gregorian::date_period& production_date) const;
 
     bool operator<(const Impact& other);
 };
@@ -215,11 +283,20 @@ struct Tag {
     }
 };
 
-struct Disruption {
-    std::string uri;
+class DisruptionHolder;
 
+struct Disruption {
+    Disruption() {}
+    Disruption(const std::string u, RTLevel lvl): uri(u), rt_level(lvl) {}
+    Disruption& operator=(const Disruption&) = delete;
+    Disruption(const Disruption&) = delete;
+
+    std::string uri;
+    // Provider of the disruption
+    std::string contributor;
     // it's the title of the disruption as shown in the backoffice
     std::string reference;
+    RTLevel rt_level = RTLevel::Adapted;
 
     // the publication period specify when an information can be displayed to
     // the customer, if a request is made before or after this period the
@@ -243,11 +320,11 @@ struct Disruption {
 
     template<class Archive>
     void serialize(Archive& ar, const unsigned int) {
-        ar & uri & reference & publication_period
-           & created_at & updated_at & cause & impacts & localization & tags & note;
+        ar & uri & reference & rt_level & publication_period
+           & created_at & updated_at & cause & impacts & localization & tags & note & contributor;
     }
 
-    void add_impact(const boost::shared_ptr<Impact>& impact);
+    void add_impact(const boost::shared_ptr<Impact>& impact, DisruptionHolder& holder);
     const std::vector<boost::shared_ptr<Impact>>& get_impacts() const {
         return impacts;
     }
@@ -261,9 +338,17 @@ private:
     std::vector<boost::shared_ptr<Impact>> impacts;
 };
 
-struct DisruptionHolder {
-    std::vector<std::unique_ptr<Disruption>> disruptions;
-
+class DisruptionHolder {
+    std::map<std::string, std::unique_ptr<Disruption>> disruptions_by_uri;
+    std::vector<boost::weak_ptr<Impact>> weak_impacts;
+public:
+    Disruption& make_disruption(const std::string& uri, type::RTLevel lvl);
+    std::unique_ptr<Disruption> pop_disruption(const std::string& uri);
+    size_t nb_disruptions() const { return disruptions_by_uri.size(); }
+    void add_weak_impact(boost::weak_ptr<Impact>);
+    void clean_weak_impacts();
+    const std::vector<boost::weak_ptr<Impact>>&
+    get_weak_impacts() const{ return weak_impacts;}
     // causes, severities and tags are a pool (weak_ptr because the owner ship
     // is in the linked disruption or impact)
     std::map<std::string, boost::weak_ptr<Cause>> causes; //to be wrapped
@@ -272,7 +357,7 @@ struct DisruptionHolder {
 
     template<class Archive>
     void serialize(Archive& ar, const unsigned int) {
-        ar & disruptions & causes & severities & tags;
+        ar & disruptions_by_uri & causes & severities & tags & weak_impacts;
     }
 };
 }

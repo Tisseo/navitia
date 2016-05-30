@@ -107,6 +107,10 @@ void fill_disruption_from_database(const std::string& connection_string,
                "     ls_end.uri as ls_end_uri,"
                "     extract(epoch from ls_end.created_at  AT TIME ZONE 'UTC') :: bigint as ls_end_created_at,"
                "     extract(epoch from ls_end.updated_at  AT TIME ZONE 'UTC') :: bigint as ls_end_updated_at,"
+               "     ls_route.id AS ls_route_id,"
+               "     ls_route.uri AS ls_route_uri,"
+               "     extract(epoch from ls_route.created_at  AT TIME ZONE 'UTC') :: bigint as ls_route_created_at,"
+               "     extract(epoch from ls_route.updated_at  AT TIME ZONE 'UTC') :: bigint as ls_route_updated_at,"
                // Message fields
                "     m.id as message_id, m.text as message_text,"
                "     extract(epoch from m.created_at  AT TIME ZONE 'UTC') :: bigint as message_created_at,"
@@ -115,7 +119,8 @@ void fill_disruption_from_database(const std::string& connection_string,
                "     ch.id as channel_id, ch.name as channel_name,"
                "     ch.content_type as channel_content_type, ch.max_size as channel_max_size,"
                "     extract(epoch from ch.created_at  AT TIME ZONE 'UTC') :: bigint as channel_created_at,"
-               "     extract(epoch from ch.updated_at  AT TIME ZONE 'UTC') :: bigint as channel_updated_at"
+               "     extract(epoch from ch.updated_at  AT TIME ZONE 'UTC') :: bigint as channel_updated_at,"
+               "     cht.id as channel_type_id, cht.name as channel_type"
                "     FROM disruption AS d"
                "     JOIN contributor AS co ON d.contributor_id = co.id"
                "     JOIN cause AS c ON (c.id = d.cause_id)"
@@ -130,15 +135,20 @@ void fill_disruption_from_database(const std::string& connection_string,
                "     LEFT JOIN pt_object AS ls_line ON line_section.line_object_id = ls_line.id"
                "     LEFT JOIN pt_object AS ls_start ON line_section.start_object_id = ls_start.id"
                "     LEFT JOIN pt_object AS ls_end ON line_section.end_object_id = ls_end.id"
+               "     LEFT JOIN associate_line_section_route_object"
+               "         ON associate_line_section_route_object.line_section_id = line_section.id"
+               "     LEFT JOIN pt_object AS ls_route"
+               "         ON associate_line_section_route_object.route_object_id = ls_route.id"
                "     LEFT JOIN message AS m ON m.impact_id = i.id"
                "     LEFT JOIN channel AS ch ON m.channel_id = ch.id"
+               "     LEFT JOIN channel_type as cht on ch.id = cht.channel_id"
                "     WHERE "
                "     (NOT (d.start_publication_date >= '%s' OR d.end_publication_date <= '%s')"
                "     OR (d.start_publication_date<='%s' and d.end_publication_date IS NULL))"
                "     AND co.contributor_code = ANY('{%s}')" // it's like a "IN" but won't crash if empty"
                "     AND d.status = 'published'"
                "     AND i.status = 'published'"
-               "     ORDER BY d.id, c.id, t.id, i.id, a.id, p.id, m.id, ch.id"
+               "     ORDER BY d.id, c.id, t.id, i.id, a.id, p.id, m.id, ch.id, cht.id"
                "     LIMIT %i OFFSET %i"
                " ;") %meta.production_date.end() % meta.production_date.begin() %meta.production_date.end()  % contributors_array % items_per_request % offset).str();
         result = work.exec(request);
@@ -156,7 +166,7 @@ void fill_disruption_from_database(const std::string& connection_string,
 
 void DisruptionDatabaseReader::finalize() {
     if (disruption && disruption->id() != "") {
-        add_disruption(*disruption, pt_data, meta);
+        make_and_apply_disruption(*disruption, pt_data, meta);
     }
 }
 

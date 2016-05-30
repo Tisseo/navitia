@@ -27,14 +27,20 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 import os
 # set default config file if not defined in other tests
+from datetime import timedelta
+from operator import itemgetter
+from flask import logging
+import mock
+
 if not 'JORMUNGANDR_CONFIG_FILE' in os.environ:
     os.environ['JORMUNGANDR_CONFIG_FILE'] = os.path.dirname(os.path.realpath(__file__)) \
         + '/integration_tests_settings.py'
 
 import subprocess
-from check_utils import *
+from .check_utils import *
 from jormungandr import app, i_manager
 from jormungandr.stat_manager import StatManager
 from navitiacommon.models import User
@@ -43,6 +49,11 @@ from jormungandr.instance import Instance
 
 krakens_dir = os.environ['KRAKEN_BUILD_DIR'] + '/tests'
 
+class FakeModel(object):
+    def __init__(self, priority, is_free):
+        self.priority = priority
+        self.is_free = is_free
+        self.scenario = 'default'
 
 def check_loaded(kraken):
     #TODO!
@@ -62,14 +73,10 @@ class AbstractTestFixture:
     """
     @classmethod
     def launch_all_krakens(cls):
-        krakens_exe = cls.data_sets
-        for kraken_name in krakens_exe:
-            additional_args = []
-            if isinstance(kraken_name, tuple):
-                # if elt in data_sets is a tuble, the second elt is a list with additional args
-                additional_args = kraken_name[1]
-                kraken_name = kraken_name[0]
-
+        for (kraken_name, conf) in cls.data_sets.items():
+            priority = conf.get('priority', 0)
+            is_free = conf.get('is_free', True)
+            additional_args = conf.get('kraken_args', [])
             exe = os.path.join(krakens_dir, kraken_name)
             logging.debug("spawning " + exe)
 
@@ -85,7 +92,7 @@ class AbstractTestFixture:
 
         # we want to wait for all data to be loaded
         all_good = True
-        for name, kraken_process in cls.krakens_pool.iteritems():
+        for name, kraken_process in cls.krakens_pool.items():
             if not check_loaded(name):
                 all_good = False
                 logging.error("error while loading the kraken {}, stoping".format(name))
@@ -100,37 +107,49 @@ class AbstractTestFixture:
 
     @classmethod
     def kill_all_krakens(cls):
-        for name, kraken_process in cls.krakens_pool.iteritems():
+        for name, kraken_process in cls.krakens_pool.items():
             logging.debug("killing " + name)
             kraken_process.kill()
 
     @classmethod
-    def create_dummy_ini(cls):
-        conf_template = open(os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                          'test_jormungandr.ini'))
-        conf_template_str = conf_template.read()
+    def create_dummy_json(cls):
+        conf_template_str = ('{{ \n'
+                             '    "key": "{instance_name}",\n'
+                             '    "zmq_socket": "ipc:///tmp/{instance_name}",\n'
+                             '    "realtime_proxies": {proxy_conf}\n'
+                             '}}')
         for name in cls.krakens_pool:
-            f = open(os.path.join(krakens_dir, name) + '.ini', 'w')
-            logging.debug("writing ini file {} for {}".format(f.name, name))
-            f.write(conf_template_str.format(instance_name=name))
-            f.close()
+            proxy_conf = cls.data_sets[name].get('proxy_conf', '[]')
+            with open(os.path.join(krakens_dir, name) + '.json', 'w') as f:
+                logging.debug("writing ini file {} for {}".format(f.name, name))
+                r = conf_template_str.format(instance_name=name, proxy_conf=proxy_conf)
+                f.write(r)
 
         #we set the env var that will be used to init jormun
-        app.config['INI_FILES'] = [
-            os.path.join(os.environ['KRAKEN_BUILD_DIR'], 'tests', k + '.ini')
+        return [
+            os.path.join(os.environ['KRAKEN_BUILD_DIR'], 'tests', k + '.json')
             for k in cls.krakens_pool
         ]
 
     @classmethod
     def setup_class(cls):
         cls.krakens_pool = {}
-        logging.info("Initing the tests {}, let's pop the krakens"
-                     .format(cls.__name__))
+        logging.info("Initing the tests {}, let's pop the krakens".format(cls.__name__))
         cls.launch_all_krakens()
-        cls.create_dummy_ini()
-        i_manager.ini_files = app.config['INI_FILES']
+        instances_config_files = cls.create_dummy_json()
+        i_manager.configuration_files = instances_config_files
         i_manager.initialisation()
+        cls.mocks = []
+        for name in cls.krakens_pool:
+            priority = cls.data_sets[name].get('priority', 0)
+            logging.info('instance %s has priority %s', name, priority)
+            is_free = cls.data_sets[name].get('is_free', False)
+            cls.mocks.append(mock.patch.object(i_manager.instances[name],
+                                               'get_models',
+                                               return_value=FakeModel(priority, is_free)))
 
+            for m in cls.mocks:
+                m.start()
         #we block the stat manager not to send anything to rabbit mq
         def mock_publish(self, stat):
             pass
@@ -161,6 +180,8 @@ class AbstractTestFixture:
         logging.info("Tearing down the tests {}, time to hunt the krakens down"
                      .format(cls.__name__))
         cls.kill_all_krakens()
+        for m in cls.mocks:
+            m.stop()
 
     def __init__(self, *args, **kwargs):
         self.tester = app.test_client()
@@ -194,7 +215,7 @@ class AbstractTestFixture:
         assert len(self.krakens_pool) == 1, "the helper can only work with one region"
         str_url = "/v1/coverage"
         str_url += "/{region}/{url}"
-        real_url = str_url.format(region=self.krakens_pool.iterkeys().next(), url=url)
+        real_url = str_url.format(region=list(self.krakens_pool)[0], url=url)
 
         if check:
             return self.query(real_url, display)
@@ -213,6 +234,104 @@ class AbstractTestFixture:
             logging.info("loaded response : " + json.dumps(json_response, indent=2))
 
         return json_response, response.status_code
+
+    def check_journeys_links(self, response, query_dict):
+        journeys_links = get_links_dict(response)
+        for l in ["prev", "next", "first", "last"]:
+            assert l in journeys_links
+            url = journeys_links[l]['href']
+
+            additional_args = query_from_str(url)
+            for k, v in additional_args.items():
+                if k == 'datetime':
+                    if l == 'next':
+                        self.check_next_datetime_link(get_valid_datetime(v), response)
+                    elif l == 'prev':
+                        self.check_previous_datetime_link(get_valid_datetime(v), response)
+                    continue
+                if k == 'datetime_represents':
+                    query_dt_rep = query_dict.get('datetime_represents', 'departure')
+                    if l in ['prev', 'last']:
+                        # the datetime_represents is negated
+                        if query_dt_rep == 'departure':
+                            assert v == 'arrival'
+                        else:
+                            assert v == 'departure'
+                    else:
+                        assert query_dt_rep == v
+
+                    continue
+
+                eq_(query_dict[k], v)
+
+    def is_valid_journey_response(self, response, query_str):
+        """
+        check that the journey's response is valid
+
+        this method is inside AbstractTestFixture because it can be overloaded by not scenario test Fixture
+        """
+        if isinstance(query_str, basestring):
+            query_dict = query_from_str(query_str)
+        else:
+            query_dict = query_str
+
+        journeys = get_not_null(response, "journeys")
+
+        all_sections = unique_dict('id')
+        assert len(journeys) > 0, "we must at least have one journey"
+        for j in journeys:
+            is_valid_journey(j, self.tester, query_dict)
+
+            for s in j['sections']:
+                all_sections[s['id']] = s
+
+        # check the fare section
+        # the fares must be structurally valid and all link to sections must be ok
+        all_tickets = unique_dict('id')
+        fares = response['tickets']
+        for f in fares:
+            is_valid_ticket(f, self.tester)
+            all_tickets[f['id']] = f
+
+        check_internal_links(response, self.tester)
+
+        #check other links
+        check_links(response, self.tester)
+
+        # more checks on links, we want the prev/next/first/last,
+        # to have forwarded all params, (and the time must be right)
+        self.check_journeys_links(response, query_dict)
+
+        feed_publishers = get_not_null(response, "feed_publishers")
+        for feed_publisher in feed_publishers:
+            is_valid_feed_publisher(feed_publisher)
+
+        if query_dict.get('debug', False):
+            assert 'debug' in response
+        else:
+            assert 'debug' not in response
+
+    @staticmethod
+    def check_next_datetime_link(dt, response):
+        if not response.get('journeys'):
+            return
+        """default next behaviour is 1 min after the best or the soonest"""
+        j_to_compare = next((j for j in response.get('journeys', []) if j['type'] == 'best'), None) or\
+             next((j for j in response.get('journeys', [])), None)
+
+        j_departure = get_valid_datetime(j_to_compare['departure_date_time'])
+        eq_(j_departure + timedelta(minutes=1), dt)
+
+    @staticmethod
+    def check_previous_datetime_link(dt, response):
+        if not response.get('journeys'):
+            return
+        """default previous behaviour is 1 min before the best or the latest """
+        j_to_compare = next((j for j in response.get('journeys', []) if j['type'] == 'best'), None) or\
+             next((j for j in response.get('journeys', [])), None)
+
+        j_departure = get_valid_datetime(j_to_compare['arrival_date_time'])
+        eq_(j_departure - timedelta(minutes=1), dt)
 
 
 def dataset(datasets):

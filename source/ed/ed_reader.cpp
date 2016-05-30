@@ -39,9 +39,15 @@ www.navitia.io
 namespace ed{
 
 namespace bg = boost::gregorian;
+namespace bt = boost::posix_time;
 namespace nt = navitia::type;
 namespace ng = navitia::georef;
 namespace nf = navitia::fare;
+
+// A function to release the memory of a collection. For a vector, it
+// is equivalent to `a.clear(); a.shrink_to_fit();` but some
+// collections don't have these methods.
+template<typename T> static void release(T& a) { T b; a.swap(b); }
 
 void EdReader::fill(navitia::type::Data& data, const double min_non_connected_graph_ratio){
 
@@ -51,11 +57,13 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_meta(data, work);
     // TODO merge fill_feed_infos, fill_meta
     this->fill_feed_infos(data, work);
+    this->fill_timezones(data, work);
     this->fill_networks(data, work);
     this->fill_commercial_modes(data, work);
     this->fill_physical_modes(data, work);
     this->fill_companies(data, work);
     this->fill_contributors(data, work);
+    this->fill_datasets(data, work);
 
     this->fill_stop_areas(data, work);
     this->fill_stop_points(data, work);
@@ -63,20 +71,28 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_lines(data, work);
     this->fill_line_groups(data, work);
     this->fill_routes(data, work);
-
-    this->fill_journey_patterns(data, work);
-    this->fill_journey_pattern_points(data, work);
-
     this->fill_validity_patterns(data, work);
-    this->fill_vehicle_journeys(data, work);
 
-    //the comments are loaded before the stop time to reduce the memory foot print
+    //the comments are loaded before the stop time (and thus the vj)
+    //to reduce the memory foot print
     this->fill_comments(data, work);
-
+    // the stop times are loaded before the vj as create_vj need the
+    // list of stop times
     this->fill_stop_times(data, work);
+    this->fill_vehicle_journeys(data, work);
+    this->finish_stop_times(data);
+
+    /// grid calendar
+    this->fill_calendars(data, work);
+    this->fill_periods(data, work);
+    this->fill_exception_dates(data, work);
+    this->fill_rel_calendars_lines(data, work);
+
+    /// meta vj associated calendars
+    this->fill_associated_calendar(data, work);
+    this->fill_meta_vehicle_journeys(data, work);
 
     this->fill_admins(data, work);
-
     this->fill_admins_postal_codes(data, work);
     this->fill_admin_stop_areas(data, work);
     this->fill_object_codes(data, work);
@@ -90,7 +106,6 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_house_numbers(data, work);
     this->fill_vertex(data, work);
     this->fill_graph(data, work);
-//    this->clean_graph(data, work);
 
     // we need the proximity_list to build bss and parking edges
     data.geo_ref->build_proximity_list();
@@ -108,15 +123,7 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_transitions(data, work);
     this->fill_origin_destinations(data, work);
 
-    /// grid calendar
-    this->fill_calendars(data, work);
-    this->fill_periods(data, work);
-    this->fill_exception_dates(data, work);
-    this->fill_rel_calendars_lines(data, work);
 
-    /// meta vj associated calendars
-    this->fill_associated_calendar(data, work);
-    this->fill_meta_vehicle_journeys(data, work);
 
     check_coherence(data);
 }
@@ -207,62 +214,40 @@ void EdReader::fill_admin_stop_areas(navitia::type::Data&, pqxx::work& work) {
 
 }
 
-void EdReader::fill_object_codes(navitia::type::Data&, pqxx::work& work){
+// The pqxx::const_result_iterator is not always named the same, thus,
+// we just use poor man's type inference.  Love the .template syntax.
+template<typename Map, typename PqxxIt>
+static void add_code(const Map& map, const PqxxIt& db_it, nt::Data& data) {
+    auto search = map.find(db_it["object_id"].template as<idx_t>());
+    if (search != map.end()) {
+        data.pt_data->codes.add(search->second,
+                                db_it["key"].template as<std::string>(),
+                                db_it["value"].template as<std::string>());
+    }
+}
+
+void EdReader::fill_object_codes(navitia::type::Data& data, pqxx::work& work){
     std::string request = "select object_type_id, object_id, key, value from navitia.object_code";
 
     pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
         nt::Type_e object_type_e = static_cast<nt::Type_e>(const_it["object_type_id"].as<int>());
         switch(object_type_e) {
-        case nt::Type_e::Line:{
-            auto it_object = this->line_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->line_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
-        case nt::Type_e::Route:{
-            auto it_object = this->route_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->route_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
-        case nt::Type_e::Network:{
-            auto it_object = this->network_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->network_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
-        case nt::Type_e::VehicleJourney:{
-            auto it_object = this->vehicle_journey_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->vehicle_journey_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
-        case nt::Type_e::StopArea:{
-            auto it_object = this->stop_area_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->stop_area_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
-        case nt::Type_e::StopPoint:{
-            auto it_object = this->stop_point_map.find(const_it["object_id"].as<idx_t>());
-            if (it_object != this->stop_point_map.end()){
-                it_object->second->codes[const_it["key"].as<std::string>()] = const_it["value"].as<std::string>();
-            }
-        }
-        break;
+        case nt::Type_e::StopArea: add_code(this->stop_area_map, const_it, data); break;
+        case nt::Type_e::Network: add_code(this->network_map, const_it, data); break;
+        case nt::Type_e::Company: add_code(this->company_map, const_it, data); break;
+        case nt::Type_e::Line: add_code(this->line_map, const_it, data); break;
+        case nt::Type_e::Route: add_code(this->route_map, const_it, data); break;
+        case nt::Type_e::VehicleJourney: add_code(this->vehicle_journey_map, const_it, data); break;
+        case nt::Type_e::StopPoint: add_code(this->stop_point_map, const_it, data); break;
+        case nt::Type_e::Calendar: add_code(this->calendar_map, const_it, data); break;
         default: break;
         }
     }
 }
 
 void EdReader::fill_meta(navitia::type::Data& nav_data, pqxx::work& work){
-    std::string request = "SELECT beginning_date, end_date, timezone, st_astext(shape) as bounding_shape FROM navitia.parameters";
+    std::string request = "SELECT beginning_date, end_date, st_astext(shape) as bounding_shape FROM navitia.parameters";
     pqxx::result result = work.exec(request);
 
     if (result.empty()) {
@@ -281,11 +266,6 @@ void EdReader::fill_meta(navitia::type::Data& nav_data, pqxx::work& work){
 
     nav_data.meta->production_date = bg::date_period(begin, end);
 
-    if (const_it["timezone"].is_null()) {
-        throw navitia::exception("no default timezone in navitia.parameters, cannot load dataset");
-    }
-    nav_data.meta->timezone = const_it["timezone"].as<std::string>();
-
     const_it["bounding_shape"].to(nav_data.meta->shape);
 }
 
@@ -303,6 +283,43 @@ void EdReader::fill_feed_infos(navitia::type::Data& data, pqxx::work& work){
         if (const_it["key"].as<std::string>() == "feed_license"){
             data.meta->license = const_it["value"].as<std::string>();
         }
+        if (const_it["key"].as<std::string>() == "feed_creation_datetime" && !const_it["value"].is_null()){
+            try {
+                data.meta->dataset_created_at = bt::from_iso_string(const_it["value"].as<std::string>());
+            } catch(const std::out_of_range&) {
+                LOG4CPLUS_INFO(log,"feed_creation_datetime is not valid");
+            }
+        }
+    }
+}
+
+void EdReader::fill_timezones(navitia::type::Data& data, pqxx::work& work) {
+    std::string request = "SELECT tz.id as id,"
+                          " tz.name as name,"
+                          " dst.beginning_date as beg,"
+                          " dst.end_date as end,"
+                          " dst.utc_offset as offset"
+                          " FROM navitia.timezone as tz"
+                          " JOIN navitia.tz_dst as dst ON dst.tz_id = tz.id";
+
+    pqxx::result result = work.exec(request);
+    std::map<std::string, idx_t> id_by_name;
+    std::map<std::string, navitia::type::TimeZoneHandler::dst_periods> timezones;
+    for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
+        bg::date begin = bg::from_string(const_it["beg"].as<std::string>());
+        //we add a day because 'end' is not in the period (and we want it to be)
+        bg::date end = bg::from_string(const_it["end"].as<std::string>()) + bg::days(1);
+        auto name = const_it["name"].as<std::string>();
+        int16_t utc_offset = const_it["offset"].as<int16_t>();
+        timezones[name][utc_offset].push_back(bg::date_period(begin, end));
+
+        auto id = const_it["id"].as<idx_t>();
+        id_by_name[name] = id;
+    }
+
+    for (const auto& p: timezones) {
+        auto tz = data.pt_data->tz_manager.get_or_create(p.first, data.meta->production_date.begin(), p.second);
+        timezone_map[id_by_name[p.first]] = tz;
     }
 }
 
@@ -359,18 +376,53 @@ void EdReader::fill_physical_modes(nt::Data& data, pqxx::work& work){
 }
 
 void EdReader::fill_contributors(nt::Data& data, pqxx::work& work){
-    std::string request = "SELECT id, name, uri FROM navitia.contributor";
+    std::string request = "SELECT id, name, uri, website, license FROM navitia.contributor";
 
     pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
         nt::Contributor* contributor = new nt::Contributor();
         const_it["uri"].to(contributor->uri);
         const_it["name"].to(contributor->name);
+        const_it["website"].to(contributor->website);
+        const_it["license"].to(contributor->license);
 
         contributor->idx = data.pt_data->contributors.size();
 
         data.pt_data->contributors.push_back(contributor);
         this->contributor_map[const_it["id"].as<idx_t>()] = contributor;
+    }
+}
+
+void EdReader::fill_datasets(nt::Data& data, pqxx::work& work){
+    std::string request = "SELECT id, uri, description, system, start_date, end_date, "
+                          "contributor_id FROM navitia.dataset";
+    size_t nb_unknown_contributor(0);
+    pqxx::result result = work.exec(request);
+    for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
+        auto contributor_it = this->contributor_map.find(const_it["contributor_id"].as<idx_t>());
+        if(contributor_it == this->contributor_map.end()) {
+            LOG4CPLUS_TRACE(log, "impossible to find contributor" << const_it["contributor_id"]
+                    << ", we cannot assoicate it to dataset " << const_it["uri"]);
+            nb_unknown_contributor++;
+            continue;
+        }
+
+        nt::Dataset* dataset = new nt::Dataset();
+        const_it["uri"].to(dataset->uri);
+        const_it["description"].to(dataset->desc);
+        const_it["system"].to(dataset->system);
+        boost::gregorian::date start(bg::from_string(const_it["start_date"].as<std::string>()));
+        boost::gregorian::date end(bg::from_string(const_it["end_date"].as<std::string>()));
+        dataset->validation_period = bg::date_period(start, end);
+        dataset->contributor = contributor_it->second;
+        dataset->idx = data.pt_data->datasets.size();
+
+        dataset->contributor->dataset_list.push_back(dataset);
+        data.pt_data->datasets.push_back(dataset);
+        this->dataset_map[const_it["id"].as<idx_t>()] = dataset;
+    }
+    if (nb_unknown_contributor){
+        LOG4CPLUS_WARN(log, nb_unknown_contributor << "contributor not found for dataset");
     }
 }
 
@@ -524,7 +576,7 @@ void EdReader::fill_stop_points(nt::Data& data, pqxx::work& work){
 }
 
 void EdReader::fill_lines(nt::Data& data, pqxx::work& work){
-    std::string request = "SELECT id, name, uri, code, color, "
+    std::string request = "SELECT id, name, uri, code, color, text_color,"
         "network_id, commercial_mode_id, sort, ST_AsText(shape) AS shape, "
         "opening_time, closing_time "
         "FROM navitia.line";
@@ -536,6 +588,7 @@ void EdReader::fill_lines(nt::Data& data, pqxx::work& work){
         const_it["name"].to(line->name);
         const_it["code"].to(line->code);
         const_it["color"].to(line->color);
+        const_it["text_color"].to(line->text_color);
         const_it["sort"].to(line->sort);
         if (!const_it["opening_time"].is_null()) {
             line->opening_time = boost::posix_time::duration_from_string(const_it["opening_time"].as<std::string>());
@@ -598,13 +651,14 @@ void EdReader::fill_line_groups(nt::Data& data, pqxx::work& work){
 
 void EdReader::fill_routes(nt::Data& data, pqxx::work& work){
     std::string request = "SELECT id, name, uri, line_id, destination_stop_area_id,"
-        "ST_AsText(shape) AS shape FROM navitia.route";
+        "ST_AsText(shape) AS shape, direction_type FROM navitia.route";
 
     pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
         nt::Route* route = new nt::Route();
         const_it["uri"].to(route->uri);
         const_it["name"].to(route->name);
+        const_it["direction_type"].to(route->direction_type);
         boost::geometry::read_wkt(const_it["shape"].as<std::string>("MULTILINESTRING()"),
                                   route->shape);
 
@@ -620,65 +674,6 @@ void EdReader::fill_routes(nt::Data& data, pqxx::work& work){
     }
 }
 
-void EdReader::fill_journey_patterns(nt::Data& data, pqxx::work& work){
-    std::string request = "SELECT id, name, uri, route_id, "
-        "is_frequence, physical_mode_id FROM navitia.journey_pattern";
-
-    pqxx::result result = work.exec(request);
-    for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
-        nt::JourneyPattern* journey_pattern = new nt::JourneyPattern();
-        const_it["uri"].to(journey_pattern->uri);
-        const_it["name"].to(journey_pattern->name);
-        const_it["is_frequence"].to(journey_pattern->is_frequence);
-
-        journey_pattern->route = route_map[const_it["route_id"].as<idx_t>()];
-        journey_pattern->route->journey_pattern_list.push_back(journey_pattern);
-
-        // attach the physical mode with database values
-        journey_pattern->physical_mode = physical_mode_map[const_it["physical_mode_id"].as<idx_t>()];
-        journey_pattern->physical_mode->journey_pattern_list.push_back(journey_pattern);
-
-        // get commercial mode from the line of the route of the journey_pattern
-        journey_pattern->commercial_mode = journey_pattern->route->line->commercial_mode;
-
-        data.pt_data->journey_patterns.push_back(journey_pattern);
-        this->journey_pattern_map[const_it["id"].as<idx_t>()] = journey_pattern;
-    }
-}
-
-
-void EdReader::fill_journey_pattern_points(nt::Data& data, pqxx::work& work){
-    std::string request = "SELECT id, name, uri, \"order\","
-        "stop_point_id, journey_pattern_id, ST_AsText(shape_from_prev) as shape "
-        "FROM navitia.journey_pattern_point";
-
-    pqxx::result result = work.exec(request);
-    for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
-        nt::JourneyPatternPoint* jpp = new nt::JourneyPatternPoint();
-
-        const_it["uri"].to(jpp->uri);
-        const_it["\"order\""].to(jpp->order);
-
-        jpp->journey_pattern = journey_pattern_map[const_it["journey_pattern_id"].as<idx_t>()];
-        jpp->journey_pattern->journey_pattern_point_list.push_back(jpp);
-
-        jpp->stop_point = stop_point_map[const_it["stop_point_id"].as<idx_t>()];
-
-        jpp->idx = data.pt_data->journey_pattern_points.size();
-
-        boost::geometry::read_wkt(const_it["shape"].as<std::string>("LINESTRING()"),
-                                  jpp->shape_from_prev);
-
-        data.pt_data->journey_pattern_points.push_back(jpp);
-        this->journey_pattern_point_map[const_it["id"].as<idx_t>()] = jpp;
-    }
-
-    //we need to sort all jpp by order
-    for (auto journey_pattern : data.pt_data->journey_patterns) {
-        auto comp = [](const nt::JourneyPatternPoint* jpp1, const nt::JourneyPatternPoint* jpp2){return jpp1->order < jpp2->order;};
-        std::sort(journey_pattern->journey_pattern_point_list.begin(), journey_pattern->journey_pattern_point_list.end(), comp);
-    }
-}
 
 
 void EdReader::fill_validity_patterns(nt::Data& data, pqxx::work& work){
@@ -771,8 +766,9 @@ void EdReader::fill_stop_point_connections(nt::Data& data, pqxx::work& work){
 void EdReader::fill_vehicle_journeys(nt::Data& data, pqxx::work& work){
     std::string request = "SELECT vj.id as id, vj.name as name, vj.uri as uri,"
         "vj.company_id as company_id, "
-        "vj.journey_pattern_id as journey_pattern_id,"
         "vj.validity_pattern_id as validity_pattern_id,"
+        "vj.physical_mode_id as physical_mode_id,"
+        "vj.route_id as route_id,"
         "vj.adapted_validity_pattern_id as adapted_validity_pattern_id,"
         "vj.theoric_vehicle_journey_id as theoric_vehicle_journey_id ,"
         "vj.odt_type_id as odt_type_id, vj.odt_message as odt_message,"
@@ -781,8 +777,10 @@ void EdReader::fill_vehicle_journeys(nt::Data& data, pqxx::work& work){
         "vj.start_time as start_time,"
         "vj.end_time as end_time,"
         "vj.headway_sec as headway_sec,"
-        "vj.utc_to_local_offset as utc_to_local_offset, "
         "vj.is_frequency as is_frequency, "
+        "vj.meta_vj_name as meta_vj_name, "
+        "vj.vj_class as vj_class, "
+        "vj.dataset_id as dataset_id, "
         "vp.wheelchair_accessible as wheelchair_accessible,"
         "vp.bike_accepted as bike_accepted,"
         "vp.air_conditioned as air_conditioned,"
@@ -792,57 +790,64 @@ void EdReader::fill_vehicle_journeys(nt::Data& data, pqxx::work& work){
         "vp.appropriate_signage as appropriate_signage,"
         "vp.school_vehicle as school_vehicle "
         "FROM navitia.vehicle_journey as vj, navitia.vehicle_properties as vp "
-        "where vj.vehicle_properties_id = vp.id ";
+        "WHERE vj.vehicle_properties_id = vp.id";
 
     pqxx::result result = work.exec(request);
     std::multimap<idx_t, nt::VehicleJourney*> prev_vjs, next_vjs;
     for (auto const_it = result.begin(); const_it != result.end(); ++const_it) {
 
-        auto journey_pattern = journey_pattern_map[const_it["journey_pattern_id"].as<idx_t>()];
+        auto* route = route_map[const_it["route_id"].as<idx_t>()];
         navitia::type::VehicleJourney* vj = nullptr;
-        if (const_it["is_frequency"].as<bool>()) {
-            journey_pattern->frequency_vehicle_journey_list.emplace_back(new nt::FrequencyVehicleJourney());
-            auto& freq_vj = journey_pattern->frequency_vehicle_journey_list.back();
-
-            const_it["start_time"].to(freq_vj->start_time);
-            const_it["end_time"].to(freq_vj->end_time);
-            const_it["headway_sec"].to(freq_vj->headway_secs);
-            vj = freq_vj.get();
-        } else {
-            journey_pattern->discrete_vehicle_journey_list.emplace_back(new nt::DiscreteVehicleJourney());
-            vj = journey_pattern->discrete_vehicle_journey_list.back().get();
+        std::string vj_name;
+        const_it["name"].to(vj_name);
+        std::string mvj_name;
+        const_it["meta_vj_name"].to(mvj_name);
+        if (mvj_name == "") {
+            mvj_name = vj_name;
         }
-        const_it["uri"].to(vj->uri);
+        auto mvj = data.pt_data->meta_vjs.get_or_create(mvj_name);
+        auto rt_level = navitia::type::get_rt_level_from_string(const_it["vj_class"].as<std::string>());
+        const auto& vp = *validity_pattern_map[const_it["validity_pattern_id"].as<idx_t>()];
+        const auto uri = const_it["uri"].as<std::string>();
+        const auto vj_id = const_it["id"].as<idx_t>();
+        if (const_it["is_frequency"].as<bool>()) {
+            auto f_vj = mvj->create_frequency_vj(uri,
+                                                 rt_level,
+                                                 vp,
+                                                 route,
+                                                 std::move(sts_from_vj[vj_id]),
+                                                 *data.pt_data);
+            const_it["start_time"].to(f_vj->start_time);
+            const_it["end_time"].to(f_vj->end_time);
+            const_it["headway_sec"].to(f_vj->headway_secs);
+            vj = f_vj;
+        } else {
+            vj = mvj->create_discrete_vj(uri,
+                                         rt_level,
+                                         vp,
+                                         route,
+                                         std::move(sts_from_vj[vj_id]),
+                                         *data.pt_data);
+        }
         const_it["name"].to(vj->name);
         const_it["odt_message"].to(vj->odt_message);
-        const_it["utc_to_local_offset"].to(vj->utc_to_local_offset);
         // TODO ODT NTFSv0.3: remove that when we stop to support NTFSv0.1
         vj->vehicle_journey_type = static_cast<nt::VehicleJourneyType>(const_it["odt_type_id"].as<int>());
-        vj->journey_pattern = journey_pattern;
-
+        vj->physical_mode = physical_mode_map[const_it["physical_mode_id"].as<idx_t>()];
 
         vj->company = company_map[const_it["company_id"].as<idx_t>()];
         assert (vj->company);
-        assert (vj->journey_pattern);
+        assert (vj->route);
 
-        if (vj->journey_pattern->route && vj->journey_pattern->route->line){
-            if(boost::range::find(vj->journey_pattern->route->line->company_list,
-                         vj->company) == vj->journey_pattern->route->line->company_list.end()){
-                vj->journey_pattern->route->line->company_list.push_back(vj->company);
+        if (vj->route && vj->route->line){
+            if (boost::range::find(vj->route->line->company_list, vj->company)
+                == vj->route->line->company_list.end()) {
+                vj->route->line->company_list.push_back(vj->company);
             }
-            if(boost::range::find(vj->company->line_list,
-                         vj->journey_pattern->route->line) == vj->company->line_list.end()){
-                vj->company->line_list.push_back(vj->journey_pattern->route->line);
+            if (boost::range::find(vj->company->line_list, vj->route->line)
+                == vj->company->line_list.end()) {
+                vj->company->line_list.push_back(vj->route->line);
             }
-        }
-        vj->adapted_validity_pattern = validity_pattern_map[const_it["adapted_validity_pattern_id"].as<idx_t>()];
-
-        if(!const_it["validity_pattern_id"].is_null()){
-            vj->validity_pattern = validity_pattern_map[const_it["validity_pattern_id"].as<idx_t>()];
-        }
-
-        if(!const_it["theoric_vehicle_journey_id"].is_null()){
-            vj->theoric_vehicle_journey = vehicle_journey_map[const_it["theoric_vehicle_journey_id"].as<idx_t>()];
         }
 
         if (const_it["wheelchair_accessible"].as<bool>()){
@@ -876,8 +881,23 @@ void EdReader::fill_vehicle_journeys(nt::Data& data, pqxx::work& work){
             next_vjs.insert(std::make_pair(const_it["next_vj_id"].as<idx_t>(), vj));
         }
 
-        data.pt_data->vehicle_journeys.push_back(vj);
-        vehicle_journey_map[const_it["id"].as<idx_t>()] = vj;
+        data.pt_data->headsign_handler.change_name_and_register_as_headsign(*vj, vj->name);
+        vehicle_journey_map[vj_id] = vj;
+
+        // we check if we have some comments
+        const auto& it_comments = vehicle_journey_comments.find(vj_id);
+        if (it_comments != vehicle_journey_comments.end()) {
+            for (const auto& comment: it_comments->second) {
+                data.pt_data->comments.add(vj, comment);
+            }
+        }
+        if (! const_it["dataset_id"].is_null()) {
+            auto dataset_it = this->dataset_map.find(const_it["dataset_id"].as<idx_t>());
+            if(dataset_it != this->dataset_map.end()) {
+                vj->dataset = dataset_it->second;
+                vj->dataset->vehiclejourney_list.push_back(vj);
+            }
+        }
     }
 
     for(auto vjid_vj: prev_vjs) {
@@ -886,6 +906,7 @@ void EdReader::fill_vehicle_journeys(nt::Data& data, pqxx::work& work){
     for(auto vjid_vj: next_vjs) {
         vjid_vj.second->next_vj = vehicle_journey_map[vjid_vj.first];
     }
+    release(sts_from_vj);
 }
 
 void EdReader::fill_associated_calendar(nt::Data& data, pqxx::work& work) {
@@ -935,133 +956,136 @@ void EdReader::fill_associated_calendar(nt::Data& data, pqxx::work& work) {
 }
 
 void EdReader::fill_meta_vehicle_journeys(nt::Data& data, pqxx::work& work) {
-    //then we fill the links
-    std::string request = "SELECT l.meta_vj as metavj, "
-            " l.vehicle_journey as vehicle_journey, l.vj_class as vj_class, meta.name as name"
-            " from navitia.meta_vj as meta, navitia.rel_metavj_vj as l"
-            " WHERE meta.id = l.meta_vj";
-    pqxx::result result = work.exec(request);
+    //then we fill the links between a metavj, its associated calendars and it's timezone
+    const auto request = "SELECT meta.name as name, "
+                         "meta.timezone as timezone, "
+                         "rel.associated_calendar_id as associated_calendar_id, "
+                         "c.uri as associated_calendar_name "
+                         "from navitia.meta_vj as meta "
+                         "LEFT JOIN navitia.rel_metavj_associated_calendar as rel ON rel.meta_vj_id = meta.id "
+                         "LEFT JOIN navitia.associated_calendar as l2 ON rel.associated_calendar_id = l2.id "
+                         "LEFT JOIN navitia.calendar as c ON c.id = l2.calendar_id";
+
+    const pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it) {
         const std::string name = const_it["name"].as<std::string>();
-
-        nt::MetaVehicleJourney* meta_vj;
-
-        auto it_mvj = data.pt_data->meta_vj.find(name);
-        if (it_mvj == data.pt_data->meta_vj.end()) {
-            meta_vj = new nt::MetaVehicleJourney();
-            data.pt_data->meta_vj.insert({name, meta_vj});
-        } else {
-            meta_vj = it_mvj->second;
+        nt::MetaVehicleJourney* meta_vj = data.pt_data->meta_vjs.get_mut(name);
+        if (meta_vj == nullptr) {
+            throw navitia::exception("impossible to find metavj " + name + " data are not valid");
         }
 
-        const auto vj_idx = const_it["vehicle_journey"].as<idx_t>();
-        const auto vj_it = vehicle_journey_map.find(vj_idx);
+        if (! const_it["associated_calendar_id"].is_null()) {
+            int associated_calendar_idx = const_it["associated_calendar_id"].as<idx_t>();
+            nt::AssociatedCalendar* associated_calendar;
+            auto it_ac = this->associated_calendar_map.find(associated_calendar_idx);
+            if (it_ac == this->associated_calendar_map.end()) {
+                LOG4CPLUS_ERROR(log, "Impossible to find the associated calendar " << associated_calendar_idx << ", we won't add it to meta vj");
+            } else {
+                associated_calendar = it_ac->second;
 
-        if ( vj_it == vehicle_journey_map.end()) {
-            LOG4CPLUS_ERROR(log, "Impossible to find the vj " << vj_idx << ", we won't add it in a meta vj");
-            continue;
+                meta_vj->associated_calendars[const_it["associated_calendar_name"].as<std::string>()] = associated_calendar;
+            }
         }
-        auto* vj = vj_it->second;
 
-        const std::string vj_class = const_it["vj_class"].as<std::string>();
-        if (vj_class == "Theoric") {
-            meta_vj->theoric_vj.push_back(vj);
-        } else if (vj_class == "Adapted") {
-            meta_vj->adapted_vj.push_back(vj);
-        } else if (vj_class == "RealTime") {
-            meta_vj->real_time_vj.push_back(vj);
-        } else {
-            throw navitia::exception("technical error, vj class for meta vj should be either Theoric, Adapted or RealTime");
+        const auto tz_id = const_it["timezone"].as<idx_t>();
+        const auto* tz = find_or_default(tz_id, timezone_map);
+        if (! tz) {
+            throw navitia::exception("impossible to find timezone " + std::to_string(tz_id)
+                                     + " data is in an invalid state");
         }
-        vj->meta_vj = meta_vj;
-    }
-
-    //then we fill the links between a metavj and its associated calendars
-    request = "SELECT l.name as name, meta.associated_calendar_id as associated_calendar_id,"
-            " c.uri as associated_calendar_name"
-            " from navitia.rel_metavj_associated_calendar as meta, navitia.meta_vj as l,"
-            " navitia.associated_calendar as l2, navitia.calendar c"
-            " WHERE meta.meta_vj_id = l.id and meta.associated_calendar_id = l2.id and c.id = l2.calendar_id";
-    result = work.exec(request);
-    for(auto const_it = result.begin(); const_it != result.end(); ++const_it) {
-        const std::string name = const_it["name"].as<std::string>();
-        nt::MetaVehicleJourney* meta_vj;
-        auto it_mvj = data.pt_data->meta_vj.find(name);
-        if (it_mvj == data.pt_data->meta_vj.end()) {
-            LOG4CPLUS_ERROR(log, "Impossible to find the meta vj " << name << ", we won't add associated calendar");
-            continue;
-        }
-        meta_vj = it_mvj->second;
-
-        int associated_calendar_idx = const_it["associated_calendar_id"].as<idx_t>();
-        nt::AssociatedCalendar* associated_calendar;
-        auto it_ac = this->associated_calendar_map.find(associated_calendar_idx);
-        if (it_ac == this->associated_calendar_map.end()) {
-            LOG4CPLUS_ERROR(log, "Impossible to find the associated calendar " << associated_calendar_idx << ", we won't add it to meta vj");
-            continue;
-        }
-        associated_calendar = it_ac->second;
-
-        meta_vj->associated_calendars[const_it["associated_calendar_name"].as<std::string>()] = associated_calendar;
+        meta_vj->tz_handler = tz;
     }
 }
 
 void EdReader::fill_stop_times(nt::Data& data, pqxx::work& work) {
-    std::string request = "SELECT vehicle_journey_id, journey_pattern_point_id, arrival_time, departure_time, "
-        "local_traffic_zone, odt, pick_up_allowed, "
-        "drop_off_allowed, is_frequency, date_time_estimated, id "
-        "FROM navitia.stop_time;";
+    std::string request = "SELECT "
+        "st.vehicle_journey_id as vehicle_journey_id,"
+        "st.arrival_time as arrival_time,"
+        "st.departure_time as departure_time,"
+        "st.local_traffic_zone as local_traffic_zone,"
+        "st.odt as odt,"
+        "st.pick_up_allowed as pick_up_allowed,"
+        "st.drop_off_allowed as drop_off_allowed,"
+        "st.is_frequency as is_frequency,"
+        "st.date_time_estimated as date_time_estimated,"
+        "st.id as id,"
+        "st.headsign as headsign,"
+        "st.stop_point_id as stop_point_id,"
+        "st.\"order\" as st_order,"
+        "ST_AsText(st.shape_from_prev) as shape_from_prev "
+        "FROM navitia.stop_time as st ";
 
-    pqxx::result result = work.exec(request);
+    pqxx::stateless_cursor<pqxx::cursor_base::read_only, pqxx::cursor_base::owned>
+        cursor( work, request, "stcursor", false );
 
-    size_t cpt_comment_found(0);
-    for(auto const_it = result.begin(); const_it != result.end(); ++const_it) {
-        auto it = vehicle_journey_map.find(const_it["vehicle_journey_id"].as<idx_t>());
-        if (it == vehicle_journey_map.end()) {
-            throw navitia::exception("impossible to find vj "
-                                     + std::to_string(const_it["vehicle_journey_id"].as<idx_t>())
-                    + " for a stop time, we skip the stoptime ");
-        }
+    size_t chunk_limit = 100000;
+    size_t nb_rows = cursor.size();
+    for (size_t current_idx = 0; current_idx < nb_rows; current_idx += chunk_limit) {
+        pqxx::result result = cursor.retrieve(current_idx, std::min(current_idx + chunk_limit, nb_rows));
 
-        auto vj = it->second;
-        vj->stop_time_list.emplace_back();
-        nt::StopTime& stop = vj->stop_time_list.back();
-
-        const_it["arrival_time"].to(stop.arrival_time);
-        const_it["departure_time"].to(stop.departure_time);
-        if (!const_it["local_traffic_zone"].is_null()){
-            const_it["local_traffic_zone"].to(stop.local_traffic_zone);
-        }
-        stop.set_date_time_estimated(const_it["date_time_estimated"].as<bool>());
-        stop.set_odt(const_it["odt"].as<bool>());
-        stop.set_pick_up_allowed(const_it["pick_up_allowed"].as<bool>());
-        stop.set_drop_off_allowed(const_it["drop_off_allowed"].as<bool>());
-        stop.set_is_frequency(const_it["is_frequency"].as<bool>());
-
-        stop.journey_pattern_point = journey_pattern_point_map[const_it["journey_pattern_point_id"].as<idx_t>()];
-        stop.vehicle_journey = vj;
-
-        // we check if we have some comments
-        const auto& it_comments = stop_time_comments.find(const_it["id"].as<nt::idx_t>());
-        if (it_comments != stop_time_comments.end()) {
-
-            for (const auto& comment: it_comments->second) {
-                data.pt_data->comments.add(stop, comment);
+        for (auto const_it = result.begin(); const_it != result.end(); ++const_it) {
+            const auto vj_id = const_it["vehicle_journey_id"].as<idx_t>();
+            auto& sts = sts_from_vj[vj_id];
+            size_t order = const_it["st_order"].as<idx_t>();
+            if (order + 1 > sts.size()) {
+                sts.resize(order + 1);
             }
-            cpt_comment_found++;
+            nt::StopTime& stop = sts[order];
+
+            const_it["arrival_time"].to(stop.arrival_time);
+            const_it["departure_time"].to(stop.departure_time);
+            if (!const_it["local_traffic_zone"].is_null()){
+                const_it["local_traffic_zone"].to(stop.local_traffic_zone);
+            }
+            stop.set_date_time_estimated(const_it["date_time_estimated"].as<bool>());
+            stop.set_odt(const_it["odt"].as<bool>());
+            stop.set_pick_up_allowed(const_it["pick_up_allowed"].as<bool>());
+            stop.set_drop_off_allowed(const_it["drop_off_allowed"].as<bool>());
+            stop.set_is_frequency(const_it["is_frequency"].as<bool>());
+
+            stop.stop_point = stop_point_map[const_it["stop_point_id"].as<idx_t>()];
+
+            nt::LineString shape_from_prev;
+            boost::geometry::read_wkt(const_it["shape_from_prev"].as<std::string>("LINESTRING()"),
+                                      shape_from_prev);
+            stop.shape_from_prev = data.pt_data->shape_manager.get(shape_from_prev);
+
+            const auto st_id = const_it["id"].as<nt::idx_t>();
+            const StKey st_key = {vj_id, sts.size() - 1};
+
+            if (!const_it["headsign"].is_null()){
+                std::string headsign = const_it["headsign"].as<std::string>();
+                if (!headsign.empty()) {
+                    stop_time_headsigns[st_id] = headsign;
+                    id_to_stop_time_key[st_id] = st_key;
+                }
+            }
+
+            // we check if we have some comments
+            if (stop_time_comments.count(st_id)) {
+                id_to_stop_time_key[st_id] = st_key;
+            }
         }
     }
+}
 
-    for(auto* vj: data.pt_data->vehicle_journeys) {
-        std::sort(vj->stop_time_list.begin(), vj->stop_time_list.end(),
-                  [](const nt::StopTime& st1, const nt::StopTime& st2){return st1.journey_pattern_point->order < st2.journey_pattern_point->order;});
+void EdReader::finish_stop_times(nt::Data& data) {
+    auto get_st = [&](const idx_t id) -> const nt::StopTime& {
+        const auto& st_key = id_to_stop_time_key.at(id);
+        return vehicle_journey_map.at(st_key.first)->stop_time_list.at(st_key.second);
+    };
+    for (const auto& headsign: stop_time_headsigns) {
+        data.pt_data->headsign_handler.affect_headsign_to_stop_time(get_st(headsign.first),
+                                                                    headsign.second);
     }
-
-    if (cpt_comment_found != stop_time_comments.size()) {
-        LOG4CPLUS_WARN(log, stop_time_comments.size() - cpt_comment_found
-                            << " / " << stop_time_comments.size()
-                            << " stoptimes comment have not found their stoptime");
+    for (const auto& comments: stop_time_comments) {
+        for (const auto& comment: comments.second) {
+            data.pt_data->comments.add(get_st(comments.first), comment);
+        }
     }
+    release(id_to_stop_time_key);
+    release(stop_time_headsigns);
+    release(stop_time_comments);
 }
 
 template <typename Map>
@@ -1115,12 +1139,14 @@ void EdReader::fill_comments(nt::Data& data, pqxx::work& work) {
             cpt_not_found += add_comment(data, obj_id, stop_area_map, comment);
         } else if (type_str == "stop_point") {
             cpt_not_found += add_comment(data, obj_id, stop_point_map, comment);
-        } else if (type_str == "trip") {
-            cpt_not_found += add_comment(data, obj_id, vehicle_journey_map, comment);
         } else if (type_str == "stop_time") {
-            //for stop time we store the comment on a temporary map and we will store them when the stop time is read
+            //for stop time we store the comment on a temporary map
+            // and we will store them when the stop time is read.
             // this way we don't have to store all stoptimes in a map
             stop_time_comments[obj_id].push_back(*comment);
+        } else if (type_str == "trip") {
+            // as we need to create vjs after stop times, we need to store the comments
+            vehicle_journey_comments[obj_id].push_back(*comment);
         } else {
             LOG4CPLUS_WARN(log, "invalid type, skipping object comment: " << obj_id << "(" << type_str << ")");
         }
@@ -1212,7 +1238,7 @@ void EdReader::fill_ways(navitia::type::Data& data, pqxx::work& work){
     }
 }
 
-void EdReader::fill_house_numbers(navitia::type::Data& , pqxx::work& work){
+void EdReader::fill_house_numbers(navitia::type::Data& data, pqxx::work& work){
     std::string request = "SELECT way_id, ST_X(coord::geometry) as lon, ST_Y(coord::geometry) as lat, number, left_side FROM georef.house_number where way_id IS NOT NULL;";
     pqxx::result result = work.exec(request);
     for(auto const_it = result.begin(); const_it != result.end(); ++const_it){
@@ -1229,6 +1255,9 @@ void EdReader::fill_house_numbers(navitia::type::Data& , pqxx::work& work){
                 way->add_house_number(hn);
             }
         }
+    }
+    for(auto way: data.geo_ref->ways){
+        way->sort_house_numbers();
     }
 }
 

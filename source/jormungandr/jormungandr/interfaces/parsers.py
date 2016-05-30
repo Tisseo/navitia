@@ -27,40 +27,24 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 from dateutil import parser
+from navitiacommon import parser_args_type
 
+# TODO: to be moved completely into navitiacommon
+depth_argument = parser_args_type.depth_argument
 
-def depth_argument(value, name):
-    if int(value) > 3:
-        raise ValueError("The {} argument has to be <= 3, you gave : {}"
-                         .format(name, value))
-    return int(value)
+float_gt_0 = parser_args_type.float_gt_0
 
+true_false = parser_args_type.true_false
 
-def true_false(value, name):
-    if value == "true":
-        return True
-    elif value == "false":
-        return False
-    else:
-        raise ValueError("The {} argument must be true or false, you gave : {}"
-                         .format(name, value))
+option_value = parser_args_type.option_value
 
-
-def option_value(values):
-    def to_return(value, name):
-        if not (value in values):
-            error = "The {} argument must be in list {}, you gave {}".\
-                format(name, str(values), value)
-            raise ValueError(error)
-        return value
-    return to_return
+default_count_arg_type = parser_args_type.default_count_arg_type
 
 
 def parse_input_date(date):
     """
     datetime parse date seems broken, '155' with format '%H%M%S' is not
     rejected but parsed as 1h, 5mn, 5s...
-
     so use use for the input date parse dateutil even if the 'guess'
     mechanism seems a bit dangerous
     """
@@ -72,6 +56,21 @@ def date_time_format(value):
     we want to valid the date format
     """
     try:
-        return parse_input_date(value)
+        d = parse_input_date(value)
+        if d.year < 1970:
+            raise ValueError('date is too early!')
+
+        return d
     except ValueError as e:
         raise ValueError("Unable to parse datetime, {}".format(e.message))
+
+
+def unsigned_integer(value):
+    try:
+        d = int(value)
+        if d < 0:
+            raise ValueError('invalid positive int')
+
+        return d
+    except ValueError as e:
+        raise ValueError("Unable to evaluate, {}".format(e.message))

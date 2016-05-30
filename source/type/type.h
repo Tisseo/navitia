@@ -30,273 +30,62 @@ www.navitia.io
 
 #pragma once
 
+#include "type_interfaces.h"
 #include "type/time_duration.h"
 #include "datetime.h"
+#include "rt_level.h"
+#include "validity_pattern.h"
+#include "timezone_manager.h"
 #include "geographical_coord.h"
 #include "utils/flat_enum_map.h"
 #include "utils/exception.h"
 #include "utils/functions.h"
-#include "utils/idx_map.h"
 #include <boost/date_time/gregorian/gregorian.hpp>
 #include <vector>
-#include <bitset>
 
 #include <boost/weak_ptr.hpp>
 #include <boost/date_time/gregorian/greg_serialize.hpp>
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/shared_ptr.hpp>
 #include <boost/serialization/bitset.hpp>
-#include <boost/serialization/vector.hpp>
+#include "utils/serialization_vector.h"
 #include <boost/serialization/export.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/bimap.hpp>
 #include <boost/serialization/export.hpp>
 #include <boost/serialization/optional.hpp>
 #include <boost/optional.hpp>
+#include <boost/range/algorithm/for_each.hpp>
 
 namespace navitia { namespace georef {
  struct Admin;
  struct GeoRef;
 }}
-namespace navitia { namespace type {
-typedef navitia::idx_t idx_t;
 
-const idx_t invalid_idx = std::numeric_limits<idx_t>::max();
+namespace navitia { namespace type {
 
 struct Message;
-namespace new_disruption {
+namespace disruption {
 struct Impact;
 }
 
-#define ITERATE_NAVITIA_PT_TYPES(FUN)\
-    FUN(ValidityPattern, validity_patterns)\
-    FUN(Line, lines)\
-    FUN(LineGroup, line_groups)\
-    FUN(JourneyPattern, journey_patterns)\
-    FUN(VehicleJourney, vehicle_journeys)\
-    FUN(StopPoint, stop_points)\
-    FUN(StopArea, stop_areas)\
-    FUN(Network, networks)\
-    FUN(PhysicalMode, physical_modes)\
-    FUN(CommercialMode, commercial_modes)\
-    FUN(JourneyPatternPoint, journey_pattern_points)\
-    FUN(Company, companies)\
-    FUN(Route, routes)\
-    FUN(Contributor, contributors)\
-    FUN(Calendar, calendars)
-
-enum class Type_e {
-    ValidityPattern                 = 0,
-    Line                            = 1,
-    JourneyPattern                  = 2,
-    VehicleJourney                  = 3,
-    StopPoint                       = 4,
-    StopArea                        = 5,
-    Network                         = 6,
-    PhysicalMode                    = 7,
-    CommercialMode                  = 8,
-    Connection                      = 9,
-    JourneyPatternPoint             = 10,
-    Company                         = 11,
-    Route                           = 12,
-    POI                             = 13,
-    StopPointConnection             = 15,
-    Contributor                     = 16,
-
-    // Objets spéciaux qui ne font pas partie du référentiel TC
-    StopTime                        = 17,
-    Address                         = 18,
-    Coord                           = 19,
-    Unknown                         = 20,
-    Way                             = 21,
-    Admin                           = 22,
-    POIType                         = 23,
-    Calendar                        = 24,
-    LineGroup                       = 25
-};
-
-enum class Mode_e {
-    Walking = 0,    // Marche à pied
-    Bike = 1,       // Vélo
-    Car = 2,        // Voiture
-    Bss = 3         // Vls
-    //Note: if a new transportation mode is added, don't forget to update the associated enum_size_trait<type::Mode_e>
-};
-
-enum class OdtLevel_e {
-    scheduled = 0,
-    with_stops = 1,
-    zonal = 2,
-    all = 3
-};
 
 std::ostream& operator<<(std::ostream& os, const Mode_e& mode);
 
 struct PT_Data;
+struct MetaData;
+
 template<class T> std::string T::* name_getter(){return &T::name;}
 template<class T> int T::* idx_getter(){return &T::idx;}
 
 
-struct Nameable {
-    std::string name;
-    bool visible = true;
-};
-
-
-struct Header {
-    idx_t idx = invalid_idx; // Index of the object in the main structure
-    std::string uri; // unique indentifier of the object
-    std::vector<idx_t> get(Type_e, const PT_Data &) const {return std::vector<idx_t>();}
-};
-
-struct Codes {
-    std::map<std::string, std::string> codes;
-};
-
-
-typedef std::bitset<10> Properties;
-struct hasProperties {
-    static const uint8_t WHEELCHAIR_BOARDING = 0;
-    static const uint8_t SHELTERED = 1;
-    static const uint8_t ELEVATOR = 2;
-    static const uint8_t ESCALATOR = 3;
-    static const uint8_t BIKE_ACCEPTED = 4;
-    static const uint8_t BIKE_DEPOT = 5;
-    static const uint8_t VISUAL_ANNOUNCEMENT = 6;
-    static const uint8_t AUDIBLE_ANNOUNVEMENT = 7;
-    static const uint8_t APPOPRIATE_ESCORT = 8;
-    static const uint8_t APPOPRIATE_SIGNAGE = 9;
-
-    bool wheelchair_boarding() {return _properties[WHEELCHAIR_BOARDING];}
-    bool wheelchair_boarding() const {return _properties[WHEELCHAIR_BOARDING];}
-    bool sheltered() {return _properties[SHELTERED];}
-    bool sheltered() const {return _properties[SHELTERED];}
-    bool elevator() {return _properties[ELEVATOR];}
-    bool elevator() const {return _properties[ELEVATOR];}
-    bool escalator() {return _properties[ESCALATOR];}
-    bool escalator() const {return _properties[ESCALATOR];}
-    bool bike_accepted() {return _properties[BIKE_ACCEPTED];}
-    bool bike_accepted() const {return _properties[BIKE_ACCEPTED];}
-    bool bike_depot() {return _properties[BIKE_DEPOT];}
-    bool bike_depot() const {return _properties[BIKE_DEPOT];}
-    bool visual_announcement() {return _properties[VISUAL_ANNOUNCEMENT];}
-    bool visual_announcement() const {return _properties[VISUAL_ANNOUNCEMENT];}
-    bool audible_announcement() {return _properties[AUDIBLE_ANNOUNVEMENT];}
-    bool audible_announcement() const {return _properties[AUDIBLE_ANNOUNVEMENT];}
-    bool appropriate_escort() {return _properties[APPOPRIATE_ESCORT];}
-    bool appropriate_escort() const {return _properties[APPOPRIATE_ESCORT];}
-    bool appropriate_signage() {return _properties[APPOPRIATE_SIGNAGE];}
-    bool appropriate_signage() const {return _properties[APPOPRIATE_SIGNAGE];}
-
-    bool accessible(const Properties &required_properties) const{
-        auto mismatched = required_properties & ~_properties;
-        return mismatched.none();
-    }
-    bool accessible(const Properties &required_properties) {
-        auto mismatched = required_properties & ~_properties;
-        return mismatched.none();
-    }
-
-    void set_property(uint8_t property) {
-        _properties.set(property, true);
-    }
-
-    void set_properties(const Properties &other) {
-        this->_properties = other;
-    }
-
-    Properties properties() const {
-        return this->_properties;
-    }
-
-    void unset_property(uint8_t property) {
-        _properties.set(property, false);
-    }
-
-    bool property(uint8_t property) const {
-        return _properties[property];
-    }
-
-    idx_t to_ulog(){
-        return _properties.to_ulong();
-    }
-
-//private: on ne peut pas binaraisé si privé
-    Properties _properties;
-};
-
-typedef std::bitset<8> VehicleProperties;
-struct hasVehicleProperties {
-    static const uint8_t WHEELCHAIR_ACCESSIBLE = 0;
-    static const uint8_t BIKE_ACCEPTED = 1;
-    static const uint8_t AIR_CONDITIONED = 2;
-    static const uint8_t VISUAL_ANNOUNCEMENT = 3;
-    static const uint8_t AUDIBLE_ANNOUNCEMENT = 4;
-    static const uint8_t APPOPRIATE_ESCORT = 5;
-    static const uint8_t APPOPRIATE_SIGNAGE = 6;
-    static const uint8_t SCHOOL_VEHICLE = 7;
-
-    bool wheelchair_accessible() {return _vehicle_properties[WHEELCHAIR_ACCESSIBLE];}
-    bool wheelchair_accessible() const {return _vehicle_properties[WHEELCHAIR_ACCESSIBLE];}
-    bool bike_accepted() {return _vehicle_properties[BIKE_ACCEPTED];}
-    bool bike_accepted() const {return _vehicle_properties[BIKE_ACCEPTED];}
-    bool air_conditioned() {return _vehicle_properties[AIR_CONDITIONED];}
-    bool air_conditioned() const {return _vehicle_properties[AIR_CONDITIONED];}
-    bool visual_announcement() {return _vehicle_properties[VISUAL_ANNOUNCEMENT];}
-    bool visual_announcement() const {return _vehicle_properties[VISUAL_ANNOUNCEMENT];}
-    bool audible_announcement() {return _vehicle_properties[AUDIBLE_ANNOUNCEMENT];}
-    bool audible_announcement() const {return _vehicle_properties[AUDIBLE_ANNOUNCEMENT];}
-    bool appropriate_escort() {return _vehicle_properties[APPOPRIATE_ESCORT];}
-    bool appropriate_escort() const {return _vehicle_properties[APPOPRIATE_ESCORT];}
-    bool appropriate_signage() {return _vehicle_properties[APPOPRIATE_SIGNAGE];}
-    bool appropriate_signage() const {return _vehicle_properties[APPOPRIATE_SIGNAGE];}
-    bool school_vehicle() {return _vehicle_properties[SCHOOL_VEHICLE];}
-    bool school_vehicle() const {return _vehicle_properties[SCHOOL_VEHICLE];}
-
-    bool accessible(const VehicleProperties &required_vehicles) const{
-        auto mismatched = required_vehicles & ~_vehicle_properties;
-        return mismatched.none();
-    }
-    bool accessible(const VehicleProperties &required_vehicles) {
-        auto mismatched = required_vehicles & ~_vehicle_properties;
-        return mismatched.none();
-    }
-
-    void set_vehicle(uint8_t vehicle) {
-        _vehicle_properties.set(vehicle, true);
-    }
-
-    void set_vehicles(const VehicleProperties &other) {
-        this->_vehicle_properties = other;
-    }
-
-    VehicleProperties vehicles() const {
-        return this->_vehicle_properties;
-    }
-
-    void unset_vehicle(uint8_t vehicle) {
-        _vehicle_properties.set(vehicle, false);
-    }
-
-    bool vehicle(uint8_t vehicle) const {
-        return _vehicle_properties[vehicle];
-    }
-
-    idx_t to_ulog(){
-        return _vehicle_properties.to_ulong();
-    }
-
-//private: on ne peut pas binaraisé si privé
-    VehicleProperties _vehicle_properties;
-};
-
 struct HasMessages{
 protected:
-    mutable std::vector<boost::weak_ptr<new_disruption::Impact>> impacts;
+    mutable std::vector<boost::weak_ptr<disruption::Impact>> impacts;
 public:
-    void add_impact(const boost::shared_ptr<new_disruption::Impact>& i) {impacts.push_back(i);}
+    void add_impact(const boost::shared_ptr<disruption::Impact>& i) {impacts.push_back(i);}
 
-    std::vector<boost::shared_ptr<new_disruption::Impact>> get_applicable_messages(
+    std::vector<boost::shared_ptr<disruption::Impact>> get_applicable_messages(
             const boost::posix_time::ptime& current_time,
             const boost::posix_time::time_period& action_period) const;
 
@@ -306,23 +95,20 @@ public:
 
     bool has_publishable_message(const boost::posix_time::ptime& current_time) const;
 
-    std::vector<boost::shared_ptr<new_disruption::Impact>> get_publishable_messages(
+    std::vector<boost::shared_ptr<disruption::Impact>> get_publishable_messages(
             const boost::posix_time::ptime& current_time) const;
 
+    std::vector<boost::shared_ptr<disruption::Impact>> get_impacts() const;
 
-    std::vector<boost::weak_ptr<new_disruption::Impact>> get_impacts() const {
-        return impacts;
-    }
-
-    void remove_impact(const boost::shared_ptr<new_disruption::Impact>& impact) {
-        auto it = std::find_if(impacts.begin(), impacts.end(),[&impact](const boost::weak_ptr<new_disruption::Impact>& i) {
+    void remove_impact(const boost::shared_ptr<disruption::Impact>& impact) {
+        auto it = std::find_if(impacts.begin(), impacts.end(),
+                               [&impact](const boost::weak_ptr<disruption::Impact>& i) {
             return i.lock() == impact;
         });
         if (it != impacts.end()) {
             impacts.erase(it);
         }
     }
-
 };
 
 enum class ConnectionType {
@@ -349,14 +135,13 @@ struct StopArea;
 struct Network;
 struct StopPointConnection;
 struct Line;
-struct JourneyPattern;
 struct ValidityPattern;
 struct Route;
-struct JourneyPatternPoint;
 struct VehicleJourney;
 struct StopTime;
+struct Dataset;
 
-struct StopPoint : public Header, Nameable, hasProperties, HasMessages, Codes{
+struct StopPoint : public Header, Nameable, hasProperties, HasMessages {
     const static Type_e type = Type_e::StopPoint;
     GeographicalCoord coord;
     int fare_zone;
@@ -367,22 +152,21 @@ struct StopPoint : public Header, Nameable, hasProperties, HasMessages, Codes{
     StopArea* stop_area;
     std::vector<navitia::georef::Admin*> admin_list;
     Network* network;
-    std::vector<JourneyPatternPoint*> journey_pattern_point_list;
     std::vector<StopPointConnection*> stop_point_connection_list;
+    std::vector<Dataset*> dataset_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         // The *_list are not serialized here to avoid stack abuse
         // during serialization and deserialization.
         //
         // stop_point_connection_list is managed by StopPointConnection
-        // journey_pattern_point_list is managed by JourneyPatternPoint
         ar & uri & label & name & stop_area & coord & fare_zone & is_zonal & idx & platform_code
-            & admin_list & _properties & impacts & codes;
+            & admin_list & _properties & impacts & dataset_list;
     }
 
     StopPoint(): fare_zone(0),  stop_area(nullptr), network(nullptr) {}
 
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const StopPoint & other) const { return this < &other; }
 
 };
@@ -412,7 +196,7 @@ struct StopPointConnection: public Header, hasProperties{
         destination->stop_point_connection_list.push_back(this);
     }
     BOOST_SERIALIZATION_SPLIT_MEMBER()
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
 
     bool operator<(const StopPointConnection &other) const;
 
@@ -458,7 +242,7 @@ inline ExceptionDate::ExceptionType to_exception_type(const std::string& str) {
 }
 
 
-struct StopArea : public Header, Nameable, hasProperties, HasMessages, Codes{
+struct StopArea : public Header, Nameable, hasProperties, HasMessages {
     const static Type_e type = Type_e::StopArea;
     GeographicalCoord coord;
     std::string additional_data;
@@ -471,16 +255,16 @@ struct StopArea : public Header, Nameable, hasProperties, HasMessages, Codes{
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & label & uri & name & coord & stop_point_list & admin_list
-        & _properties & wheelchair_boarding & impacts & visible
-                & codes & timezone;
+            & _properties & wheelchair_boarding & impacts & visible
+            & timezone;
     }
 
     std::vector<StopPoint*> stop_point_list;
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const StopArea & other) const { return this < &other; }
 };
 
-struct Network : public Header, HasMessages, Codes{
+struct Network : public Header, HasMessages {
     std::string name;
     const static Type_e type = Type_e::Network;
     std::string address_name;
@@ -496,10 +280,10 @@ struct Network : public Header, HasMessages, Codes{
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & address_name & address_number & address_type_name
-            & mail & website & fax & sort & line_list & impacts & codes;
+            & mail & website & fax & sort & line_list & impacts;
     }
 
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const Network & other) const {
         if(this->sort != other.sort) {
             return this->sort < other.sort;
@@ -514,14 +298,34 @@ struct Network : public Header, HasMessages, Codes{
 
 struct Contributor : public Header, Nameable{
     const static Type_e type = Type_e::Contributor;
+    std::string website;
+    std::string license;
+    std::vector<Dataset*> dataset_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & idx & name & uri;
+        ar & idx & name & uri & website & license & dataset_list;
     }
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const Contributor & other) const { return this < &other; }
 };
 
-struct Company : public Header, Nameable, Codes{
+struct Dataset : public Header, Nameable{
+    const static Type_e type = Type_e::Dataset;
+    Contributor* contributor=nullptr;
+    navitia::type::RTLevel realtime_level = navitia::type::RTLevel::Base;
+    boost::gregorian::date_period validation_period{boost::gregorian::date(), boost::gregorian::date()};
+    std::string desc;
+    std::string system;
+    std::vector<VehicleJourney*> vehiclejourney_list;
+
+    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
+        ar & idx & uri & contributor & realtime_level & validation_period & desc & system;
+    }
+    Indexes get(Type_e type, const PT_Data & data) const;
+    bool operator<(const Dataset & other) const { return this < &other; }
+};
+
+struct Company : public Header, Nameable {
     const static Type_e type = Type_e::Company;
     std::string address_name;
     std::string address_number;
@@ -535,9 +339,9 @@ struct Company : public Header, Nameable, Codes{
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & address_name & address_number &
-        address_type_name & phone_number & mail & website & fax & codes & line_list;
+        address_type_name & phone_number & mail & website & fax & line_list;
     }
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const Company & other) const { return this < &other; }
 };
 
@@ -547,7 +351,7 @@ struct CommercialMode : public Header, Nameable{
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & line_list;
     }
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const CommercialMode & other) const { return this < &other; }
 
 };
@@ -555,12 +359,12 @@ struct CommercialMode : public Header, Nameable{
 struct PhysicalMode : public Header, Nameable{
     const static Type_e type = Type_e::PhysicalMode;
     boost::optional<double> co2_emission;
-    std::vector<JourneyPattern*> journey_pattern_list;
+    std::vector<VehicleJourney*> vehicle_journey_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & idx & name & uri & co2_emission & journey_pattern_list;
+        ar & idx & name & uri & co2_emission & vehicle_journey_list;
     }
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
 
     PhysicalMode() {}
     bool operator<(const PhysicalMode & other) const { return this < &other; }
@@ -599,7 +403,7 @@ struct hasOdtProperties {
 
 struct LineGroup;
 
-struct Line : public Header, Nameable, HasMessages, Codes{
+struct Line : public Header, Nameable, HasMessages {
     const static Type_e type = Type_e::Line;
     std::string code;
     std::string forward_name;
@@ -607,6 +411,7 @@ struct Line : public Header, Nameable, HasMessages, Codes{
 
     std::string additional_data;
     std::string color;
+    std::string text_color;
     int sort = std::numeric_limits<int>::max();
 
     CommercialMode* commercial_mode = nullptr;
@@ -626,12 +431,12 @@ struct Line : public Header, Nameable, HasMessages, Codes{
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & code & forward_name & backward_name
-                & additional_data & color & sort & commercial_mode
+                & additional_data & color & text_color & sort & commercial_mode
                 & company_list & network & route_list & physical_mode_list
-                & impacts & calendar_list & codes & shape & closing_time
+                & impacts & calendar_list & shape & closing_time
                 & opening_time & properties & line_group_list;
     }
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
 
     bool operator<(const Line & other) const {
         if(this->network != other.network){
@@ -649,6 +454,8 @@ struct Line : public Header, Nameable, HasMessages, Codes{
         return this < &other;
     }
     type::hasOdtProperties get_odt_properties() const;
+
+    std::string get_label() const;
 };
 
 struct LineGroup : public Header, Nameable{
@@ -660,28 +467,10 @@ struct LineGroup : public Header, Nameable{
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & main_line & line_list;
     }
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     bool operator<(const LineGroup & other) const { return this < &other; }
 };
 
-struct Route : public Header, Nameable, HasMessages, Codes{
-    const static Type_e type = Type_e::Route;
-    Line* line = nullptr;
-    StopArea* destination = nullptr;
-    MultiLineString shape;
-    std::vector<JourneyPattern*> journey_pattern_list;
-
-    type::hasOdtProperties get_odt_properties() const;
-
-    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & idx & name & uri & line & destination & journey_pattern_list & impacts & codes & shape;
-    }
-
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
-    bool operator<(const Route & other) const { return this < &other; }
-
-};
-struct JourneyPattern;
 struct MetaVehicleJourney;
 
 /**
@@ -693,13 +482,13 @@ struct MetaVehicleJourney;
  *  - FrequencyVehicleJourney
  * A frequency VJ, with a start, an end and frequency (headway)
  *
- * The JourneyPattern owns 2 differents list for the VJs, and both are treated differently in the algorithm (in best_stop_times)
+ * The Route owns 2 differents list for the VJs
  */
-struct VehicleJourney: public Header, Nameable, hasVehicleProperties, HasMessages, Codes {
+struct VehicleJourney: public Header, Nameable, hasVehicleProperties {
     const static Type_e type = Type_e::VehicleJourney;
-    JourneyPattern* journey_pattern = nullptr;
+    Route* route = nullptr;
+    PhysicalMode* physical_mode = nullptr;
     Company* company = nullptr;
-    ValidityPattern* validity_pattern = nullptr;
     std::vector<StopTime> stop_time_list;
 
     // These variables are used in the case of an extension of service
@@ -708,26 +497,73 @@ struct VehicleJourney: public Header, Nameable, hasVehicleProperties, HasMessage
     VehicleJourney* next_vj = nullptr;
     VehicleJourney* prev_vj = nullptr;
     //associated meta vj
-    const MetaVehicleJourney* meta_vj = nullptr;
+    MetaVehicleJourney* meta_vj = nullptr;
     std::string odt_message; //TODO It seems a VJ can have either a comment or an odt_message but never both, so we could use only the 'comment' to store the odt_message
 
     // TODO ODT NTFSv0.3: remove that when we stop to support NTFSv0.1
     VehicleJourneyType vehicle_journey_type = VehicleJourneyType::regular;
 
-    // impacts not directly on this vj, by example an impact on a line will impact the vj, so we add the impact here
-    // because it's not really on the vj
-    std::vector<boost::weak_ptr<new_disruption::Impact>> impacted_by;
-
     // all times are stored in UTC
     // however, sometime we do not have a date to convert the time to a local value (in jormungandr)
     // For example for departure board over a period (calendar)
-    // thus we store the shit needed to convert all stop times of the vehicle journey to local
-    int16_t utc_to_local_offset = 0; //in seconds
+    // thus we might need the shift to convert all stop times of the vehicle journey to local
+    int16_t utc_to_local_offset() const; //in seconds
 
-    bool is_adapted = false; //REMOVE (change to enum ?)
-    ValidityPattern* adapted_validity_pattern = nullptr; //REMOVE
-    std::vector<VehicleJourney*> adapted_vehicle_journey_list; //REMOVE
-    VehicleJourney* theoric_vehicle_journey = nullptr; //REMOVE
+    RTLevel realtime_level = RTLevel::Base;
+
+    // number of days of delay compared to base-vj vp (case of a delayed vj in realtime or adapted)
+    size_t shift = 0;
+    // validity pattern for all RTLevel
+    flat_enum_map<RTLevel, ValidityPattern*> validity_patterns = {{{nullptr, nullptr, nullptr}}};
+    ValidityPattern* get_validity_pattern_at(RTLevel level) const { return validity_patterns[level]; }
+    ValidityPattern* base_validity_pattern() const { return get_validity_pattern_at(RTLevel::Base); }
+    ValidityPattern* adapted_validity_pattern() const { return get_validity_pattern_at(RTLevel::Adapted); }
+    ValidityPattern* rt_validity_pattern() const { return get_validity_pattern_at(RTLevel::RealTime); }
+    // base-schedule validity pattern canceled by this vj (to get corresponding vjs, use meta-vj)
+    ValidityPattern get_base_canceled_validity_pattern() const;
+
+    // return the base vj corresponding to this vj, return nullptr if nothing found
+    const VehicleJourney* get_corresponding_base() const;
+
+    /*
+     *
+     *
+     *  Day     1              2               3               4               5               6             ...
+     *          -----------------------------------------------------------------------------------------------------
+     * SP_bob           8:30         8:30             8:30           8:30           8:30             8:30   ... (vj)
+     * Period_bob   |-----------------------------------------------|
+     *             6:00                                            6:00
+     *
+     * Let's say we have a vj passes every day at 8:30 on a stop point SP_bob.
+     * Now given a Period_bob and the VJ stops at SP_bob only during this Period_bob, what's the validity pattern of the
+     * VJ if SP_bob must be served?
+     *
+     * In this case, the vehicle does stop at the Day1, 2, 3, *BUT* not the Day4
+     * Then the validity pattern of this stop_time in this period is "00111" (Reminder: the vp string is inverted)
+     *
+     * */
+    // compute the validity pattern of the vj stop at that stop_point, given the realtime level and a period
+    ValidityPattern get_vp_of_sp(
+            const StopPoint& sp,
+            RTLevel rt_level,
+            const boost::posix_time::time_period& period) const;
+
+    // Return the vp for all the stops of the section
+    ValidityPattern get_vp_for_section(
+            const std::pair<boost::optional<uint16_t>, boost::optional<uint16_t>> bounds_st,
+            RTLevel rt_level,
+            const boost::posix_time::time_period& period) const;
+
+    // Return the stop_times for a section between start_stop and end_stop
+    // Return nullptr if not found
+    const std::pair<boost::optional<uint16_t>, boost::optional<uint16_t>> get_bounds_orders_for_section(
+            const StopArea* start_stop,
+            const StopArea* end_stop
+    ) const;
+
+    //return the time period of circulation of the vj for one day
+    boost::posix_time::time_period execution_period(const boost::gregorian::date& date) const;
+    Dataset* dataset = nullptr;
 
     std::string get_direction() const;
     bool has_datetime_estimated() const;
@@ -736,19 +572,34 @@ struct VehicleJourney: public Header, Nameable, hasVehicleProperties, HasMessage
 
     bool has_boarding() const;
     bool has_landing() const;
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data& data) const;
+    std::vector<boost::shared_ptr<disruption::Impact>> get_impacts() const;
 
     bool operator<(const VehicleJourney& other) const;
-    template<class Archive> void serialize(Archive& ar, const unsigned int ) {
-        ar & name & uri & journey_pattern & company & validity_pattern
-            & idx & stop_time_list & is_adapted
-            & adapted_validity_pattern & adapted_vehicle_journey_list
-            & theoric_vehicle_journey & vehicle_journey_type
-            & odt_message & _vehicle_properties & impacts
-            & codes & next_vj & prev_vj
-            & meta_vj & utc_to_local_offset
-            & impacted_by;
+
+    template<class Archive> void save(Archive& ar, const unsigned int ) const {
+        ar & name & uri & route & physical_mode & company & validity_patterns
+            & idx & stop_time_list & realtime_level
+            & vehicle_journey_type
+            & odt_message & _vehicle_properties
+            & next_vj & prev_vj
+            & meta_vj & shift & dataset;
     }
+    template<class Archive> void load(Archive& ar, const unsigned int ) {
+        ar & name & uri & route & physical_mode & company & validity_patterns
+            & idx & stop_time_list & realtime_level
+            & vehicle_journey_type
+            & odt_message & _vehicle_properties
+            & next_vj & prev_vj
+            & meta_vj & shift & dataset;
+
+        // due to circular references we can't load the vjs in the dataset using only boost::serialize
+        // so we need to save the vj in it's dataset
+        if (dataset) {
+            dataset->vehiclejourney_list.push_back(this);
+        }
+    }
+    BOOST_SERIALIZATION_SPLIT_MEMBER()
 
     virtual ~VehicleJourney();
     //TODO remove the virtual there, but to do that we need to remove the prev/next_vj since boost::serialiaze needs to make a virtual call for those
@@ -780,7 +631,7 @@ struct FrequencyVehicleJourney: public VehicleJourney {
     uint32_t headway_secs = std::numeric_limits<uint32_t>::max(); // Seconds between each departure.
     virtual ~FrequencyVehicleJourney();
 
-    bool is_valid(int day, const bool is_adapted) const;
+    bool is_valid(int day, const RTLevel rt_level) const;
     template<class Archive> void serialize(Archive& ar, const unsigned int) {
         ar & boost::serialization::base_object<VehicleJourney>(*this);
 
@@ -788,43 +639,36 @@ struct FrequencyVehicleJourney: public VehicleJourney {
     }
 };
 
-struct JourneyPattern : public Header, Nameable {
-    const static Type_e type = Type_e::JourneyPattern;
-    bool is_frequence = false;
-    Route* route = nullptr;
-    CommercialMode* commercial_mode = nullptr;
-    PhysicalMode* physical_mode = nullptr;
+struct Route : public Header, Nameable, HasMessages {
+    const static Type_e type = Type_e::Route;
+    Line* line = nullptr;
+    StopArea* destination = nullptr;
+    MultiLineString shape;
+    std::string direction_type;
 
-    std::vector<JourneyPatternPoint*> journey_pattern_point_list;
-    hasOdtProperties odt_properties;
+    std::vector<DiscreteVehicleJourney*> discrete_vehicle_journey_list;
+    std::vector<FrequencyVehicleJourney*> frequency_vehicle_journey_list;
+    std::vector<Dataset*> dataset_list;
 
-    std::vector<std::unique_ptr<DiscreteVehicleJourney>> discrete_vehicle_journey_list;
-    std::vector<std::unique_ptr<FrequencyVehicleJourney>> frequency_vehicle_journey_list;
+    type::hasOdtProperties get_odt_properties() const;
 
-    JourneyPattern() {}
-    ~JourneyPattern();
-    JourneyPattern(const JourneyPattern&);
-    JourneyPattern operator=(const JourneyPattern&) = delete;
-
-    template <typename T>
+    template<typename T>
     void for_each_vehicle_journey(const T func) const {
-        //call the functor for each vj.
+        // call the functor for each vj.
         // if func return false, we stop
-        for (const auto& vj: discrete_vehicle_journey_list) { if (! func(*vj)) {return;} }
-        for (const auto& vj: frequency_vehicle_journey_list) { if (! func(*vj)) {return;} }
+        for (auto* vj: discrete_vehicle_journey_list) { if (! func(*vj)) { return; } }
+        for (auto* vj: frequency_vehicle_journey_list) { if (! func(*vj)) { return; } }
     }
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & idx & name & uri & is_frequence & odt_properties &  route & commercial_mode
-                & physical_mode & journey_pattern_point_list & discrete_vehicle_journey_list
-                & frequency_vehicle_journey_list;
-
+        ar & idx & name & uri & line & destination & discrete_vehicle_journey_list
+            & frequency_vehicle_journey_list & impacts & shape & direction_type & dataset_list;
     }
 
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
-    bool operator<(const JourneyPattern & other) const { return this < &other; }
+    Indexes get(Type_e type, const PT_Data & data) const;
+    bool operator<(const Route & other) const { return this < &other; }
 
-    void build_odt_properties();
+    std::string get_label() const;
 };
 
 struct AssociatedCalendar {
@@ -860,8 +704,12 @@ struct StopTime {
     uint32_t departure_time = 0; ///< seconds since midnight
 
     VehicleJourney* vehicle_journey = nullptr;
-    JourneyPatternPoint* journey_pattern_point = nullptr;
+    StopPoint* stop_point = nullptr;
+    const LineString* shape_from_prev = nullptr;
 
+    StopTime() = default;
+    StopTime(uint32_t arr_time, uint32_t dep_time, StopPoint* stop_point):
+        arrival_time{arr_time}, departure_time{dep_time}, stop_point{stop_point}{}
     bool pick_up_allowed() const {return properties[PICK_UP];}
     bool drop_off_allowed() const {return properties[DROP_OFF];}
     bool odt() const {return properties[ODT];}
@@ -873,6 +721,17 @@ struct StopTime {
     inline void set_odt(bool value) {properties[ODT] = value;}
     inline void set_is_frequency(bool value) {properties[IS_FREQUENCY] = value;}
     inline void set_date_time_estimated(bool value) {properties[DATE_TIME_ESTIMATED] = value;}
+    inline uint16_t order() const {
+        static_assert(std::is_same<decltype(vehicle_journey->stop_time_list), std::vector<StopTime>>::value,
+                      "vehicle_journey->stop_time_list must be a std::vector<StopTime>");
+        assert(vehicle_journey);
+        // as vehicle_journey->stop_time_list is a vector, pointer
+        // arithmetic gives us the order of the stop time in the
+        // vector.
+        return this - &vehicle_journey->stop_time_list.front();
+    }
+
+    StopTime clone() const;
 
     /// can we start with this stop time (according to clockwise)
     bool valid_begin(bool clockwise) const {return clockwise ? pick_up_allowed() : drop_off_allowed();}
@@ -914,81 +773,23 @@ struct StopTime {
         return DateTimeUtils::shift(dt, is_frequency() ? f_arrival_time(DateTimeUtils::hour(dt), true): arrival_time);
     }
 
-    bool is_valid_day(u_int32_t day, const bool is_arrival, const bool is_adapted) const;
-
-    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-            ar & arrival_time & departure_time & vehicle_journey & journey_pattern_point
-            & properties & local_traffic_zone;
+    boost::posix_time::ptime get_arrival_utc(const boost::gregorian::date& circulating_day) const {
+       auto timestamp = navitia::to_posix_timestamp(boost::posix_time::ptime{circulating_day})
+                   + static_cast<uint64_t>(arrival_time);
+       return boost::posix_time::from_time_t(timestamp);
     }
 
-    bool operator<(const StopTime& other) const;
+    bool is_valid_day(u_int32_t day, const bool is_arrival, const RTLevel rt_level) const;
+
+    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
+            ar & arrival_time & departure_time & vehicle_journey & stop_point & shape_from_prev
+            & properties & local_traffic_zone;
+    }
 
 private:
     uint32_t f_arrival_time(const u_int32_t hour, bool clockwise = true) const;
     uint32_t f_departure_time(const u_int32_t hour, bool clockwise = false) const;
 };
-
-
-struct ValidityPattern : public Header {
-    const static Type_e type = Type_e::ValidityPattern;
-private:
-    bool is_valid(int duration) const;
-public:
-    using year_bitset = std::bitset<366>;
-    year_bitset days;
-    boost::gregorian::date beginning_date;
-
-    ValidityPattern()  {}
-    ValidityPattern(const boost::gregorian::date& beginning_date) : beginning_date(beginning_date){}
-    ValidityPattern(const boost::gregorian::date& beginning_date, const std::string & vp) : days(vp), beginning_date(beginning_date){}
-
-    int slide(boost::gregorian::date day) const;
-    void add(boost::gregorian::date day);
-    void add(int day);
-    void add(boost::gregorian::date start, boost::gregorian::date end, std::bitset<7> active_days);
-    void remove(boost::gregorian::date day);
-    void remove(int day);
-    void reset() { days.reset(); }
-    std::string str() const;
-    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & beginning_date & days & idx & uri;
-    }
-
-    bool check(boost::gregorian::date day) const;
-    bool check(unsigned int day) const;
-    bool check2(unsigned int day) const;
-    bool uncheck2(unsigned int day) const;
-    //void add(boost::gregorian::date start, boost::gregorian::date end, std::bitset<7> active_days);
-    bool operator<(const ValidityPattern & other) const { return this < &other; }
-    bool operator==(const ValidityPattern & other) const { return (this->beginning_date == other.beginning_date) && (this->days == other.days);}
-};
-
-struct JourneyPatternPoint : public Header{
-    const static Type_e type = Type_e::JourneyPatternPoint;
-    JourneyPattern* journey_pattern;
-    StopPoint* stop_point;
-    uint16_t order;
-    LineString shape_from_prev;
-
-    JourneyPatternPoint() : journey_pattern(nullptr), stop_point(nullptr), order(0){}
-
-    template<class Archive> void save(Archive & ar, const unsigned int) const{
-        ar & idx & uri & order & journey_pattern & stop_point & order & shape_from_prev;
-    }
-    template<class Archive> void load(Archive & ar, const unsigned int) {
-        ar & idx & uri & order & journey_pattern & stop_point & order & shape_from_prev;
-
-        // loading manage StopPoint::journey_pattern_point_list
-        this->stop_point->journey_pattern_point_list.push_back(this);
-    }
-    BOOST_SERIALIZATION_SPLIT_MEMBER()
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
-
-    bool operator<(const JourneyPatternPoint& jpp2) const {
-        return this->journey_pattern < jpp2.journey_pattern  || (this->journey_pattern == jpp2.journey_pattern && this->order < jpp2.order);}
-
-};
-
 
 struct Calendar : public Nameable, public Header {
     const static Type_e type = Type_e::Calendar;
@@ -1008,7 +809,7 @@ struct Calendar : public Nameable, public Header {
 
     bool operator<(const Calendar & other) const { return this < &other; }
 
-    std::vector<idx_t> get(Type_e type, const PT_Data & data) const;
+    Indexes get(Type_e type, const PT_Data & data) const;
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & name & idx & uri & week_pattern & active_periods & exceptions & validity_pattern;
     }
@@ -1030,20 +831,87 @@ struct Calendar : public Nameable, public Header {
  *
  *
  */
-struct MetaVehicleJourney {
-    //store the name ?
-    //TODO if needed use a flat_enum_map
-    std::vector<VehicleJourney*> theoric_vj;
-    std::vector<VehicleJourney*> adapted_vj;
-    std::vector<VehicleJourney*> real_time_vj;
+struct MetaVehicleJourney: public Header, HasMessages {
+    const static Type_e type = Type_e::MetaVehicleJourney;
+    const TimeZoneHandler* tz_handler = nullptr;
+
+    // impacts not directly on this vj, by example an impact on a line will impact the vj, so we add the impact here
+    // because it's not really on the vj
+    std::vector<boost::weak_ptr<disruption::Impact>> impacted_by;
 
     /// map of the calendars that nearly match union of the validity pattern
     /// of the theoric vj, key is the calendar name
     std::map<std::string, AssociatedCalendar*> associated_calendars;
 
-    template<class Archive> void serialize(Archive & ar, const unsigned int ) {
-        ar & theoric_vj & adapted_vj & real_time_vj & associated_calendars;
+    template<class Archive> void serialize(Archive & ar, const unsigned int) {
+        ar & idx & uri & rtlevel_to_vjs_map
+           & associated_calendars & impacts
+           & impacted_by & tz_handler;
     }
+
+    FrequencyVehicleJourney*
+    create_frequency_vj(const std::string& uri,
+                        const RTLevel,
+                        const ValidityPattern& canceled_vp,
+                        Route*,
+                        std::vector<StopTime>,
+                        PT_Data&);
+    DiscreteVehicleJourney*
+    create_discrete_vj(const std::string& uri,
+                       const RTLevel,
+                       const ValidityPattern& canceled_vp,
+                       Route*,
+                       std::vector<StopTime>,
+                       PT_Data&);
+
+    template<typename T>
+    void for_all_vjs(T fun) const{
+        for (const auto& rt_vjs: rtlevel_to_vjs_map) {
+            auto& vjs = rt_vjs.second;
+            boost::for_each(vjs, [&](const std::unique_ptr<VehicleJourney>& vj){fun(*vj);});
+        }
+    }
+
+    const std::vector<std::unique_ptr<VehicleJourney>>& get_vjs_at(RTLevel rt_level) const {
+            return rtlevel_to_vjs_map[rt_level];
+    }
+
+    const std::vector<std::unique_ptr<VehicleJourney>>& get_base_vj() const {
+        return rtlevel_to_vjs_map[RTLevel::Base];
+    }
+    const std::vector<std::unique_ptr<VehicleJourney>>& get_adapted_vj() const {
+        return rtlevel_to_vjs_map[RTLevel::Adapted];
+    }
+    const std::vector<std::unique_ptr<VehicleJourney>>& get_rt_vj() const {
+        return rtlevel_to_vjs_map[RTLevel::RealTime];
+    }
+
+    void cancel_vj(RTLevel level,
+                   const std::vector<boost::posix_time::time_period>& periods,
+                   PT_Data& pt_data,
+                   const Route* filtering_route = nullptr);
+
+    VehicleJourney*
+    get_base_vj_circulating_at_date(const boost::gregorian::date& date) const;
+
+    const std::string& get_label() const { return uri; } // for the moment the label is just the uri
+
+    Indexes get(Type_e type, const PT_Data& data) const;
+
+    void push_unique_impact(const boost::shared_ptr<disruption::Impact>& impact);
+
+    bool is_already_impacted_by(const boost::shared_ptr<disruption::Impact>& impact);
+
+private:
+    template<typename VJ>
+    VJ* impl_create_vj(const std::string& uri,
+                       const RTLevel,
+                       const ValidityPattern& canceled_vp,
+                       Route*,
+                       std::vector<StopTime>,
+                       PT_Data&);
+
+    navitia::flat_enum_map<RTLevel, std::vector<std::unique_ptr<VehicleJourney>>> rtlevel_to_vjs_map;
 };
 
 struct static_data {
@@ -1073,15 +941,25 @@ struct StreetNetworkParams{
     void set_filter(const std::string & param_uri);
 
     navitia::time_duration max_duration = 1_s;
+    bool enable_direct_path = true;
 };
 /**
-  Gestion de l'accessibilié
+  Accessibility management
   */
 struct AccessibiliteParams{
-    Properties properties;  // Accissibilié StopPoint, Correspondance, ..
-    VehicleProperties vehicle_properties; // Accissibilié VehicleJourney
+    Properties properties;  // Accessibility StopPoint, Connection, ...
+    VehicleProperties vehicle_properties; // Accessibility VehicleJourney
 
     AccessibiliteParams(){}
+
+    bool operator<(const AccessibiliteParams& other) const {
+        if (properties.to_ulong() != other.properties.to_ulong()) {
+            return properties.to_ulong() < other.properties.to_ulong();
+        } else if (vehicle_properties.to_ulong() != other.vehicle_properties.to_ulong()) {
+            return vehicle_properties.to_ulong() < other.vehicle_properties.to_ulong();
+        }
+        return false;
+    }
 };
 
 /** Type pour gérer le polymorphisme en entrée de l'API
@@ -1129,6 +1007,21 @@ std::string get_admin_name(const T* v) {
     }
     return admin_name;
 }
+
+template<typename T> inline Type_e get_type_e() {
+    static_assert(!std::is_same<T, T>::value, "get_type_e unimplemented");
+    return Type_e::Unknown;
+}
+template<> inline Type_e get_type_e<PhysicalMode>() {
+    return Type_e::PhysicalMode;
+}
+template<> inline Type_e get_type_e<CommercialMode>() {
+    return Type_e::CommercialMode;
+}
+template<> inline Type_e get_type_e<Contributor>() {
+    return Type_e::Contributor;
+}
+
 } //namespace navitia::type
 
 //trait to access the number of elements in the Mode_e enum
@@ -1140,4 +1033,3 @@ struct enum_size_trait<type::Mode_e> {
 };
 
 } //namespace navitia
-

@@ -35,7 +35,7 @@ from tyr import resources
 from tyr import app, api
 import flask_restful
 
-#we always want pretty json
+# we always want pretty json
 flask_restful.representations.json.settings = {'indent': 4}
 api.app.url_map.strict_slashes = False
 
@@ -43,18 +43,32 @@ api.add_resource(resources.Instance, '/v0/instances/', '/v0/instances/<int:id>/'
 api.add_resource(resources.Api, '/v0/api/')
 
 api.add_resource(resources.User, '/v0/users/',
-        '/v0/users/<int:user_id>/')
+                                 '/v0/users/<int:user_id>/')
 
 api.add_resource(resources.Key, '/v0/users/<int:user_id>/keys/',
-        '/v0/users/<int:user_id>/keys/<int:key_id>/')
+                                '/v0/users/<int:user_id>/keys/<int:key_id>/')
 
-api.add_resource(resources.Authorization,
-        '/v0/users/<int:user_id>/authorizations/')
+api.add_resource(resources.Authorization, '/v0/users/<int:user_id>/authorizations/')
 
 api.add_resource(resources.Index, '/')
 api.add_resource(resources.Job, '/v0/jobs/', '/v0/jobs/<string:instance_name>/', endpoint='jobs')
 api.add_resource(resources.EndPoint, '/v0/end_points/', '/v0/end_points/<int:id>/', endpoint='end_points')
 
+api.add_resource(resources.TravelerProfile,
+                 '/v0/instances/<string:name>/traveler_profiles/',
+                 '/v0/instances/<string:name>/traveler_profiles/<string:traveler_type>')
+
+api.add_resource(resources.BillingPlan,
+                 '/v0/billing_plans/',
+                 '/v0/billing_plans/<int:billing_plan_id>')
+
+api.add_resource(resources.PoiType,
+            '/v0/instances/<string:instance_name>/poi_types',
+            '/v0/instances/<string:instance_name>/poi_types/<string:uri>')
+
+api.add_resource(resources.AutocompleteParameter,
+                 '/v0/autocomplete_parameters/',
+                 '/v0/autocomplete_parameters/<string:name>')
 
 
 @app.errorhandler(Exception)

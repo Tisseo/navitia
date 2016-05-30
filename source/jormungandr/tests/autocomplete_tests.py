@@ -26,10 +26,11 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 import logging
 
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 
 
 def valid_autocomplete_with_one_stop_area(response):
@@ -82,7 +83,7 @@ def is_valid_autocomplete(response, depth):
             is_valid_stop_area(get_not_null(place, "stop_area"), depth-1)
 
 
-@dataset(["main_autocomplete_test"])
+@dataset({"main_autocomplete_test": {}})
 class TestAutocomplete(AbstractTestFixture):
     """
     Test the autocomplete responses

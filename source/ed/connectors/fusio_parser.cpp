@@ -31,6 +31,8 @@ www.navitia.io
 #include "fusio_parser.h"
 
 #include <boost/geometry.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 namespace ed { namespace connectors {
 
@@ -44,6 +46,59 @@ typename C::mapped_type get_object(const C& map, const std::string& obj_id, cons
     }
     return o;
 }
+/*
+Add default dataset for all contributor without any dataset
+*/
+static void default_datasets(GtfsData& gdata, Data& data){
+    for(auto* contributor: data.contributors){
+        bool exist = false;
+        for(const auto dataset : data.datasets){
+            if (dataset->contributor->uri == contributor->uri){
+                exist = true;
+                break;
+            }
+        }
+        if (! exist){
+            auto dataset = std::make_unique<ed::types::Dataset>();
+            dataset->contributor = contributor;
+            dataset->uri = "default_dataset:" + contributor->uri;
+            dataset->validation_period = data.meta.production_date;
+            dataset->desc = "default dataset: " + contributor->name;
+            dataset->idx = data.datasets.size() + 1;
+            data.datasets.push_back(dataset.get());
+            gdata.dataset_map[dataset->uri] = dataset.get();
+            dataset.release();
+        }
+    }
+}
+
+static ed::types::Dataset* get_first_dataset_by_contributor(const Data& data,
+                                                  const std::string& contributor_id){
+    for(auto* dataset : data.datasets){
+        if(dataset->contributor->uri == contributor_id){
+            return dataset;
+        }
+    }
+    return nullptr;
+}
+
+static ed::types::Dataset* get_dataset(GtfsData& gdata, Data& data,
+                                   const std::string& contributor_id,
+                                   const std::string& dataset_id = ""){
+
+    ed::types::Dataset* to_return = nullptr;
+    if(!dataset_id.empty()){
+        auto it_dataset = gdata.dataset_map.find(dataset_id);
+        if (it_dataset != gdata.dataset_map.end()) {
+            to_return = it_dataset->second;
+        }
+    }
+    if (to_return == nullptr){
+        to_return = get_first_dataset_by_contributor(data, contributor_id);
+    }
+
+    return to_return;
+}
 
 void FeedInfoFusioHandler::init(Data&) {
     feed_info_param_c = csv.get_pos_col("feed_info_param");
@@ -52,7 +107,28 @@ void FeedInfoFusioHandler::init(Data&) {
 
 void FeedInfoFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
     if(is_valid(feed_info_param_c, row) && has_col(feed_info_value_c, row)) {
-        data.add_feed_info(row[feed_info_param_c], row[feed_info_value_c]);
+        if (row[feed_info_param_c] == "feed_creation_date"){
+            try {
+                feed_creation_date = boost::make_optional(boost::gregorian::from_undelimited_string(row[feed_info_value_c]));
+            } catch(const std::out_of_range&) {
+                LOG4CPLUS_INFO(logger,"feed_creation_date is not valid");
+            }
+        } else if(row[feed_info_param_c] == "feed_creation_time"){
+            try {
+               feed_creation_time = boost::make_optional(boost::posix_time::duration_from_string(row[feed_info_value_c]));
+            } catch(const std::out_of_range&) {
+                LOG4CPLUS_INFO(logger,"feed_creation_time is not valid");
+            }
+        } else {
+            data.add_feed_info(row[feed_info_param_c], row[feed_info_value_c]);
+        }
+    }
+}
+
+void FeedInfoFusioHandler::finish(Data& data) {
+    if (feed_creation_date && feed_creation_time) {
+        boost::posix_time::ptime creation_datetime(*feed_creation_date, *feed_creation_time);
+        data.add_feed_info("feed_creation_datetime",boost::posix_time::to_iso_string(creation_datetime));
     }
 }
 
@@ -100,7 +176,7 @@ void AgencyFusioHandler::handle_line(Data& data, const csv_row& row, bool is_fir
 
     if (! is_first_line) {
         //we created a default agency, with a default time zone, but this will be overidden if we read at least one agency
-        if (gtfs_data.tz.default_timezone.first != timezone_name) {
+        if (data.tz_wrapper.tz_name != timezone_name) {
             LOG4CPLUS_WARN(logger, "Error while reading "<< csv.filename <<
                             " all the time zone are not equals, only the first one will be considered as the default timezone");
         }
@@ -117,16 +193,19 @@ void AgencyFusioHandler::handle_line(Data& data, const csv_row& row, bool is_fir
         throw navitia::exception("Error while reading " + csv.filename +
                                  + " timezone " + timezone_name + " is not valid for agency " + network->uri);
     }
-    gtfs_data.tz.default_timezone = {timezone_name, tz};
-    LOG4CPLUS_INFO(logger, "default agency tz " << gtfs_data.tz.default_timezone.first
-                   << " -> " << gtfs_data.tz.default_timezone.second->std_zone_name());
+    data.tz_wrapper = ed::EdTZWrapper(timezone_name, tz);
+    LOG4CPLUS_INFO(logger, "default agency tz " << data.tz_wrapper.tz_name << " -> " << tz->std_zone_name());
 
 }
 
 void StopsFusioHandler::init(Data& data) {
         StopsGtfsHandler::init(data);
         ext_code_c = csv.get_pos_col("external_code");
+        // TODO equipment_id NTFSv0.4: remove property_id when we stop to support NTFSv0.3
         property_id_c = csv.get_pos_col("property_id");
+        if (property_id_c == -1){
+            property_id_c = csv.get_pos_col("equipment_id");
+         }
         comment_id_c =  csv.get_pos_col("comment_id");
         visible_c =  csv.get_pos_col("visible");
         geometry_id_c = csv.get_pos_col("geometry_id");
@@ -201,6 +280,7 @@ StopsGtfsHandler::stop_point_and_area StopsFusioHandler::handle_line(Data& data,
             LOG4CPLUS_WARN(logger, "geometry_id " << row.at(geometry_id_c) << " not found");
         }
     }
+
     return return_wrapper;
 }
 
@@ -208,10 +288,9 @@ void RouteFusioHandler::init(Data& ) {
     ext_code_c = csv.get_pos_col("external_code");
     route_id_c = csv.get_pos_col("route_id");
     route_name_c = csv.get_pos_col("route_name");
-    is_forward_c = csv.get_pos_col("is_forward");
+    direction_type_c = csv.get_pos_col("direction_type");
     line_id_c = csv.get_pos_col("line_id");
     comment_id_c = csv.get_pos_col("comment_id");
-    contributor_id_c = csv.get_pos_col("contributor_id");
     geometry_id_c = csv.get_pos_col("geometry_id");
     destination_id_c = csv.get_pos_col("destination_id");
     ignored = 0;
@@ -232,7 +311,7 @@ void RouteFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
         LOG4CPLUS_WARN(logger, "Route orphan " + row[route_id_c]);
         return;
     }
-    ed::types::Route* ed_route = new ed::types::Route();
+    ed::types::Route* ed_route = new ed::types::Route();    
     ed_route->line = ed_line;
     ed_route->uri = row[route_id_c];
 
@@ -241,6 +320,9 @@ void RouteFusioHandler::handle_line(Data& data, const csv_row& row, bool) {
     }
 
     ed_route->name = row[route_name_c];
+    if (is_valid(direction_type_c, row)) {
+        ed_route->direction_type = row[direction_type_c];
+    }
 
     if (is_valid(comment_id_c, row)) {
         auto it_comment = data.comment_by_id.find(row[comment_id_c]);
@@ -268,6 +350,10 @@ void TransfersFusioHandler::init(Data& d) {
     TransfersGtfsHandler::init(d);
     real_time_c = csv.get_pos_col("real_min_transfer_time"),
             property_id_c = csv.get_pos_col("property_id");
+    // TODO equipment_id NTFSv0.4: remove property_id when we stop to support NTFSv0.3
+    if (property_id_c == -1){
+        property_id_c = csv.get_pos_col("equipment_id");
+     }
 }
 
 void TransfersFusioHandler::fill_stop_point_connection(ed::types::StopPointConnection* connection, const csv_row& row) const {
@@ -295,6 +381,7 @@ void StopTimeFusioHandler::init(Data& data) {
     desc_c = csv.get_pos_col("stop_desc");
     date_time_estimated_c = csv.get_pos_col("date_time_estimated");
     id_c = csv.get_pos_col("stop_time_id");
+    headsign_c = csv.get_pos_col("stop_headsign");
 }
 
 void StopTimeFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
@@ -327,6 +414,10 @@ void StopTimeFusioHandler::handle_line(Data& data, const csv_row& row, bool is_f
             if (local_traffic_zone > 0) {
                 stop_time->local_traffic_zone = local_traffic_zone;
             }
+        }
+
+        if (is_valid(headsign_c, row)) {
+            stop_time->headsign = row[headsign_c];
         }
     }
 }
@@ -381,6 +472,12 @@ void TripsFusioHandler::init(Data& d) {
     physical_mode_c = csv.get_pos_col("physical_mode_id");
     ext_code_c = csv.get_pos_col("external_code");
     geometry_id_c = csv.get_pos_col("geometry_id");
+    contributor_id_c = csv.get_pos_col("contributor_id");
+    dataset_id_c = csv.get_pos_col("dataset_id");
+    // TODO remove frame_id when migrated
+    if (dataset_id_c ==-1 ){
+        dataset_id_c = csv.get_pos_col("frame_id");
+    }
 }
 
 std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& data, const csv_row& row, bool){
@@ -410,6 +507,7 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
     std::vector<ed::types::VehicleJourney*> res;
 
     types::MetaVehicleJourney& meta_vj = data.meta_vj_map[row[trip_c]]; //we get a ref on a newly created meta vj
+    meta_vj.uri = row[trip_c];
     // Store the meta vj with its external code, only if this code exists
     if(is_valid(ext_code_c, row)){
         gtfs_data.metavj_by_external_code.insert({row[ext_code_c], &meta_vj});
@@ -424,7 +522,7 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
     //the validity pattern may have been split because of DST, so we need to create one vj for each
     for (auto vp_it = vp_range.first; vp_it != vp_range.second; ++vp_it, cpt_vj++) {
 
-        ed::types::ValidityPattern* vp_xx = vp_it->second;
+        navitia::type::ValidityPattern* vp_xx = vp_it->second;
 
         ed::types::VehicleJourney* vj = new ed::types::VehicleJourney();
 
@@ -443,9 +541,7 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
 
         vj->validity_pattern = vp_xx;
         vj->adapted_validity_pattern = vp_xx;
-        vj->journey_pattern = nullptr;
-        vj->tmp_route = route;
-        vj->tmp_line = vj->tmp_route->line;
+        vj->route = route;
         if(is_valid(block_id_c, row))
             vj->block_id = row[block_id_c];
         else
@@ -458,10 +554,6 @@ std::vector<ed::types::VehicleJourney*> TripsFusioHandler::get_split_vj(Data& da
         meta_vj.theoric_vj.push_back(vj);
         vj->meta_vj_name = row[trip_c];
         vj->shape_id = shape_id;
-
-        // we store the split vj utc shift
-        auto utc_offset = gtfs_data.tz.offset_by_vp[vp_xx];
-        vj->utc_to_local_offset = utc_offset;
     }
 
     return res;
@@ -474,12 +566,22 @@ void TripsFusioHandler::handle_line(Data& data, const csv_row& row, bool is_firs
         return;
     }
 
+    ed::types::Dataset* dataset = nullptr;
+    if (is_valid(contributor_id_c, row)){
+        if (is_valid(dataset_id_c, row)){
+            dataset = get_dataset(gtfs_data, data, row[contributor_id_c], row[dataset_id_c]);
+        }else{
+            dataset = get_dataset(gtfs_data, data, row[contributor_id_c]);
+        }
+    }
+
     //the vj might have been split over the dst,thus we loop over all split vj
     for (auto vj: split_vj) {
         if (is_valid(ext_code_c, row)) {
             data.add_object_code(vj, row[ext_code_c]);
         }
 
+        vj->dataset = dataset;
         //if a physical_mode is given we override the value
         vj->physical_mode = nullptr;
         if (is_valid(physical_mode_c, row)){
@@ -548,6 +650,8 @@ void TripsFusioHandler::finish(Data&) {
 void ContributorFusioHandler::init(Data&) {
     id_c = csv.get_pos_col("contributor_id");
     name_c = csv.get_pos_col("contributor_name");
+    website_c = csv.get_pos_col("contributor_website");
+    license_c = csv.get_pos_col("contributor_license");
 }
 
 void ContributorFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line) {
@@ -563,9 +667,152 @@ void ContributorFusioHandler::handle_line(Data& data, const csv_row& row, bool i
         contributor->uri = "default_contributor";
     }
     contributor->name = row[name_c];
+
+    if (is_valid(website_c, row)) {
+        contributor->website = row[website_c];
+    }
+
+    if (is_valid(license_c, row)) {
+        contributor->license = row[license_c];
+    }
+
     contributor->idx = data.contributors.size() + 1;
     data.contributors.push_back(contributor);
     gtfs_data.contributor_map[contributor->uri] = contributor;
+}
+
+void FrameFusioHandler::init(Data&){
+    id_c = csv.get_pos_col("frame_id");
+    contributor_c = csv.get_pos_col("contributor_id");
+    start_date_c = csv.get_pos_col("frame_start_date");
+    end_date_c = csv.get_pos_col("frame_end_date");
+    type_c = csv.get_pos_col("frame_type");
+    desc_c = csv.get_pos_col("frame_desc");
+    system_c = csv.get_pos_col("frame_system");
+}
+
+void FrameFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line){
+
+    boost::gregorian::date start_date(boost::gregorian::not_a_date_time),
+            end_date(boost::gregorian::not_a_date_time);
+    std::string error;
+    if(! is_first_line && ! is_valid(id_c, row)) {
+        LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
+                        "  file has more than one frame and no frame_id column");
+        throw InvalidHeaders(csv.filename);
+    }
+
+    auto contributor = gtfs_data.contributor_map.find(row[contributor_c]);
+    if (contributor == gtfs_data.contributor_map.end()) {
+        error = "FrameFusioHandler, contributor_id invalid: " + row[contributor_c];
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    try{
+        start_date = boost::gregorian::from_undelimited_string(row[start_date_c]);
+    }catch(const std::exception& e) {
+        error = "FrameFusioHandler, frame_start_date invalid: "
+                        + row[start_date_c] + ", Error: " + std::string(e.what());
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    try{
+        end_date = boost::gregorian::from_undelimited_string(row[end_date_c]);
+    }catch(const std::exception& e) {
+        error = "FrameFusioHandler, frame_end_date invalid: "
+                        + row[end_date_c] + ", Error: " + std::string(e.what());
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    ed::types::Dataset * dataset = new ed::types::Dataset();
+    dataset->contributor = contributor->second;
+    dataset->uri = row[id_c];
+    dataset->validation_period = boost::gregorian::date_period(start_date, end_date);
+
+    if (is_valid(type_c, row)){
+        dataset->realtime_level = get_rtlevel_enum(row[type_c]);
+    }
+
+    if (is_valid(desc_c, row)){
+        dataset->desc = row[desc_c];
+    }
+    if (is_valid(system_c, row)){
+        dataset->system = row[system_c];
+    }
+
+    dataset->idx = data.datasets.size() + 1;
+    data.datasets.push_back(dataset);
+    gtfs_data.dataset_map[dataset->uri] = dataset;
+}
+
+void DatasetFusioHandler::init(Data&){
+    id_c = csv.get_pos_col("dataset_id");
+    contributor_c = csv.get_pos_col("contributor_id");
+    start_date_c = csv.get_pos_col("dataset_start_date");
+    end_date_c = csv.get_pos_col("dataset_end_date");
+    type_c = csv.get_pos_col("dataset_type");
+    desc_c = csv.get_pos_col("dataset_desc");
+    system_c = csv.get_pos_col("dataset_system");    
+}
+
+void DatasetFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line){
+
+    boost::gregorian::date start_date(boost::gregorian::not_a_date_time),
+            end_date(boost::gregorian::not_a_date_time);
+    std::string error;
+    if(! is_first_line && ! is_valid(id_c, row)) {
+        LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
+                        "  file has more than one dataset and no dataset_id column");
+        throw InvalidHeaders(csv.filename);
+    }
+
+    auto contributor = gtfs_data.contributor_map.find(row[contributor_c]);
+    if (contributor == gtfs_data.contributor_map.end()) {
+        error = "DatasetFusioHandler, contributor_id invalid: " + row[contributor_c];
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    try{
+        start_date = boost::gregorian::from_undelimited_string(row[start_date_c]);
+    }catch(const std::exception& e) {
+        error = "DatasetFusioHandler, dataset_start_date invalid: "
+                        + row[start_date_c] + ", Error: " + std::string(e.what());
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    try{
+        end_date = boost::gregorian::from_undelimited_string(row[end_date_c]);
+    }catch(const std::exception& e) {
+        error = "DatasetFusioHandler, dataset_end_date invalid: "
+                        + row[end_date_c] + ", Error: " + std::string(e.what());
+        LOG4CPLUS_FATAL(logger, error);
+        throw navitia::exception(error);
+    }
+
+    ed::types::Dataset * dataset = new ed::types::Dataset();
+    dataset->contributor = contributor->second;
+    dataset->uri = row[id_c];
+    dataset->validation_period = boost::gregorian::date_period(start_date, end_date);
+
+    if (is_valid(type_c, row)){
+        dataset->realtime_level = get_rtlevel_enum(row[type_c]);
+    }
+
+    if (is_valid(desc_c, row)){
+        dataset->desc = row[desc_c];
+    }
+    if (is_valid(system_c, row)){
+        dataset->system = row[system_c];
+    }
+
+    dataset->idx = data.datasets.size() + 1;
+    data.datasets.push_back(dataset);
+    gtfs_data.dataset_map[dataset->uri] = dataset;
 }
 
 void LineFusioHandler::init(Data &){
@@ -583,7 +830,10 @@ void LineFusioHandler::init(Data &){
     geometry_id_c = csv.get_pos_col("geometry_id");
     opening_c = csv.get_pos_col("line_opening_time");
     closing_c = csv.get_pos_col("line_closing_time");
+    text_color_c = csv.get_pos_col("line_text_color");
 }
+
+
 void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first_line){
     if(! is_first_line && ! has_col(id_c, row)) {
         LOG4CPLUS_FATAL(logger, "Error while reading " + csv.filename +
@@ -596,6 +846,9 @@ void LineFusioHandler::handle_line(Data& data, const csv_row& row, bool is_first
 
     if (is_valid(code_c, row)) {
         line->code = row[code_c];
+    }
+    if (is_valid(text_color_c, row)) {
+        line->text_color = row[text_color_c];
     }
     if (is_valid(forward_name_c, row)) {
         line->forward_name = row[forward_name_c];
@@ -823,6 +1076,11 @@ void CommercialModeFusioHandler::handle_line(Data& data, const csv_row& row, boo
                         "  file has more than one commercial mode and no commercial_mode_id column");
         throw InvalidHeaders(csv.filename);
     }
+    if (! has_col(name_c, row)) {
+        LOG4CPLUS_WARN(logger, "invalid line on " << csv.filename <<
+                        "  commercial mode " << row[id_c] << " is missing a name");
+        return;
+    }
     ed::types::CommercialMode* commercial_mode = new ed::types::CommercialMode();
     commercial_mode->name = row[name_c];
     commercial_mode->uri = row[id_c];
@@ -866,6 +1124,10 @@ void OdtConditionsFusioHandler::handle_line(Data& , const csv_row& row, bool is_
 
 void StopPropertiesFusioHandler::init(Data&){
     id_c = csv.get_pos_col("property_id");
+    // TODO equipment_id NTFSv0.4: remove property_id when we stop to support NTFSv0.3
+    if (id_c ==-1 ){
+        id_c = csv.get_pos_col("equipment_id");
+    }
     wheelchair_boarding_c = csv.get_pos_col("wheelchair_boarding");
     sheltered_c = csv.get_pos_col("sheltered");
     elevator_c = csv.get_pos_col("elevator");
@@ -957,7 +1219,11 @@ void TripPropertiesFusioHandler::init(Data &){
     audible_announcement_c = csv.get_pos_col("audible_announcement");
     appropriate_escort_c = csv.get_pos_col("appropriate_escort");
     appropriate_signage_c = csv.get_pos_col("appropriate_signage");
+    // TODO school_vehicle_type NTFSv0.5: remove school_vehicle when we stop to support NTFSv0.4
     school_vehicle_c = csv.get_pos_col("school_vehicle");
+    if (school_vehicle_c == -1){
+        school_vehicle_c = csv.get_pos_col("school_vehicle_type");
+    }
 }
 
 void TripPropertiesFusioHandler::handle_line(Data&, const csv_row& row, bool is_first_line){
@@ -1440,8 +1706,12 @@ ed::types::PhysicalMode* GtfsData::get_or_create_default_physical_mode(Data & da
     return default_physical_mode;
 }
 
-void FusioParser::parse_files(Data& data) {
+void FusioParser::parse_files(Data& data, const std::string& beginning_date) {
+
     parse<FeedInfoFusioHandler>(data, "feed_infos.txt");
+
+    manage_production_date(data, beginning_date);
+
     parse<GeometriesFusioHandler>(data, "geometries.txt");
 
     if (! parse<AgencyFusioHandler>(data, "networks.txt")) {
@@ -1449,6 +1719,14 @@ void FusioParser::parse_files(Data& data) {
     }
 
     parse<ContributorFusioHandler>(data, "contributors.txt");
+    //TODO: remove frames.txt when all the components (export NTFS, fusio2ed, ...) are delivered.
+    if (boost::filesystem::exists(this->path + "/datasets.txt")) {
+        parse<DatasetFusioHandler>(data, "datasets.txt");
+    } else {
+        parse<FrameFusioHandler>(data, "frames.txt");
+    }
+
+    default_datasets(gtfs_data, data);
 
     if (! parse<CompanyFusioHandler>(data, "companies.txt")) {
         parse<CompanyFusioHandler>(data, "company.txt");
@@ -1460,7 +1738,13 @@ void FusioParser::parse_files(Data& data) {
     parse<LineFusioHandler>(data, "lines.txt");
     parse<LineGroupFusioHandler>(data, "line_groups.txt");
     parse<LineGroupLinksFusioHandler>(data, "line_group_links.txt");
-    parse<StopPropertiesFusioHandler>(data, "stop_properties.txt");
+
+    // TODO equipments NTFSv0.4: remove stop_properties when we stop to support NTFSv0.3
+    if (boost::filesystem::exists(this->path + "/equipments.txt")){
+        parse<StopPropertiesFusioHandler>(data, "equipments.txt");
+    }else{
+        parse<StopPropertiesFusioHandler>(data, "stop_properties.txt");
+    }
     parse<StopsFusioHandler>(data, "stops.txt", true);
     parse<RouteFusioHandler>(data, "routes.txt", true);
     parse<TransfersFusioHandler>(data, "transfers.txt");

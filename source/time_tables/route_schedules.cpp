@@ -29,6 +29,7 @@ www.navitia.io
 */
 
 #include "route_schedules.h"
+#include "routing/dataraptor.h"
 #include "thermometer.h"
 #include "request_handle.h"
 #include "type/pb_converter.h"
@@ -39,58 +40,83 @@ www.navitia.io
 #include <boost/range/algorithm/sort.hpp>
 #include <boost/range/algorithm_ext/for_each.hpp>
 #include <boost/graph/topological_sort.hpp>
-#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/adjacency_matrix.hpp>
 
 namespace pt = boost::posix_time;
 
 namespace navitia { namespace timetables {
 
-static std::vector<std::vector<datetime_stop_time> >
-get_all_stop_times(const vector_idx& journey_patterns,
-                   const DateTime& dateTime,
-                   const DateTime& max_datetime,
-                   const size_t max_stop_date_times,
-                   const type::Data& d,
-                   bool disruption_active,
-                   const boost::optional<const std::string> calendar_id) {
-    std::vector<std::vector<datetime_stop_time> > result;
+std::vector<std::vector<routing::datetime_stop_time> >
+get_all_route_stop_times(const nt::Route* route,
+                         const DateTime& date_time,
+                         const DateTime& max_datetime,
+                         const size_t max_stop_date_times,
+                         const type::Data& d,
+                         const type::RTLevel rt_level,
+                         const boost::optional<const std::string> calendar_id) {
+    std::vector<std::vector<routing::datetime_stop_time> > result;
+
+    const auto& journey_patterns =  d.dataRaptor->jp_container.get_jps_from_route()[routing::RouteIdx(*route)];
 
     // We take the first journey pattern points from every journey_pattern
-    std::vector<type::idx_t> first_journey_pattern_points;
-    for(type::idx_t jp_idx : journey_patterns) {
-        auto jpp = d.pt_data->journey_patterns[jp_idx];
-        auto first_jpp_idx = jpp->journey_pattern_point_list.front()->idx;
-        first_journey_pattern_points.push_back(first_jpp_idx);
+    std::vector<routing::JppIdx> first_journey_pattern_points;
+    for (const auto& jp_idx: journey_patterns) {
+        const auto& jp = d.dataRaptor->jp_container.get(jp_idx);
+        if (jp.jpps.empty()) { continue; }
+        first_journey_pattern_points.push_back(jp.jpps.front());
     }
 
-    std::vector<datetime_stop_time> first_dt_st;
-    if(!calendar_id) {
+    std::vector<routing::datetime_stop_time> first_dt_st;
+    if (! calendar_id) {
         // If there is no calendar we get all stop times in
         // the desired timeframe
-        first_dt_st = get_stop_times(first_journey_pattern_points,
-                                          dateTime, max_datetime,
-                                          max_stop_date_times, d, disruption_active);
-    }
-    else {
+        first_dt_st = get_stop_times(routing::StopEvent::pick_up, first_journey_pattern_points,
+                                     date_time, max_datetime, max_stop_date_times, d, rt_level);
+    } else {
         // Otherwise we only take stop_times in a vehicle_journey associated to
         // the desired calendar and in the timeframe
-        first_dt_st = get_stop_times(first_journey_pattern_points,
-                                          DateTimeUtils::hour(dateTime), DateTimeUtils::hour(max_datetime),
-                                          d, *calendar_id);
+        first_dt_st = get_stop_times(first_journey_pattern_points, DateTimeUtils::hour(date_time),
+                                     DateTimeUtils::hour(max_datetime), d, *calendar_id);
     }
 
-    //On va chercher tous les prochains horaires
-    for(auto ho : first_dt_st) {
-        result.push_back(std::vector<datetime_stop_time>());
+    // we need to load the next datetimes for each jp
+    for (const auto& ho : first_dt_st) {
+        result.push_back(std::vector<routing::datetime_stop_time>());
         DateTime dt = ho.first;
-        for(const type::StopTime& stop_time : ho.second->vehicle_journey->stop_time_list) {
-            if(!stop_time.is_frequency()) {
-                dt = DateTimeUtils::shift(dt, stop_time.departure_time);
+        for (const type::StopTime& stop_time : ho.second->vehicle_journey->stop_time_list) {
+            if (! stop_time.is_frequency()) {
+                if (! calendar_id) {
+                    dt = DateTimeUtils::shift(dt, stop_time.departure_time);
+                } else {
+                    // for calendar, we need to shift the time to local time
+                    const auto utc_to_local_offset = stop_time.vehicle_journey->utc_to_local_offset();
+                    // we don't care about the date and about the overmidnight cases
+                    dt = DateTimeUtils::hour(stop_time.departure_time + utc_to_local_offset);
+                }
             } else {
                 // for frequencies, we only need to add the stoptime offset to the first stoptime
                 dt = ho.first + stop_time.departure_time;
+                // NOTE: for calendar, we don't need to add again the utc offset, since for frequency
+                // vj all stop_times are relative to the start of the vj (and the UTC offset has  already
+                // been included in the first stop time)
             }
             result.back().push_back(std::make_pair(dt, &stop_time));
+        }
+    }
+
+    if (calendar_id) {
+        // for calendar's schedule we need to sort the datetimes in a different way
+        // we add 24h for each vj's dt that starts before 'date_time' so the vj will be sorted
+        // at the end (with the complex score of the route schedule)
+        for (auto& vjs_stops: result) {
+            bool add_day = false;
+            for (auto& dt_st: vjs_stops) {
+                // If a stop time is before limit then add a day from here to end of stops
+                if (add_day || (DateTimeUtils::hour(dt_st.first) < DateTimeUtils::hour(date_time))) {
+                    dt_st.first += DateTimeUtils::SECONDS_PER_DAY;
+                    add_day = true;
+                }
+            }
         }
     }
     return result;
@@ -107,10 +133,10 @@ namespace {
 //  7
 //  9  7 =>  1
 // score:   -2
-int score(const std::vector<datetime_stop_time>& v1,
-          const std::vector<datetime_stop_time>& v2) {
+int score(const std::vector<routing::datetime_stop_time>& v1,
+          const std::vector<routing::datetime_stop_time>& v2) {
     int res = 0;
-    boost::range::for_each(v1, v2, [&](const datetime_stop_time& a, const datetime_stop_time& b) {
+    boost::range::for_each(v1, v2, [&](const routing::datetime_stop_time& a, const routing::datetime_stop_time& b) {
             if (a.second == nullptr || b.second == nullptr) { return; }
             if (a.first < b.first) {
                 --res;
@@ -120,11 +146,7 @@ int score(const std::vector<datetime_stop_time>& v1,
         });
     return res;
 }
-typedef boost::adjacency_list<
-    boost::vecS,
-    boost::vecS,
-    boost::directedS
-    > Graph;
+typedef boost::adjacency_matrix<boost::directedS> Graph;
 struct Edge {
     uint32_t source;
     uint32_t target;
@@ -136,7 +158,7 @@ struct Edge {
         return a.target < b.target;
     }
 };
-std::vector<Edge> create_edges(std::vector<std::vector<datetime_stop_time>>& v) {
+std::vector<Edge> create_edges(std::vector<std::vector<routing::datetime_stop_time>>& v) {
     std::vector<Edge> edges;
     for (uint32_t i = 0; i < v.size(); ++i) {
         for (uint32_t j = i + 1; j < v.size(); ++j) {
@@ -151,44 +173,132 @@ std::vector<Edge> create_edges(std::vector<std::vector<datetime_stop_time>>& v) 
     boost::sort(edges);
     return edges;
 }
+struct IsDag {
+    bool operator()(const Graph& g) {
+        ++nb_call;
+        order.reserve(num_vertices(g));
+        try {
+            order.clear();
+            boost::topological_sort(g, std::back_inserter(order));
+            return true;
+        } catch (boost::not_a_dag&) {
+            return false;
+        }
+    }
+    std::vector<uint32_t> order;
+    size_t nb_call = 0;
+};
 // Using http://en.wikipedia.org/wiki/Ranked_pairs to sort the vj.  As
 // if each stop time vote according to the time of the vj at its stop
 // time (don't care for the vj that don't stop).
 std::vector<uint32_t> compute_order(const size_t nb_vertices, const std::vector<Edge>& edges) {
+    log4cplus::Logger logger = log4cplus::Logger::getInstance("log");
     Graph g(nb_vertices);
-    std::vector<uint32_t> order;
-    order.reserve(nb_vertices);
+    IsDag is_dag;
 
+    LOG4CPLUS_DEBUG(logger, "trying total topological sort with nb_vertices = " << nb_vertices);
     // most of the time, the graph will not have any cycle, thus we
     // test directly a topological sort.
-    try {
-        for (const auto& edge: edges) { add_edge(edge.source, edge.target, g); }
-        order.clear();
-        boost::topological_sort(g, std::back_inserter(order));
-        return order;
-    } catch (boost::not_a_dag&) {}
+    for (const auto& edge: edges) { add_edge(edge.source, edge.target, g); }
+    if (is_dag(g)) {
+        LOG4CPLUS_DEBUG(logger, "total topological sort is working, great!");
+        return std::move(is_dag.order);
+    }
 
     // there is a cycle, thus we run the complete algorithm.
     g = Graph(nb_vertices);// remove all edges
-    for (const auto& edge: edges) {
-        const auto e_desc = add_edge(edge.source, edge.target, g).first;
-        try {
-            order.clear();
-            boost::topological_sort(g, std::back_inserter(order));
-        } catch (boost::not_a_dag&) {
-            remove_edge(e_desc, g);
+    size_t nb_removed_edges = 0;
+    LOG4CPLUS_DEBUG(logger, "trying total ranked pair with nb_edges = " << edges.size());
+
+    // Straintforward implementation of ranked pair is:
+    //
+    //for (const auto& edge: edges) {
+    //    const auto e_desc = add_edge(edge.source, edge.target, g).first;
+    //    if (! is_dag(g)) { ++nb_removed_edges; remove_edge(e_desc, g); }
+    //}
+    //
+    // Let n be the number of vertices, and e be the number of
+    // edges. O(e) = O(n²).  The straintforward implementation is
+    //
+    //   O(e * (n + e)) = O(e²) = O(n⁴)
+    //
+    // In practice, this algorithm is too costy for big route
+    // schedules.  Let k be the number of edges that will be removed.
+    // O(k) = O(n²).  In practice, it seems that Omega(k) = Omega(n).
+    // If we do binary search to find each edges that we need to
+    // remove, the complexity is
+    //
+    //   O(k * log(e) * (n + e)) = O(k * n² * log(n²)) = O(k * n² * log(n))
+    //
+    // Thus, in our case, this algorithm seems to run in
+    //
+    //   Omega(k * n² * log(n)) = Omega(n³ * log(n))
+    //
+    // which is much better than the naive implementation.  In
+    // practice, our problematic case run in 33s using the naive
+    // algorithm, and 1s using the binary search.
+    //
+    size_t done_until = 0;
+    // the edges in the graph that we may remove during the current binary search
+    std::vector<Graph::edge_descriptor> e_descrs;
+    e_descrs.reserve(edges.size());
+    while (done_until < edges.size()) { // while not all edges are done
+        // binary searching the next edge that create a cycle,
+        // inspired by
+        // https://en.wikipedia.org/wiki/Binary_search_algorithm#Deferred_detection_of_equality
+        size_t imin = done_until;
+        size_t imax = edges.size();
+        while (imin < imax) {
+            const size_t imid = (imin + imax) / 2;
+
+            // modifying the graph to be in the wanted state
+            const size_t nb_elt_to_add = imid - done_until + 1;
+            if (e_descrs.size() < nb_elt_to_add) {
+                // add corresponding edges
+                while (nb_elt_to_add != e_descrs.size()) {
+                    const size_t idx = done_until + e_descrs.size();
+                    e_descrs.push_back(add_edge(edges[idx].source, edges[idx].target, g).first);
+                }
+            } else {
+                // remove corresponding edges
+                while (nb_elt_to_add != e_descrs.size()) {
+                    remove_edge(e_descrs.back(), g);
+                    e_descrs.pop_back();
+                }
+            }
+
+            if (is_dag(g)) {
+                imin = imid + 1;
+            } else {
+                imax = imid;
+            }
         }
+
+        // We've found the problematic edge (or we are at the end).
+        assert(imin == imax);
+        if (imax < edges.size()) {
+            // remove the edge that create the cycle
+            ++nb_removed_edges;
+            remove_edge(e_descrs.back(), g);
+        }
+        // current state of the graph is valid until imax + 1
+        done_until = imax + 1;
+        e_descrs.clear();
     }
-    order.clear();
-    topological_sort(g, std::back_inserter(order));
-    return order;
+    // Great, we have the graph, end of the binary search
+    // implementation of ranked pair.
+
+    if (!is_dag(g)) { assert(false); } // to compute the order on the final graph
+    LOG4CPLUS_DEBUG(logger, "total ranked pair done with nb_removed_edges = " << nb_removed_edges
+                   << ", nb_topo_sort = " << is_dag.nb_call);
+    return std::move(is_dag.order);
 }
-void ranked_pairs_sort(std::vector<std::vector<datetime_stop_time>>& v) {
+void ranked_pairs_sort(std::vector<std::vector<routing::datetime_stop_time>>& v) {
     const auto edges = create_edges(v);
     const auto order = compute_order(v.size(), edges);
 
     // reordering v according to the given order
-    std::vector<std::vector<datetime_stop_time>> res;
+    std::vector<std::vector<routing::datetime_stop_time>> res;
     res.reserve(v.size());
     for (const auto& idx: order) {
         res.push_back(std::move(v[idx]));
@@ -197,22 +307,22 @@ void ranked_pairs_sort(std::vector<std::vector<datetime_stop_time>>& v) {
 }
 }
 
-static std::vector<std::vector<datetime_stop_time> >
-make_matrice(const std::vector<std::vector<datetime_stop_time> >& stop_times,
+static std::vector<std::vector<routing::datetime_stop_time> >
+make_matrice(const std::vector<std::vector<routing::datetime_stop_time> >& stop_times,
              const Thermometer& thermometer,
              const type::Data&) {
     // result group stop_times by stop_point, tmp by vj.
     const size_t thermometer_size = thermometer.get_thermometer().size();
-    std::vector<std::vector<datetime_stop_time> > 
-        result(thermometer_size, std::vector<datetime_stop_time>(stop_times.size())),
-        tmp(stop_times.size(), std::vector<datetime_stop_time>(thermometer_size));
+    std::vector<std::vector<routing::datetime_stop_time> > 
+        result(thermometer_size, std::vector<routing::datetime_stop_time>(stop_times.size())),
+        tmp(stop_times.size(), std::vector<routing::datetime_stop_time>(thermometer_size));
     // We match every stop_time with the journey pattern
     int y=0;
-    for(const std::vector<datetime_stop_time>& vec : stop_times) {
-        auto journey_pattern = vec.front().second->vehicle_journey->journey_pattern;
-        std::vector<uint32_t> orders = thermometer.match_journey_pattern(*journey_pattern);
+    for(const auto& vec : stop_times) {
+        const auto* vj = vec.front().second->vehicle_journey;
+        std::vector<uint32_t> orders = thermometer.stop_times_order(*vj);
         int order = 0;
-        for(datetime_stop_time dt_stop_time : vec) {
+        for(const auto& dt_stop_time : vec) {
             tmp.at(y).at(orders.at(order)) = dt_stop_time;
             ++order;
         }
@@ -229,67 +339,75 @@ make_matrice(const std::vector<std::vector<datetime_stop_time> >& stop_times,
     return result;
 }
 
-pbnavitia::Response
-route_schedule(const std::string& filter,
+void route_schedule(PbCreator& pb_creator, const std::string& filter,
                const boost::optional<const std::string> calendar_id,
                const std::vector<std::string>& forbidden_uris,
                const pt::ptime datetime,
                uint32_t duration, size_t max_stop_date_times,
                const uint32_t max_depth, int count, int start_page,
-               const type::Data &d, bool disruption_active, const bool show_codes) {
-    RequestHandle handler(filter, forbidden_uris, datetime, duration, d, {});
+               const type::RTLevel rt_level) {
 
-    if(handler.pb_response.has_error()) {
-        return handler.pb_response;
+    RequestHandle handler(pb_creator, filter, forbidden_uris, datetime, duration, calendar_id);
+
+    if (pb_creator.has_error()) {
+        return;
     }
-    auto now = pt::second_clock::universal_time();
-    auto pt_datetime = to_posix_time(handler.date_time, d);
-    auto pt_max_datetime = to_posix_time(handler.max_datetime, d);
-    pt::time_period action_period(pt_datetime, pt_max_datetime);
+
+    auto pt_datetime = to_posix_time(handler.date_time, pb_creator.data);
+    auto pt_max_datetime = to_posix_time(handler.max_datetime, pb_creator.data);
+    pb_creator.action_period = pt::time_period(pt_datetime, pt_max_datetime);
+
     Thermometer thermometer;
-    auto routes_idx = ptref::make_query(type::Type_e::Route, filter, forbidden_uris, d);
+    auto routes_idx = ptref::make_query(type::Type_e::Route, filter, forbidden_uris, pb_creator.data);
     size_t total_result = routes_idx.size();
     routes_idx = paginate(routes_idx, count, start_page);
-    for(type::idx_t route_idx : routes_idx) {
-        auto route = d.pt_data->routes[route_idx];
-        auto jps =  ptref::make_query(type::Type_e::JourneyPattern, filter+" and route.uri="+route->uri, forbidden_uris, d);
-        //On récupère les stop_times
-        auto stop_times = get_all_stop_times(jps, handler.date_time,
-                                             handler.max_datetime, max_stop_date_times,
-                                             d, disruption_active, calendar_id);
+    for (const auto& route_idx: routes_idx) {
+        auto route = pb_creator.data.pt_data->routes[route_idx];
+        auto stop_times = get_all_route_stop_times(route, handler.date_time,
+                                                   handler.max_datetime, max_stop_date_times,
+                                                   pb_creator.data, rt_level, calendar_id);
+        const auto& jps =  pb_creator.data.dataRaptor->jp_container.get_jps_from_route()[routing::RouteIdx(*route)];
         std::vector<vector_idx> stop_points;
-        for(auto jp_idx : jps) {
-            auto jp = d.pt_data->journey_patterns[jp_idx];
+        for (const auto& jp_idx : jps) {
+            const auto& jp = pb_creator.data.dataRaptor->jp_container.get(jp_idx);
             stop_points.push_back(vector_idx());
-            for(auto jpp : jp->journey_pattern_point_list) {
-                stop_points.back().push_back(jpp->stop_point->idx);
+            for (const auto& jpp_idx : jp.jpps) {
+                const auto& jpp = pb_creator.data.dataRaptor->jp_container.get(jpp_idx);
+                stop_points.back().push_back(jpp.sp_idx.val);
             }
         }
         thermometer.generate_thermometer(stop_points);
-        //On génère la matrice
-        auto  matrice = make_matrice(stop_times, thermometer, d);
-        auto schedule = handler.pb_response.add_route_schedules();
+        auto  matrice = make_matrice(stop_times, thermometer, pb_creator.data);
+
+        auto schedule = pb_creator.add_route_schedules();
         pbnavitia::Table *table = schedule->mutable_table();
         auto m_pt_display_informations = schedule->mutable_pt_display_informations();
-        fill_pb_object(route, d, m_pt_display_informations, 0, now, action_period);
+        pb_creator.fill(route, m_pt_display_informations, 0);
 
         std::vector<bool> is_vj_set(stop_times.size(), false);
         for (size_t i = 0; i < stop_times.size(); ++i) { table->add_headers(); }
         for(unsigned int i=0; i < thermometer.get_thermometer().size(); ++i) {
             type::idx_t spidx=thermometer.get_thermometer()[i];
-            const type::StopPoint* sp = d.pt_data->stop_points[spidx];
-            //version v1
+            const type::StopPoint* sp = pb_creator.data.pt_data->stop_points[spidx];
             pbnavitia::RouteScheduleRow* row = table->add_rows();
-            fill_pb_object(sp, d, row->mutable_stop_point(), max_depth,
-                           now, action_period, show_codes);
+            pb_creator.fill(sp, row->mutable_stop_point(), max_depth);
+
             for(unsigned int j=0; j<stop_times.size(); ++j) {
-                datetime_stop_time dt_stop_time  = matrice[i][j];
+                const auto& dt_stop_time  = matrice[i][j];
                 if (!is_vj_set[j] && dt_stop_time.second != nullptr) {
                     pbnavitia::Header* header = table->mutable_headers(j);
                     pbnavitia::PtDisplayInfo* vj_display_information = header->mutable_pt_display_informations();
                     auto vj = dt_stop_time.second->vehicle_journey;
-                    fill_pb_object(vj, d, vj_display_information, 0, now, action_period);
-                    fill_additional_informations(header->mutable_additional_informations(),
+                    const auto& vj_st = navitia::VjStopTimes(vj, dt_stop_time.second, nullptr);
+                    pb_creator.fill(&vj_st, vj_display_information, 0);
+                    // as we only issue headsign for vj in route_schedules:
+                    // - need to override headsign with trip headsign (i.e. vj.name)
+                    // - issue all headsigns of the vj in headsigns
+                    vj_display_information->set_headsign(vj->name);
+                    for (const auto& headsign: pb_creator.data.pt_data->headsign_handler.get_all_headsigns(vj)) {
+                        vj_display_information->add_headsigns(headsign);
+                    }
+                    pb_creator.fill_additional_informations(header->mutable_additional_informations(),
                                                  vj->has_datetime_estimated(),
                                                  vj->has_odt(),
                                                  vj->has_zonal_stop_point());
@@ -297,17 +415,26 @@ route_schedule(const std::string& filter,
                 }
 
                 auto pb_dt = row->add_date_times();
-                fill_pb_object(dt_stop_time.second, d, pb_dt, max_depth,
-                               now, action_period, dt_stop_time.first);
+                const auto& st_calandar =  navitia::StopTimeCalandar(dt_stop_time.second,
+                                                                          dt_stop_time.first, calendar_id);
+                pb_creator.fill(&st_calandar, pb_dt, max_depth);
             }
         }
-        fill_pb_object(route->shape, schedule->mutable_geojson());
+        pb_creator.fill(&route->shape, schedule->mutable_geojson(), 0);
+
+        //Add additiona_informations in each route:
+        if (stop_times.empty() && (rt_level != type::RTLevel::Base)) {
+            auto tmp_stop_times = get_all_route_stop_times(route, handler.date_time,
+                                                           handler.max_datetime, max_stop_date_times,
+                                                           pb_creator.data, type::RTLevel::Base, calendar_id);
+            if (!tmp_stop_times.empty()) {
+                schedule->set_response_status(pbnavitia::ResponseStatus::active_disruption);
+            } else {
+                schedule->set_response_status(pbnavitia::ResponseStatus::no_departure_this_day);
+            }
+        }
+
     }
-    auto pagination = handler.pb_response.mutable_pagination();
-    pagination->set_totalresult(total_result);
-    pagination->set_startpage(start_page);
-    pagination->set_itemsperpage(count);
-    pagination->set_itemsonpage(handler.pb_response.route_schedules_size());
-    return handler.pb_response;
+    pb_creator.make_paginate(total_result, start_page, count, pb_creator.route_schedules_size());
 }
 }}

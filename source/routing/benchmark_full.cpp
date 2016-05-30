@@ -108,8 +108,7 @@ static type::GeographicalCoord coord_of_entry_point(const type::EntryPoint& entr
     case type::Type_e::POI: {
             auto poi = data.geo_ref->poi_map.find(entry_point.uri);
             if (poi != data.geo_ref->poi_map.end()){
-                const auto geo_poi = data.geo_ref->pois[poi->second];
-                return geo_poi->coord;
+                return poi->second->coord;
             }
         }
         break;
@@ -125,7 +124,7 @@ static type::EntryPoint make_entry_point(const std::string& entry_id, const type
     try {
         type::idx_t idx = boost::lexical_cast<type::idx_t>(entry_id);
 
-        //if it is a idx, we consider it to be a stop area idx
+        //if it is a cached idx, we consider it to be a stop area idx
         entry = type::EntryPoint(type::Type_e::StopArea, data.pt_data->stop_areas.at(idx)->uri, 0);
     } catch (boost::bad_lexical_cast) {
         // else we use the same way to identify an entry point as the api
@@ -140,15 +139,15 @@ int main(int argc, char** argv){
     navitia::init_app();
     po::options_description desc("Options de l'outil de benchmark");
     std::string file, output, stop_input_file, start, target;
-    int iterations, date, hour;
+    int iterations, date, hour, nb_second_pass;
 
     auto logger = log4cplus::Logger::getInstance(LOG4CPLUS_TEXT("logger"));
     logger.setLogLevel(log4cplus::WARN_LOG_LEVEL);
 
     desc.add_options()
             ("help", "Show this message")
-            ("interations,i", po::value<int>(&iterations)->default_value(100),
-                     "Number of iterations (10 calcuations par iteration)")
+            ("iterations,i", po::value<int>(&iterations)->default_value(100),
+                     "Number of iterations (10 requests by iteration)")
             ("file,f", po::value<std::string>(&file)->default_value("data.nav.lz4"),
                      "Path to data.nav.lz4")
             ("start,s", po::value<std::string>(&start),
@@ -156,10 +155,11 @@ int main(int argc, char** argv){
             ("target,t", po::value<std::string>(&target),
                     "Target of a particular journey")
             ("date,d", po::value<int>(&date)->default_value(-1),
-                    "Begginning date of a particular journey")
+                    "Beginning date of a particular journey")
             ("hour,h", po::value<int>(&hour)->default_value(-1),
-                    "Begginning hour of a particular journey")
+                    "Beginning hour of a particular journey")
             ("verbose,v", "Verbose debugging output")
+            ("nb_second_pass", po::value<int>(&nb_second_pass)->default_value(0), "nb second pass")
             ("stop_files", po::value<std::string>(&stop_input_file), "File with list of start and target")
             ("output,o", po::value<std::string>(&output)->default_value("benchmark.csv"),
                      "Output file");
@@ -210,7 +210,7 @@ int main(int argc, char** argv){
         std::mt19937 rng(31442);
         std::uniform_int_distribution<> gen(0,data.pt_data->stop_areas.size()-1);
         std::vector<unsigned int> hours{0, 28800, 36000, 72000, 86000};
-        std::vector<unsigned int> days({date != 1 ? unsigned(date) : 7});
+        std::vector<unsigned int> days({date != -1 ? unsigned(date) : 7});
         if(data.pt_data->validity_patterns.front()->beginning_date.day_of_week().as_number() == 6)
             days.push_back(days.front() + 1);
         else
@@ -250,19 +250,20 @@ int main(int argc, char** argv){
     boost::progress_display show_progress(demands.size());
     Timer t("Calcul avec l'algorithme ");
     //ProfilerStart("bench.prof");
-    int nb_reponses = 0;
+    int nb_reponses = 0, nb_journeys = 0;
 #ifdef __BENCH_WITH_CALGRIND__
     CALLGRIND_START_INSTRUMENTATION;
 #endif
-    for(auto demand : demands){
+    for (auto demand: demands) {
         ++show_progress;
         Timer t2;
         auto date = data.pt_data->validity_patterns.front()->beginning_date + boost::gregorian::days(demand.date + 1) - boost::gregorian::date(1970, 1, 1);
-        if (verbose){
+        if (verbose) {
             std::cout << demand.start
                       << ", " << demand.start
                       << ", " << demand.target
-                      << ", " << demand.target
+                      << ", " << static_cast<int>(demand.start_mode)
+                      << ", " << static_cast<int>(demand.target_mode)
                       << ", " << date
                       << ", " << demand.hour
                       << "\n";
@@ -273,23 +274,23 @@ int main(int argc, char** argv){
 
         origin.streetnetwork_params.mode = demand.start_mode;
         origin.streetnetwork_params.offset = data.geo_ref->offsets[demand.start_mode];
-        origin.streetnetwork_params.max_duration = navitia::seconds(15*60);
+        origin.streetnetwork_params.max_duration = navitia::seconds(30*60);
         origin.streetnetwork_params.speed_factor = 1;
         destination.streetnetwork_params.mode = demand.target_mode;
         destination.streetnetwork_params.offset = data.geo_ref->offsets[demand.target_mode];
-        destination.streetnetwork_params.max_duration = navitia::seconds(15*60);
+        destination.streetnetwork_params.max_duration = navitia::seconds(30*60);
         destination.streetnetwork_params.speed_factor = 1;
         type::AccessibiliteParams accessibilite_params;
-        auto resp = make_response(router, origin, destination,
-              {DateTimeUtils::set(date.days(), demand.hour)}, true,
-              accessibilite_params,
-              {},
-              georef_worker,
-              false,
-              std::numeric_limits<int>::max(), 10, false);
+        const auto departure_datetime = DateTimeUtils::set(date.days(), demand.hour);
+        auto resp = make_response(router, origin,
+                                  destination, {departure_datetime}, true,
+                                  accessibilite_params, {}, georef_worker, type::RTLevel::Base,
+                                  boost::gregorian::not_a_date_time, 2_min,
+                                  DateTimeUtils::SECONDS_PER_DAY, 10, nb_second_pass);
 
-        if(resp.journeys_size() > 0) {
+        if (resp.journeys_size() > 0) {
             ++ nb_reponses;
+            nb_journeys += resp.journeys_size();
 
             Result result(resp.journeys(0));
             result.time = t2.ms();
@@ -303,4 +304,5 @@ int main(int argc, char** argv){
 
     std::cout << "Number of requests: " << demands.size() << std::endl;
     std::cout << "Number of results with solution: " << nb_reponses << std::endl;
+    std::cout << "Number of journey found: " << nb_journeys << std::endl;
 }

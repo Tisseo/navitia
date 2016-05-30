@@ -51,7 +51,41 @@ void normalize_uri(std::vector<T*>& vec){
     }
 }
 
-bool same_journey_pattern(types::VehicleJourney * vj1, types::VehicleJourney * vj2);
+// if ED we associate the timezone manager with the boost timezone object
+struct EdTZWrapper {
+    EdTZWrapper() {}
+    EdTZWrapper(const std::string& name, boost::local_time::time_zone_ptr boost_tz):
+        boost_timezone(boost_tz), tz_name(name) {}
+
+    navitia::type::TimeZoneHandler tz_handler;
+
+    //the GTFS spec defines one tz by agency but put a constraint that all those tz must be the same
+    //we thus only put a default tz used if the stop area does not define one
+    boost::local_time::time_zone_ptr boost_timezone = boost::local_time::time_zone_ptr();
+
+    std::string tz_name;
+
+    void build_tz(const boost::gregorian::date_period&);
+
+    nt::TimeZoneHandler::dst_periods
+    split_over_dst(const boost::gregorian::date_period& validity_period) const;
+
+protected:
+    //a bit of abstraction around tz time shift to be able to change from boost::date_time::timezone if we need to
+    struct PeriodWithUtcShift {
+        PeriodWithUtcShift(boost::gregorian::date_period p, boost::posix_time::time_duration dur):
+            period(p), utc_shift(dur.total_seconds() / 60) {}
+        PeriodWithUtcShift(boost::gregorian::date_period p, int dur):
+            period(p), utc_shift(dur) {}
+        boost::gregorian::date_period period;
+        int utc_shift; //shift in minutes
+
+        //add info to handle the cornercase of the day of the DST (the time of the shift)
+    };
+
+    std::vector<PeriodWithUtcShift>
+    get_dst_periods(const boost::gregorian::date_period&) const;
+};
 
 // Returns a LineString begining by "from" and finishing by "to",
 // following the given shape.
@@ -94,6 +128,8 @@ public:
     // the shapes are here, and then copied where needed
     std::unordered_map<std::string, navitia::type::MultiLineString> shapes;
 
+    EdTZWrapper tz_wrapper;
+
     std::unordered_map<std::string, nt::MultiPolygon> areas;
 
     std::vector<ed::types::AdminStopArea*>  admin_stop_areas;
@@ -103,7 +139,8 @@ public:
         {"feed_end_date",""},
         {"feed_publisher_name",""},
         {"feed_publisher_url",""},
-        {"feed_license",""}
+        {"feed_license",""},
+        {"feed_creation_datetime",""}
     };
 
     std::map<std::string, types::MetaVehicleJourney> meta_vj_map; //meta vj by original vj name
@@ -141,8 +178,6 @@ public:
     void add_pt_object_comment(const ed::types::StopTime* st, const std::string& comment);
 
     void add_feed_info(const std::string&, const std::string&);
-    /// Construit les journey_patterns en retrouvant les paterns à partir des VJ
-    void build_journey_patterns();
 
     /// Construit les associated_calendar
     void build_grid_validity_pattern();
@@ -157,10 +192,9 @@ public:
     void shift_stop_times();
     void shift_vp_left(types::ValidityPattern& vp);
 
-    /// Construit les journey_patternpoint
-    void build_journey_pattern_points();
-
     void build_block_id();
+    void build_shape_from_prev();
+    void pick_up_drop_of_on_borders();
 
     void normalize_uri();
     /**

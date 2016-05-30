@@ -29,31 +29,34 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
-from flask.ext.restful import marshal_with, reqparse
+from __future__ import absolute_import, print_function, unicode_literals, division
+from flask.ext.restful import marshal_with, reqparse, fields
 from flask.globals import g
 from jormungandr import i_manager, timezone
-from fields import PbField, error, network, line,\
+from jormungandr.interfaces.v1.fields import PbField, error, network, line,\
     NonNullList, NonNullNested, pagination, stop_area
-from ResourceUri import ResourceUri
+from jormungandr.interfaces.v1.VehicleJourney import vehicle_journey
+from jormungandr.interfaces.v1.ResourceUri import ResourceUri
 from jormungandr.interfaces.argument import ArgumentDoc
-from jormungandr.interfaces.parsers import date_time_format
-from errors import ManageError
+from jormungandr.interfaces.parsers import date_time_format, default_count_arg_type
+from jormungandr.interfaces.v1.errors import ManageError
 from datetime import datetime
 import aniso8601
 from datetime import timedelta
-from jormungandr.interfaces.v1.fields import DisruptionsField
+from jormungandr.interfaces.v1.fields import disruption_marshaller
 
 disruption = {
     "network": PbField(network, attribute='network'),
     "lines": NonNullList(NonNullNested(line)),
-    "stop_areas": NonNullList(NonNullNested(stop_area))
+    "stop_areas": NonNullList(NonNullNested(stop_area)),
+    "vehicle_journeys": NonNullList(NonNullNested(vehicle_journey))
 }
 
 traffic = {
-    "traffic_reports": NonNullList(NonNullNested(disruption), attribute='disruptions'),
+    "traffic_reports": NonNullList(NonNullNested(disruption)),
     "error": PbField(error, attribute='error'),
     "pagination": NonNullNested(pagination),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
 }
 
 
@@ -65,7 +68,7 @@ class TrafficReport(ResourceUri):
             argument_class=ArgumentDoc)
         parser_get = self.parsers["get"]
         parser_get.add_argument("depth", type=int, default=1)
-        parser_get.add_argument("count", type=int, default=10,
+        parser_get.add_argument("count", type=default_count_arg_type, default=10,
                                 description="Number of disruptions per page")
         parser_get.add_argument("start_page", type=int, default=0,
                                 description="The current page")
@@ -73,11 +76,18 @@ class TrafficReport(ResourceUri):
                                 description="The datetime we want to publish the disruptions from."
                                             " Default is the current date and it is mainly used for debug.")
         parser_get.add_argument("forbidden_id[]", type=unicode,
-                                description="forbidden ids",
+                                description="DEPRECATED, replaced by forbidden_uris[]",
+                                dest="__temporary_forbidden_id[]",
+                                default=[],
+                                action="append")
+        parser_get.add_argument("forbidden_uris[]", type=unicode,
+                                description="forbidden uris",
                                 dest="forbidden_uris[]",
+                                default=[],
                                 action="append")
         parser_get.add_argument("distance", type=int, default=200,
                                 description="Distance range of the query. Used only if a coord is in the query")
+        self.collection = 'traffic_reports'
 
     @marshal_with(traffic)
     @ManageError()
@@ -85,6 +95,10 @@ class TrafficReport(ResourceUri):
         self.region = i_manager.get_region(region, lon, lat)
         timezone.set_request_timezone(self.region)
         args = self.parsers["get"].parse_args()
+
+        # for retrocompatibility purpose
+        for forbid_id in args['__temporary_forbidden_id[]']:
+            args['forbidden_uris[]'].append(forbid_id)
 
         if uri:
             if uri[-1] == "/":
@@ -94,6 +108,6 @@ class TrafficReport(ResourceUri):
         else:
             args["filter"] = ""
 
-        response = i_manager.dispatch(args, "disruptions", instance_name=self.region)
+        response = i_manager.dispatch(args, "traffic_reports", instance_name=self.region)
 
         return response

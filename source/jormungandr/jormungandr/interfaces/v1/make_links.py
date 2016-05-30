@@ -27,11 +27,12 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask import url_for
 from collections import OrderedDict
 from functools import wraps
 from sqlalchemy.sql.elements import _type_from_args
-from converters_collection_type import resource_type_to_collection,\
+from jormungandr.interfaces.v1.converters_collection_type import resource_type_to_collection,\
     collections_to_resource_type
 from flask.ext.restful.utils import unpack
 
@@ -93,17 +94,17 @@ class generate_links(object):
     def prepare_objetcs(self, objects, hasCollections=False):
         if isinstance(objects, tuple):
             objects = objects[0]
-        if not "links" in objects.keys():
+        if "links" not in objects:
             objects["links"] = []
         elif hasattr(self, "collections"):
             for link in objects["links"]:
-                if "type" in link.keys():
+                if "type" in link:
                     self.collections.remove(link["type"])
         return objects
 
     def prepare_kwargs(self, kwargs, objects):
-        if not "region" in kwargs.keys() and not "lon" in kwargs.keys()\
-           and "regions" in objects.keys():
+        if "region" not in kwargs and "lon" not in kwargs\
+           and "regions" in objects:
             kwargs["region"] = "{regions.id}"
 
         if "uri" in kwargs:
@@ -125,24 +126,24 @@ class add_pagination_links(object):
                 data, code, header = unpack(objects)
             else:
                 data = objects
-            for key, value in data.iteritems():
-                if key == "regions":
+            for key, value in data.items():
+                if endpoint is None and key == "regions":
                     endpoint = "v1.coverage"
-                elif key == "pagination":
+                elif pagination is None and key == "pagination":
                     pagination = value
-                elif key in collections_to_resource_type.keys():
+                elif endpoint is None and key in collections_to_resource_type.keys():
                     endpoint = "v1." + key + "."
-                    endpoint += "id" if "id" in kwargs.keys() else "collection"
-                elif key in ["journeys", "stop_schedules", "route_schedules",
-                             "departures", "arrivals", "places_nearby", "calendars"]:
+                    endpoint += "id" if "id" in kwargs else "collection"
+                elif endpoint is None and key in ["journeys", "stop_schedules", "route_schedules",
+                                                  "departures", "arrivals", "places_nearby", "calendars"]:
                     endpoint = "v1." + key
             if pagination and endpoint and "region" in kwargs:
                 pagination = data["pagination"]
-                if "start_page" in pagination.keys() and \
-                        "items_on_page" in pagination.keys() and \
-                        "items_per_page" in pagination.keys() and \
-                        "total_result" in pagination.keys():
-                    if not "links" in data.keys():
+                if "start_page" in pagination and \
+                        "items_on_page" in pagination and \
+                        "items_per_page" in pagination and \
+                        "total_result" in pagination:
+                    if "links" not in data:
                         data["links"] = []
                     start_page = int(pagination["start_page"])
                     items_per_page = int(pagination["items_per_page"])
@@ -192,6 +193,8 @@ class add_pagination_links(object):
 
 
 class add_coverage_link(generate_links):
+    def __init__(self):
+        self.links = ["places", "journeys", "coverage"]
 
     def __call__(self, f):
         @wraps(f)
@@ -206,7 +209,8 @@ class add_coverage_link(generate_links):
             if isinstance(data, OrderedDict):
                 data = self.prepare_objetcs(data)
                 kwargs = self.prepare_kwargs(kwargs, data)
-                data["links"].append(create_external_link("v1.coverage", rel='related', templated=True, **kwargs))
+                for link in self.links:
+                    data["links"].append(create_external_link("v1.{link}".format(link=link), rel='related', templated=True, **kwargs))
             if isinstance(objects, tuple):
                 return data, code, header
             else:
@@ -260,28 +264,27 @@ class add_id_links(generate_links):
             self.get_objets(data)
             data = self.prepare_objetcs(objects, True)
             kwargs = self.prepare_kwargs(kwargs, data)
+
+            if 'region' not in kwargs and 'lon' not in kwargs:
+                # we don't know how to put links on this object, there is no coverage, we don't add links
+                return objects
+
             uri_id = None
-            if "id" in kwargs.keys() and\
-               "collection" in kwargs.keys() and \
-               kwargs["collection"] in data.keys():
+            if "id" in kwargs and "collection" in kwargs and kwargs["collection"] in data:
                 uri_id = kwargs["id"]
             for obj in self.data:
-                if obj in resource_type_to_collection.keys():
-                    kwargs["collection"] = resource_type_to_collection[obj]
-                else:
-                    kwargs["collection"] = obj
-                if kwargs["collection"] in collections_to_resource_type.keys():
+                kwargs["collection"] = resource_type_to_collection.get(obj, obj)
+                if kwargs["collection"] in collections_to_resource_type:
                     if not uri_id:
                         kwargs["id"] = "{" + obj + ".id}"
-                    endpoint = "v1." + kwargs["collection"] + "."
-                    endpoint += "id" if "region" in kwargs.keys() or\
-                        "lon" in kwargs.keys()\
-                                        else "redirect"
+
+                    endpoint = "v1." + kwargs["collection"] + ".id"
+
                     collection = kwargs["collection"]
-                    to_pass = {k:v for k,v in kwargs.iteritems() if k != "collection"}
+                    to_pass = {k: v for k, v in kwargs.items() if k != "collection"}
                     data["links"].append(create_external_link(url=endpoint, rel=collection,
                                                               _type=obj, templated=True,
-                                                             **to_pass))
+                                                              **to_pass))
             if isinstance(objects, tuple):
                 return data, code, header
             else:
@@ -290,11 +293,11 @@ class add_id_links(generate_links):
 
     def get_objets(self, data, collection_name=None):
         if hasattr(data, 'keys'):
-            if "id" in data.keys() \
-               and (not "href" in data.keys()) \
+            if "id" in data \
+               and ("href" not in data) \
                and collection_name:
                 self.data.add(collection_name)
-            for key, value in data.iteritems():
+            for key, value in data.items():
                 self.get_objets(value, key)
         if isinstance(data, (list, tuple)):
             for item in data:
@@ -313,7 +316,7 @@ class clean_links(object):
                     return data, code, header
             else:
                 data = response
-            if isinstance(data, OrderedDict) and "links" in data.keys():
+            if isinstance(data, OrderedDict) and "links" in data:
                 for link in data['links']:
                     link['href'] = link['href'].replace("%7B", "{")\
                                                .replace("%7D", "}")\

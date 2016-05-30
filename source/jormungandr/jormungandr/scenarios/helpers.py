@@ -27,6 +27,7 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from navitiacommon import response_pb2
 from operator import attrgetter
 
@@ -213,3 +214,7 @@ def select_best_journey_by_duration(journeys, clockwise, fallback_modes):
     if not list_journeys:
         return None
     return min(list_journeys, key=attrgetter('duration'))
+
+fallback_mode_order = ['walking', 'bss', 'bike', 'car']
+def fallback_mode_comparator(a, b):
+    return fallback_mode_order.index(a) -  fallback_mode_order.index(b)

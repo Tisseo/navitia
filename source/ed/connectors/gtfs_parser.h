@@ -49,6 +49,7 @@ namespace ed { namespace connectors {
 
 /** Return the type enum corresponding to the string*/
 nt::Type_e get_type_enum(const std::string&);
+nt::RTLevel get_rtlevel_enum(const std::string& str);
 
 /**
  * handle all tz specific stuff
@@ -56,12 +57,9 @@ nt::Type_e get_type_enum(const std::string&);
  * just used to separate those
  */
 struct TzHandler {
-    TzHandler() : tz_db(ed::utils::fill_tz_db()) {}
+    TzHandler(): tz_db(ed::utils::fill_tz_db()) {}
 
     boost::local_time::tz_database tz_db;
-    //the GTFS spec defines one tz by agency but put a constraint that all those tz must be the same
-    //we thus only put a default tz used if the stop area does not define one
-    std::pair<std::string, boost::local_time::time_zone_ptr> default_timezone; //associate the tz with it's name (like 'Europe/paris')
     //we need to store the tz of the sp because it will be usefull is no parent stop area is found for the stop_point
     //(and hence the sp is promoted to sa)
     std::unordered_map<ed::types::StopPoint*, std::string> stop_point_tz;
@@ -70,7 +68,6 @@ struct TzHandler {
     //since a calendar might need to be split over several period because of dst, we need to track the splited calendar (to split also all vj on this calendar)
     std::multimap<std::string, ed::types::ValidityPattern*> vp_by_name;
     std::multimap<std::string, ed::types::VehicleJourney*> vj_by_name;
-    std::map<ed::types::ValidityPattern*, int> offset_by_vp; //each validity pattern are on only one dst, thus we can store the utc_offset
 
     //since 2 files are mandatory to build validity pattern
     //we need to build first the list of validity pattern,
@@ -82,7 +79,6 @@ struct TzHandler {
  * Temporary structure used in the GTFS parser, mainly to keep a relation between ids and the pointers
  */
 struct GtfsData {
-    GtfsData() : production_date(boost::gregorian::date(), boost::gregorian::date()) {}
     std::unordered_map<std::string, ed::types::CommercialMode*> commercial_mode_map;
     std::unordered_map<std::string, ed::types::StopPoint*> stop_map;
     std::unordered_map<std::string, ed::types::StopArea*> stop_area_map;
@@ -98,6 +94,7 @@ struct GtfsData {
     ed::types::Company* get_or_create_default_company(Data & data);
     ed::types::Company* default_company = nullptr;
     std::unordered_map<std::string, ed::types::Contributor*> contributor_map;
+    std::unordered_map<std::string, ed::types::Dataset*> dataset_map;
 
     std::unordered_map<std::string, std::vector<ed::types::StopTime*>> stop_time_map; // there may be several stoptimes for one id because of dst
 
@@ -124,27 +121,9 @@ struct GtfsData {
     ed::types::PhysicalMode* get_or_create_default_physical_mode(Data & data);
     ed::types::PhysicalMode* default_physical_mode = nullptr;
 
-    boost::gregorian::date_period production_date;// Data validity period
-
     ed::types::Network* get_or_create_default_network(ed::Data&);
 };
 
-//a bit of abstraction around tz time shift to be able to change from boost::date_time::timezone if we need to
-struct period_with_utc_shift {
-    period_with_utc_shift(boost::gregorian::date_period p, boost::posix_time::time_duration dur) :
-        period(p), utc_shift(dur.total_seconds() / 60)
-    {}
-    period_with_utc_shift(boost::gregorian::date_period p, int dur) :
-        period(p), utc_shift(dur)
-    {}
-    boost::gregorian::date_period period;
-    int utc_shift; //shift in minutes
-
-    //add info to handle the cornercase of the day of the DST (the time of the shift)
-};
-
-std::vector<period_with_utc_shift> get_dst_periods(const boost::gregorian::date_period&, const boost::local_time::time_zone_ptr&);
-std::vector<period_with_utc_shift> split_over_dst(const boost::gregorian::date_period&, const boost::local_time::time_zone_ptr&);
 
 void split_validity_pattern_over_dst(Data& data, GtfsData& gtfs_data);
 
@@ -269,7 +248,7 @@ struct RouteGtfsHandler : public GenericHandler {
     int id_c, short_name_c,
     long_name_c, type_c,
     desc_c,
-    color_c, agency_c;
+    color_c, text_color_c, agency_c;
     int ignored = 0;
     void init(Data&);
     void finish(Data& data);
@@ -340,7 +319,8 @@ struct TripsGtfsHandler : public GenericHandler {
     int id_c, service_c,
             trip_c, headsign_c,
             block_id_c, wheelchair_c,
-            bikes_c, shape_id_c;
+            bikes_c, shape_id_c,
+            direction_id_c;
 
     int ignored = 0;
     int ignored_vj = 0;
@@ -351,6 +331,11 @@ struct TripsGtfsHandler : public GenericHandler {
     const std::vector<std::string> required_headers() const {
         return {"route_id", "service_id", "trip_id"};
     }
+
+    using RouteId = std::pair<types::Line*, const std::string>;
+    std::map<RouteId, types::Route*> routes;
+
+    types::Route* get_or_create_route(Data& data, const RouteId&);
 };
 struct StopTimeGtfsHandler : public GenericHandler {
     StopTimeGtfsHandler(GtfsData& gdata, CsvReader& reader) : GenericHandler(gdata, reader) {}
@@ -392,7 +377,7 @@ protected:
     template <typename Handler>
     void parse(Data&); //some parser do not need a file since they just add default data
 
-    virtual void parse_files(Data&) = 0;
+    virtual void parse_files(Data&, const std::string& beginning_date = "") = 0;
 public:
     GtfsData gtfs_data;
 
@@ -401,11 +386,15 @@ public:
     virtual ~GenericGtfsParser();
 
     /// Remplit la structure passée en paramètre
-    void fill(ed::Data& data, const std::string beginning_date = "");
+    void fill(ed::Data& data, const std::string& beginning_date = "");
 
     /// Ajout des objets par défaut
     void fill_default_modes(Data & data);
 
+    void manage_production_date(Data& data, const std::string& beginning_date);
+    boost::gregorian::date_period complete_production_date(const std::string& beginning_date,
+                                                        boost::gregorian::date start_date,
+                                                        boost::gregorian::date end_date);
     ///parse le fichier calendar.txt afin de trouver la période de validité des données
     boost::gregorian::date_period find_production_date(const std::string &beginning_date);
 
@@ -429,7 +418,7 @@ inline void GenericGtfsParser::parse(Data& data) {
  * simply define the list of elemental parsers to use
  */
 struct GtfsParser : public GenericGtfsParser {
-    virtual void parse_files(Data&);
+    virtual void parse_files(Data&, const std::string& beginning_date);
     GtfsParser(const std::string & path) : GenericGtfsParser(path) {}
 };
 

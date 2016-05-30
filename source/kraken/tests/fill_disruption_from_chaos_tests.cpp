@@ -37,7 +37,8 @@ www.navitia.io
 #include "tests/utils_test.h"
 #include "routing/raptor.h"
 #include "type/data.h"
-#include "kraken/fill_disruption_from_chaos.h"
+#include "kraken/make_disruption_from_chaos.h"
+#include "kraken/apply_disruption.h"
 #include "type/chaos.pb.h"
 #include "type/gtfs-realtime.pb.h"
 #include <boost/range/algorithm/for_each.hpp>
@@ -55,7 +56,7 @@ namespace ntest = navitia::test;
 namespace bt = boost::posix_time;
 namespace ba = boost::algorithm;
 
-
+/*
 struct stop_area_finder{
     std::string sa_uri;
     stop_area_finder(const std::string& sa_uri): sa_uri(sa_uri){}
@@ -63,19 +64,18 @@ struct stop_area_finder{
     bool operator()(const nt::JourneyPatternPoint* jpp){
         return jpp->stop_point->stop_area->uri == sa_uri;
     }
-
 };
+*/
 
 static std::string dump_vj(const nt::VehicleJourney& vj){
     std::stringstream ss;
     ss << vj.uri << std::endl;
     for(const auto& st: vj.stop_time_list){
-    ss << "\t" << st.journey_pattern_point->stop_point->uri << ": " << st.arrival_time << " - " << st.departure_time << std::endl;
+    ss << "\t" << st.stop_point->uri << ": " << st.arrival_time << " - " << st.departure_time << std::endl;
     }
-    ss << "\tvalidity_pattern: " << ba::trim_left_copy_if(vj.validity_pattern->days.to_string(), boost::is_any_of("0")) << std::endl;
-    ss << "\tadapted_validity_pattern: " << ba::trim_left_copy_if(vj.adapted_validity_pattern->days.to_string(), boost::is_any_of("0")) << std::endl;
+    ss << "\tvalidity_pattern: " << ba::trim_left_copy_if(vj.base_validity_pattern()->days.to_string(), boost::is_any_of("0")) << std::endl;
+    ss << "\tadapted_validity_pattern: " << ba::trim_left_copy_if(vj.adapted_validity_pattern()->days.to_string(), boost::is_any_of("0")) << std::endl;
     return ss.str();
-
 }
 
 BOOST_AUTO_TEST_CASE(add_impact_on_line) {
@@ -110,99 +110,53 @@ BOOST_AUTO_TEST_CASE(add_impact_on_line) {
     app_period->set_end(ntest::to_posix_timestamp("20120616T123200"));
 
 
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
 
     BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 3);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->journey_patterns.size(), 1);
     auto* vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000001"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000001"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
     vj = b.data->pt_data->vehicle_journeys_map["vj:2"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000001"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000001"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
     vj = b.data->pt_data->vehicle_journeys_map["vj:3"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "001100"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "001101"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "001100"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "001101"), vj->base_validity_pattern()->days);
 
     //we delete the disruption, all must be as before!
     navitia::delete_disruption("test01", *b.data->pt_data, *b.data->meta);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 3);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->journey_patterns.size(), 1);
     vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000111"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000111"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
     vj = b.data->pt_data->vehicle_journeys_map["vj:2"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000111"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000111"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
     vj = b.data->pt_data->vehicle_journeys_map["vj:3"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "001101"), vj->adapted_validity_pattern->days);
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "001101"), vj->validity_pattern->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "001101"), vj->adapted_validity_pattern()->days);
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "001101"), vj->base_validity_pattern()->days);
 }
 
-BOOST_AUTO_TEST_CASE(add_impact_on_stop_area) {
-    ed::builder b("20120614");
-    b.vj("A", "000111")("stop_area:stop1", 8*3600 +10*60, 8*3600 + 11 * 60)("stop_area:stop2", 8*3600 + 20 * 60, 8*3600 + 21*60);
-    b.vj("A", "000111")("stop_area:stop1", 9*3600 +10*60, 9*3600 + 11 * 60)("stop_area:stop2", 9*3600 + 20 * 60, 9*3600 + 21*60);
-    navitia::type::Data data;
-    b.generate_dummy_basis();
-    b.finish();
-    b.data->pt_data->index();
-    b.data->build_raptor();
-    b.data->build_uri();
-    b.data->meta->production_date = boost::gregorian::date_period(boost::gregorian::date(2012,6,14), boost::gregorian::days(7));
-
-    //we delete the stop_area 1, two vj are impacted, we create a new journey pattern without this stop_area
-    //and two new vj are enable on this journey pattern, of course the theorical vj are disabled
-
-    chaos::Disruption disruption;
-    disruption.set_id("test01");
-    auto* impact = disruption.add_impacts();
-    impact->set_id("impact_id");
-    auto* severity = impact->mutable_severity();
-    severity->set_id("severity");
-    severity->set_effect(transit_realtime::Alert_Effect_NO_SERVICE);
-    auto* object = impact->add_informed_entities();
-    object->set_pt_object_type(chaos::PtObject_Type_stop_area);
-    object->set_uri("stop_area:stop1");
-    auto* app_period = impact->add_application_periods();
-    app_period->set_start(ntest::to_posix_timestamp("20120614T173200"));
-    app_period->set_end(ntest::to_posix_timestamp("20120618T123200"));
-
-
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
-
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 4);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->journey_patterns.size(), 2);
-    bool has_adapted_vj = false;
-    for(const auto* vj: b.data->pt_data->vehicle_journeys){
-        if(vj->is_adapted){
-            has_adapted_vj = true;
-            BOOST_CHECK(boost::find_if(vj->journey_pattern->journey_pattern_point_list,
-                        stop_area_finder("stop_area:stop1")) == vj->journey_pattern->journey_pattern_point_list.end());
-            BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000110"), vj->adapted_validity_pattern->days);
-        }else{
-            BOOST_CHECK(boost::find_if(vj->journey_pattern->journey_pattern_point_list,
-                        stop_area_finder("stop_area:stop1")) != vj->journey_pattern->journey_pattern_point_list.end());
-            BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000001"), vj->adapted_validity_pattern->days);
-            BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
-        }
-    }
-    BOOST_REQUIRE(has_adapted_vj);
-}
 
 BOOST_AUTO_TEST_CASE(add_impact_and_update_on_stop_area) {
     ed::builder b("20120614");
-    b.vj("A", "000111", "", true, "vj:1")("stop_area:stop1", 8*3600 +10*60, 8*3600 + 11 * 60)("stop_area:stop2", 8*3600 + 20 * 60 ,8*3600 + 21*60)
-            ("stop_area:stop3", 8*3600 + 30 * 60 ,8*3600 + 31*60)("stop_area:stop4", 8*3600 + 40 * 60 ,8*3600 + 41*60);
-    b.vj("A", "000111", "", true, "vj:2")("stop_area:stop1", 9*3600 +10*60, 9*3600 + 11 * 60)("stop_area:stop2", 9*3600 + 20 * 60 ,9*3600 + 21*60)
-            ("stop_area:stop3", 9*3600 + 30 * 60 ,9*3600 + 31*60)("stop_area:stop4", 9*3600 + 40 * 60 ,9*3600 + 41*60);
+    b.vj("A", "000111", "", true, "vj:1")
+            ("stop_area:stop1", "08:10"_t, "08:11"_t)
+            ("stop_area:stop2", "08:20"_t, "08:21"_t)
+            ("stop_area:stop3", "08:30"_t, "08:31"_t)
+            ("stop_area:stop4", "08:40"_t, "08:41"_t);
+    b.vj("A", "000111", "", true, "vj:2")
+            ("stop_area:stop1", "09:10"_t, "09:11"_t)
+            ("stop_area:stop2", "09:20"_t, "09:21"_t)
+            ("stop_area:stop3", "09:30"_t, "09:31"_t)
+            ("stop_area:stop4", "09:40"_t, "09:41"_t);
+
     b.generate_dummy_basis();
     b.finish();
     b.data->pt_data->index();
@@ -237,80 +191,70 @@ BOOST_AUTO_TEST_CASE(add_impact_and_update_on_stop_area) {
 
     auto check = [](const nt::Data& data){
         BOOST_REQUIRE_EQUAL(data.pt_data->lines.size(), 1);
-        BOOST_CHECK_EQUAL(data.pt_data->vehicle_journeys.size(), 6);//two of them don't circulate :(
-        BOOST_CHECK_EQUAL(data.pt_data->journey_patterns.size(), 4);//some of them aren't used
-        bool has_adapted_vj = false;
-        for(const auto* vj: data.pt_data->vehicle_journeys){
-            if(vj->adapted_validity_pattern->days.none() && vj->validity_pattern->days.none()){
-                //some vj don't circulate we don't want to check them
-                continue;
-            }
-            if(vj->is_adapted){
-                has_adapted_vj = true;
-                BOOST_CHECK_MESSAGE(boost::find_if(vj->journey_pattern->journey_pattern_point_list,
-                            stop_area_finder("stop_area:stop1")) == vj->journey_pattern->journey_pattern_point_list.end(), dump_vj(*vj));
-                BOOST_CHECK_MESSAGE(boost::find_if(vj->journey_pattern->journey_pattern_point_list,
-                            stop_area_finder("stop_area:stop2")) == vj->journey_pattern->journey_pattern_point_list.end(), dump_vj(*vj));
-            }else{
-                BOOST_CHECK(boost::find_if(vj->journey_pattern->journey_pattern_point_list,
-                            stop_area_finder("stop_area:stop1")) != vj->journey_pattern->journey_pattern_point_list.end());
-            }
-
-        }
-        BOOST_REQUIRE(has_adapted_vj);
 
         auto* vj = data.pt_data->vehicle_journeys_map["vj:1"];
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000001"), vj->adapted_validity_pattern->days);
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000001"), vj->adapted_validity_pattern()->days);
+        BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
         vj = data.pt_data->vehicle_journeys_map["vj:2"];
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000001"), vj->adapted_validity_pattern->days);
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->validity_pattern->days.to_string(), "000111"), vj->validity_pattern->days);
+        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000001"), vj->adapted_validity_pattern()->days);
+        BOOST_CHECK_MESSAGE(ba::ends_with(vj->base_validity_pattern()->days.to_string(), "000111"), vj->base_validity_pattern()->days);
 
         //useless vj, need to be deleted...
-        vj = data.pt_data->vehicle_journeys_map["vj:1:adapted-2"];
-        BOOST_CHECK(vj->adapted_validity_pattern->days.none());
-        BOOST_CHECK(vj->adapted_validity_pattern->days.none());
+        vj = data.pt_data->vehicle_journeys_map["vj:1:Adapted:0:test01"];
+        BOOST_CHECK(vj->adapted_validity_pattern()->days.none());
+        BOOST_CHECK(vj->adapted_validity_pattern()->days.none());
         //
         //useless vj, need to be deleted...
-        vj = data.pt_data->vehicle_journeys_map["vj:2:adapted-3"];
-        BOOST_CHECK(vj->adapted_validity_pattern->days.none());
-        BOOST_CHECK(vj->adapted_validity_pattern->days.none());
-
-        vj = data.pt_data->vehicle_journeys_map["vj:1:adapted-2:adapted-4"];
-        BOOST_CHECK(vj->validity_pattern->days.none());
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000110"), vj->adapted_validity_pattern->days);
-
-        vj = data.pt_data->vehicle_journeys_map["vj:2:adapted-3:adapted-5"];
-        BOOST_CHECK(vj->validity_pattern->days.none());
-        BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "000110"), vj->adapted_validity_pattern->days);
+        vj = data.pt_data->vehicle_journeys_map["vj:2:Adapted:0:test01"];
+        BOOST_CHECK(vj->adapted_validity_pattern()->days.none());
+        BOOST_CHECK(vj->adapted_validity_pattern()->days.none());
     };
 
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    // Too bad... some vjs are just deactivated but not removed, removing these vjs is in the todo list
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 6);
+    auto vj = b.data->pt_data->vehicle_journeys_map["vj:1:Adapted:1:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000110"), vj->adapted_validity_pattern()->days);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2:Adapted:1:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000110"), vj->adapted_validity_pattern()->days);
     check(*b.data);
 
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    // Too bad... some vjs are just deactivated but not removed, removing these vjs is in the todo list
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 10);
+    vj = b.data->pt_data->vehicle_journeys_map["vj:1:Adapted:1:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(vj->adapted_validity_pattern()->days.none(), vj->adapted_validity_pattern()->days);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2:Adapted:1:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(vj->adapted_validity_pattern()->days.none(), vj->adapted_validity_pattern()->days);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:1:Adapted:3:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000110"), vj->adapted_validity_pattern()->days);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2:Adapted:3:test01"];
+    BOOST_CHECK(vj->base_validity_pattern()->days.none());
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "000110"), vj->adapted_validity_pattern()->days);
+
     check(*b.data);
 
     navitia::delete_disruption(disruption.id(), *b.data->pt_data, *b.data->meta);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
-    BOOST_CHECK_EQUAL(b.data->pt_data->vehicle_journeys.size(), 2);
-    BOOST_CHECK_EQUAL(b.data->pt_data->journey_patterns.size(), 1);
-    for(const auto* vj: b.data->pt_data->vehicle_journeys){
-        if(vj->is_adapted){
-            BOOST_FAIL("no adapted vj expected");
+    for (const auto* vj: b.data->pt_data->vehicle_journeys) {
+        if (vj->realtime_level == nt::RTLevel::Base){
+            BOOST_CHECK(vj->base_validity_pattern()->days == vj->adapted_validity_pattern()->days);
+        }else if (vj->realtime_level == nt::RTLevel::Adapted){
+            BOOST_CHECK(vj->base_validity_pattern()->days.none());
         }
-        BOOST_CHECK(vj->validity_pattern->days == vj->adapted_validity_pattern->days);
-    }
-    for(const auto* sp: b.data->pt_data->stop_points){
-        if(sp->journey_pattern_point_list.size() > 1){
-            BOOST_FAIL("some adapted jpp are not removed for " << sp->uri);
-        }
-
     }
 
 }
-
 
 
 BOOST_AUTO_TEST_CASE(add_impact_on_line_over_midnigt) {
@@ -340,13 +284,12 @@ BOOST_AUTO_TEST_CASE(add_impact_on_line_over_midnigt) {
     app_period->set_end(ntest::to_posix_timestamp("20120618T123200"));
 
 
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
 
     BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 1);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->journey_patterns.size(), 1);
     auto* vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "010001"), dump_vj(*vj));
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "010001"), dump_vj(*vj));
 }
 
 BOOST_AUTO_TEST_CASE(add_impact_on_line_over_midnigt_2) {
@@ -378,11 +321,151 @@ BOOST_AUTO_TEST_CASE(add_impact_on_line_over_midnigt_2) {
     app_period->set_end(ntest::to_posix_timestamp("20120615T120000"));
 
 
-    navitia::add_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
 
     BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
     BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 1);
-    BOOST_REQUIRE_EQUAL(b.data->pt_data->journey_patterns.size(), 1);
     auto* vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
-    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern->days.to_string(), "010110"), dump_vj(*vj));
+    BOOST_CHECK_MESSAGE(ba::ends_with(vj->adapted_validity_pattern()->days.to_string(), "010110"), dump_vj(*vj));
+}
+
+BOOST_AUTO_TEST_CASE(add_impact_on_line_section) {
+    ed::builder b("20160404");
+    b.vj("line:A", "111111", "", true, "vj:1")
+            ("stop1", "15:00"_t, "15:10"_t)
+            ("stop2", "16:00"_t, "16:10"_t)
+            ("stop3", "17:00"_t, "17:10"_t)
+            ("stop4", "18:00"_t, "18:10"_t);
+    b.vj("line:A", "011111", "", true, "vj:2")
+            ("stop1", "17:00"_t, "17:10"_t)
+            ("stop2", "18:00"_t, "18:10"_t)
+            ("stop3", "19:00"_t, "19:10"_t)
+            ("stop4", "20:00"_t, "20:10"_t);
+    b.vj("line:A", "100100", "", true, "vj:3")
+            ("stop1", "12:00"_t, "12:10"_t)
+            ("stop2", "13:00"_t, "13:10"_t)
+            ("stop3", "14:00"_t, "14:10"_t)
+            ("stop4", "15:00"_t, "15:10"_t);
+    navitia::type::Data data;
+    b.generate_dummy_basis();
+    b.finish();
+    b.data->pt_data->index();
+    b.data->build_raptor();
+    b.data->build_uri();
+    b.data->meta->production_date = boost::gregorian::date_period(boost::gregorian::date(2016,4,4), boost::gregorian::days(7));
+
+
+    // Add a disruption on a section between stop2 and stop3, from the 4th 6am to the 6th 5:30pm
+    chaos::Disruption disruption;
+    disruption.set_id("dis_ls1");
+    auto* impact = disruption.add_impacts();
+    impact->set_id("impact_id");
+    auto* severity = impact->mutable_severity();
+    severity->set_id("severity");
+    severity->set_effect(transit_realtime::Alert_Effect_NO_SERVICE);
+
+    auto* object = impact->add_informed_entities();
+    object->set_pt_object_type(chaos::PtObject_Type_line_section);
+    object->set_uri("ls_stop2_stop3");
+    auto* ls = object->mutable_pt_line_section();
+
+    auto* ls_line = ls->mutable_line();
+    ls_line->set_pt_object_type(chaos::PtObject_Type_line);
+    ls_line->set_uri("line:A");
+
+    auto* start_stop = ls->mutable_start_point();
+    start_stop->set_pt_object_type(chaos::PtObject_Type_stop_area);
+    start_stop->set_uri("stop2");
+    auto* end_stop = ls->mutable_end_point();
+    end_stop->set_pt_object_type(chaos::PtObject_Type_stop_area);
+    end_stop->set_uri("stop3");
+
+    auto* app_period = impact->add_application_periods();
+    app_period->set_start(ntest::to_posix_timestamp("20160404T060000"));
+    app_period->set_end(ntest::to_posix_timestamp("20160406T173000"));
+
+    // 3 new vj will be created to cancel stop_times on stop 2 and 3
+    navitia::make_and_apply_disruption(disruption, *b.data->pt_data, *b.data->meta);
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 6);
+
+    // Check the original vj
+    auto* vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
+    auto adapted_vp = vj->adapted_validity_pattern()->days;
+    auto base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "111000"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "111111"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "011100"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "011111"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:3"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "100000"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "100100"), base_vp);
+
+    // Check the created vj, they shouldn't have any base validity pattern
+    vj = b.data->pt_data->vehicle_journeys_map["vj:1:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000111"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000011"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:3:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000100"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
+
+    // we delete the disruption, everything should be back to normal, except adapted vj are only deactivated
+    navitia::delete_disruption("dis_ls1", *b.data->pt_data, *b.data->meta);
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->lines.size(), 1);
+    BOOST_REQUIRE_EQUAL(b.data->pt_data->vehicle_journeys.size(), 6);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "111111"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "111111"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "011111"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "011111"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:3"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "100100"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "100100"), base_vp);
+
+    // Check the created vj, they shouldn't have any base validity pattern
+    vj = b.data->pt_data->vehicle_journeys_map["vj:1:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000000"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:2:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000000"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
+
+    vj = b.data->pt_data->vehicle_journeys_map["vj:3:Adapted:0:dis_ls1"];
+    adapted_vp = vj->adapted_validity_pattern()->days;
+    base_vp = vj->base_validity_pattern()->days;
+    BOOST_CHECK_MESSAGE(ba::ends_with(adapted_vp.to_string(), "000000"), adapted_vp);
+    BOOST_CHECK_MESSAGE(ba::ends_with(base_vp.to_string(), "000000"), base_vp);
 }

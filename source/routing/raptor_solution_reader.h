@@ -37,16 +37,17 @@ namespace navitia { namespace routing {
 
 struct Journey {
     struct Section {
+        Section() = default;
         Section(const type::StopTime& in,
                 const DateTime in_dt,
                 const type::StopTime& out,
                 const DateTime out_dt):
             get_in_st(&in), get_in_dt(in_dt), get_out_st(&out), get_out_dt(out_dt)
         {}
-        const type::StopTime* get_in_st;
-        DateTime get_in_dt;
-        const type::StopTime* get_out_st;
-        DateTime get_out_dt;
+        const type::StopTime* get_in_st = nullptr;
+        DateTime get_in_dt = 0;
+        const type::StopTime* get_out_st = nullptr;
+        DateTime get_out_dt = 0;
     };
 
     bool better_on_dt(const Journey& that, bool request_clockwise) const;
@@ -80,13 +81,16 @@ typedef ParetoFront<Journey, Dominates> Solutions;
 
 // deps (resp. arrs) are departure (resp. arrival) stop points and
 // durations (not clockwise dependent).
-Solutions
-read_solutions(const RAPTOR& raptor,
-               const bool clockwise,
-               const RAPTOR::vec_stop_point_duration& deps,
-               const RAPTOR::vec_stop_point_duration& arrs,
-               const bool disruption_active,
-               const type::AccessibiliteParams& accessibilite_params);
+void read_solutions(const RAPTOR& raptor,
+                    Solutions& solutions, //all raptor solutions, modified by side effects
+                    const bool clockwise,
+                    const DateTime& departure_datetime,
+                    const routing::map_stop_point_duration& deps,
+                    const routing::map_stop_point_duration& arrs,
+                    const type::RTLevel rt_level,
+                    const type::AccessibiliteParams& accessibilite_params,
+                    const navitia::time_duration& transfer_penalty,
+                    const StartingPointSndPhase& end_point);
 
 Path make_path(const Journey& journey, const type::Data& data);
 

@@ -5,11 +5,13 @@ SET(PROTO_FILES
     ${CMAKE_SOURCE_DIR}/navitia-proto/task.proto
     ${CMAKE_SOURCE_DIR}/chaos-proto/chaos.proto
     ${CMAKE_SOURCE_DIR}/chaos-proto/gtfs-realtime.proto
+    ${CMAKE_SOURCE_DIR}/chaos-proto/kirin.proto
 )
 
 SET(PROTO_HDRS
     ${CMAKE_CURRENT_BINARY_DIR}/chaos.pb.h
     ${CMAKE_CURRENT_BINARY_DIR}/gtfs-realtime.pb.h
+    ${CMAKE_CURRENT_BINARY_DIR}/kirin.pb.h
     ${CMAKE_CURRENT_BINARY_DIR}/request.pb.h
     ${CMAKE_CURRENT_BINARY_DIR}/response.pb.h
     ${CMAKE_CURRENT_BINARY_DIR}/task.pb.h
@@ -18,6 +20,7 @@ SET(PROTO_HDRS
 
 SET(PROTO_SRCS ${CMAKE_CURRENT_BINARY_DIR}/chaos.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/gtfs-realtime.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/kirin.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/request.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/response.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/task.pb.cc
@@ -54,17 +57,18 @@ add_custom_command (TARGET pb_lib
 add_custom_command (TARGET pb_lib
     PRE_BUILD
     COMMAND protoc ARGS "--python_out=${CMAKE_SOURCE_DIR}/jormungandr/tests" 
-    chaos.proto gtfs-realtime.proto
+    chaos.proto gtfs-realtime.proto kirin.proto
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/chaos-proto" VERBATIM)
 
-add_library(types type.cpp message.cpp datetime.cpp geographical_coord.cpp)
-target_link_libraries(types utils pb_lib protobuf)
+add_library(types type.cpp message.cpp datetime.cpp geographical_coord.cpp timezone_manager.cpp validity_pattern.cpp type_utils.h)
+target_link_libraries(types ptreferential utils pb_lib protobuf)
 add_dependencies(types protobuf_files)
 
 SET(DATA_SRC
     data.cpp
     "${CMAKE_SOURCE_DIR}/third_party/lz4/lz4.c"
     pt_data.cpp
+    headsign_handler.cpp
 )
 
 SET(BOOST_LIBS ${Boost_FILESYSTEM_LIBRARY}
@@ -91,7 +95,7 @@ ADD_BOOST_TEST(datetime_test)
 
 
 add_executable(accessible_test tests/accessible.cpp)
-target_link_libraries(accessible_test ${BOOST_LIBS} log4cplus)
+target_link_libraries(accessible_test ${BOOST_LIBS} log4cplus utils)
 add_dependencies(accessible_test protobuf_files)
 ADD_BOOST_TEST(accessible_test)
 
@@ -113,3 +117,15 @@ ADD_BOOST_TEST(aggregation_odt_test)
 add_executable(comments_test tests/comments_test.cpp)
 target_link_libraries(comments_test ed data types georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
 ADD_BOOST_TEST(comments_test)
+
+add_executable(code_container_test tests/code_container_test.cpp)
+target_link_libraries(code_container_test ${BOOST_LIBS})
+ADD_BOOST_TEST(code_container_test)
+
+add_executable(headsign_test tests/headsign_test.cpp)
+target_link_libraries(headsign_test ed data types georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
+ADD_BOOST_TEST(headsign_test)
+
+add_executable(create_vj_test tests/create_vj_test.cpp)
+target_link_libraries(create_vj_test ed data types georef autocomplete utils ${BOOST_LIBS} log4cplus pb_lib protobuf)
+ADD_BOOST_TEST(create_vj_test)

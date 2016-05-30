@@ -49,6 +49,18 @@ navitia::time_duration PathFinder::crow_fly_duration(const double distance) cons
     return navitia::seconds(distance / (default_speed[mode_] * speed_factor));
 }
 
+static bool is_projected_on_same_edge(const ProjectionData& p1, const ProjectionData& p2){
+    return (p1[source_e] == p2[source_e] && p1[target_e] == p2[target_e])
+                || (p1[source_e] == p2[target_e] && p1[target_e] == p2[source_e]);
+}
+
+navitia::time_duration PathFinder::path_duration_on_same_edge(const ProjectionData& p1, const ProjectionData& p2){
+    return crow_fly_duration(p1.real_coord.distance_to(p1.projected)
+                             + p1.projected.distance_to(p2.projected)
+                             + p2.projected.distance_to(p2.real_coord));
+}
+
+
 StreetNetwork::StreetNetwork(const GeoRef &geo_ref) :
     geo_ref(geo_ref),
     departure_path_finder(geo_ref),
@@ -67,8 +79,10 @@ void StreetNetwork::init(const type::EntryPoint& start, boost::optional<const ty
 bool StreetNetwork::departure_launched() const {return departure_path_finder.computation_launch;}
 bool StreetNetwork::arrival_launched() const {return arrival_path_finder.computation_launch;}
 
-std::vector<std::pair<type::idx_t, navitia::time_duration>>
-StreetNetwork::find_nearest_stop_points(navitia::time_duration radius, const proximitylist::ProximityList<type::idx_t>& pl, bool use_second) {
+routing::map_stop_point_duration
+StreetNetwork::find_nearest_stop_points(navitia::time_duration radius,
+                                        const proximitylist::ProximityList<type::idx_t>& pl,
+                                        bool use_second) {
     // delegate to the arrival or departure pathfinder
     // results are store to build the routing path after the transportation routing computation
     return (use_second ? arrival_path_finder : departure_path_finder).find_nearest_stop_points(radius, pl);
@@ -83,8 +97,9 @@ Path StreetNetwork::get_path(type::idx_t idx, bool use_second) {
     if (! use_second) {
         result = departure_path_finder.get_path(idx);
 
-        if (! result.path_items.empty())
+        if (! result.path_items.empty()) {
             result.path_items.front().coordinates.push_front(departure_path_finder.starting_edge.projected);
+        }
     } else {
         result = arrival_path_finder.get_path(idx);
 
@@ -132,9 +147,14 @@ Path StreetNetwork::get_path(type::idx_t idx, bool use_second) {
 
 Path
 StreetNetwork::get_direct_path(const type::EntryPoint& origin, const type::EntryPoint& destination) {
+    auto dest_mode = origin.streetnetwork_params.mode;
+    if(dest_mode == type::Mode_e::Car){
+        //on direct path with car we want to arrive on the walking graph
+        dest_mode = type::Mode_e::Walking;
+    }
     const auto dest_edge = ProjectionData(destination.coordinates,
                                           geo_ref,
-                                          geo_ref.offsets[origin.streetnetwork_params.mode],
+                                          geo_ref.offsets[dest_mode],
                                           geo_ref.pl);
     if (! dest_edge.found) { return Path(); }
     const auto max_dur = origin.streetnetwork_params.max_duration
@@ -226,15 +246,15 @@ PathFinder::crow_fly_find_nearest_stop_points(navitia::time_duration radius,
     return pl.find_within(start_coord, crow_fly_dist);
 }
 
-std::vector<std::pair<type::idx_t, navitia::time_duration>>
+routing::map_stop_point_duration
 PathFinder::find_nearest_stop_points(navitia::time_duration radius,
                                      const proximitylist::ProximityList<type::idx_t>& pl) {
     auto elements = crow_fly_find_nearest_stop_points(radius, pl);
+    routing::map_stop_point_duration result;
     if (! starting_edge.found){
         LOG4CPLUS_TRACE(log4cplus::Logger::getInstance("Logger"), "starting_edge not found!");
         // if no street network, return stop_points that are within
         // radius distance (with sqrt(2) security factor)
-        std::vector<std::pair<type::idx_t, navitia::time_duration>> result;
         // if we are not dealing with 0,0 coordinates (incorrect data), allow crow fly
         if(start_coord != type::GeographicalCoord(0, 0)) {
             for (const auto& element: elements) {
@@ -246,7 +266,7 @@ PathFinder::find_nearest_stop_points(navitia::time_duration radius,
                 // if the radius is still ok with sqrt(2) factor
                 auto sp_idx = routing::SpIdx(element.first);
                 if (duration < radius && distance_to_entry_point.count(sp_idx) == 0) {
-                    result.push_back({element.first, duration});
+                    result[sp_idx] = duration;
                     distance_to_entry_point[sp_idx] = duration;
                 }
             }
@@ -254,28 +274,40 @@ PathFinder::find_nearest_stop_points(navitia::time_duration radius,
         return result;
     }
 
-    if(elements.empty())
-        return {};
+    if (elements.empty()) {
+        return result;
+    }
 
     start_distance_dijkstra(radius);
 #ifdef _DEBUG_DIJKSTRA_QUANTUM_
     dump_dijkstra_for_quantum(starting_edge);
 #endif
 
-    std::vector<std::pair<type::idx_t, navitia::time_duration>> result;
     const auto max = bt::pos_infin;
     for (auto element: elements) {
         ProjectionData projection = this->geo_ref.projected_stop_points[element.first][mode];
-        // Est-ce que le stop point a pu être raccroché au street network
+        // the stop point has been projected on the graph?
         if(projection.found){
-            navitia::time_duration best_dist = max;
-            if (distances[projection[source_e]] < max) {
-                best_dist = distances[projection[source_e]] + crow_fly_duration(projection.distances[source_e]); }
-            if (distances[projection[target_e]] < max) {
-                best_dist = std::min(best_dist, distances[projection[target_e]] + crow_fly_duration(projection.distances[target_e]));
-            }
-            if (best_dist <= radius) {
-                result.push_back(std::make_pair(element.first, best_dist));
+            //if our two points are projected on the same edge the Dijkstra won't give us the correct value
+            // we need to handle this case separately
+            if(is_projected_on_same_edge(starting_edge, projection)){
+                //We calculate the duration for going to the edge, then to the projected destination on the edge
+                //and finally to the destination
+                auto duration = path_duration_on_same_edge(starting_edge, projection);
+                if(duration <= radius){
+                    result[routing::SpIdx(element.first)] = duration;
+                }
+            }else{
+                navitia::time_duration best_dist = max;
+                if (distances[projection[source_e]] < max) {
+                    best_dist = distances[projection[source_e]] + crow_fly_duration(projection.distances[source_e]);
+                }
+                if (distances[projection[target_e]] < max) {
+                    best_dist = std::min(best_dist, distances[projection[target_e]] + crow_fly_duration(projection.distances[target_e]));
+                }
+                if (best_dist <= radius) {
+                    result[routing::SpIdx(element.first)] = best_dist;
+                }
             }
         }
     }
@@ -414,28 +446,36 @@ Path PathFinder::get_path(const ProjectionData& target, std::pair<navitia::time_
     if (! computation_launch || ! target.found || nearest_edge.first == bt::pos_infin)
         return {};
 
-    auto result = this->build_path(target[nearest_edge.second]);
+    Path result;
+    if(is_projected_on_same_edge(starting_edge, target)){
+        PathItem item;
+        item.duration = path_duration_on_same_edge(starting_edge, target);
+        item.coordinates.push_back(starting_edge.projected);
+        item.coordinates.push_back(target.projected);
 
-    add_projections_to_path(result, true);
+        auto edge_pair = boost::edge(starting_edge[source_e], starting_edge[target_e], geo_ref.graph);
+        if (! edge_pair.second) {
+            throw navitia::exception("impossible to find an edge");
+        }
+        Edge edge = geo_ref.graph[edge_pair.first];
+        item.way_idx = edge.way_idx;
+        item.transportation = geo_ref.get_caracteristic(edge_pair.first);
+        result.path_items.push_back(item);
+        result.duration += item.duration;
+    }else{
+        result = this->build_path(target[nearest_edge.second]);
+        add_projections_to_path(result, true);
 
-    //we need to put the end projections too
-    add_custom_projections_to_path(result, false, target, nearest_edge.second);
+        //we need to put the end projections too
+        add_custom_projections_to_path(result, false, target, nearest_edge.second);
+    }
+
 
     return result;
 }
 
 void PathFinder::add_projections_to_path(Path& p, bool append_to_begin) const {
     //we need to find out which side of the projection has been used to compute the right length
-
-    //we check if the we already are the the arrival
-    if (predecessors[starting_edge[source_e]] == starting_edge[source_e] ||
-            predecessors[starting_edge[target_e]] == starting_edge[target_e]) {
-        //and we add the closer starting edge
-        ProjectionData::Direction direction = starting_edge.distances[source_e] < starting_edge.distances[target_e]
-                ? source_e : target_e;
-        add_custom_projections_to_path(p, append_to_begin, starting_edge, direction);
-        return;
-    }
     assert(! p.path_items.empty());
 
     const auto& path_item_to_consider = append_to_begin ? p.path_items.front(): p.path_items.back();
@@ -498,11 +538,14 @@ Path PathFinder::build_path(vertex_t best_destination) const {
     }
     reverse_path.push_back(best_destination);
 
-    return create_path(geo_ref, reverse_path, true);
+    return create_path(geo_ref, reverse_path, true, speed_factor);
 }
 
 
-Path create_path(const GeoRef& geo_ref, std::vector<vertex_t> reverse_path, bool add_one_elt) {
+Path create_path(const GeoRef& geo_ref,
+                 const std::vector<vertex_t>& reverse_path,
+                 bool add_one_elt,
+                 double speed_factor) {
     Path p;
 
     // On reparcourt tout dans le bon ordre
@@ -537,8 +580,8 @@ Path create_path(const GeoRef& geo_ref, std::vector<vertex_t> reverse_path, bool
         last_transport_carac = transport_carac;
         path_item.way_idx = edge.way_idx;
         path_item.transportation = transport_carac;
-        path_item.duration += edge.duration;
-        p.duration += edge.duration;
+        path_item.duration += edge.duration / speed_factor;
+        p.duration += edge.duration / speed_factor;
         if (path_item_changed) {
             //we update the last path item
             path_item.angle = compute_directions(p, coord);
@@ -546,9 +589,9 @@ Path create_path(const GeoRef& geo_ref, std::vector<vertex_t> reverse_path, bool
     }
     //in some case we want to add even if we have only one vertex (which means there is no valid edge)
     size_t min_nb_elt_to_add = add_one_elt ? 1 : 2;
-    if (reverse_path.size() >= min_nb_elt_to_add)
+    if (reverse_path.size() >= min_nb_elt_to_add){
         p.path_items.push_back(path_item);
-
+    }
     return p;
 }
 

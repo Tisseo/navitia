@@ -49,12 +49,11 @@ struct MetaData{
 
     std::string shape;
 
-    /// default dataset timezone
-    std::string timezone;
     std::string publisher_name;
     std::string publisher_url;
     std::string license;
     std::string instance_name;
+    boost::posix_time::ptime dataset_created_at;
 
     MetaData() : production_date(boost::gregorian::date(), boost::gregorian::date()) {}
 
@@ -63,11 +62,14 @@ struct MetaData{
       * Elle est appelée par boost et pas directement
       */
     template<class Archive> void serialize(Archive & ar, const unsigned int) {
-        ar & production_date & publication_date & data_sources & shape & timezone &
-                publisher_name & publisher_url & license & instance_name;
+        ar & production_date & publication_date & data_sources & shape &
+                publisher_name & publisher_url & license & instance_name & dataset_created_at;
     }
-
-    friend class boost::serialization::access;
-
+    boost::posix_time::time_period production_period() const {
+        namespace pt = boost::posix_time;
+        const auto begin = pt::ptime(production_date.begin(), pt::minutes(0));
+        const auto end = pt::ptime(production_date.end(), pt::minutes(0));
+        return {begin, end};
+    }
 };
 }}

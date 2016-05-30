@@ -29,58 +29,64 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
-from flask import url_for, redirect
+from __future__ import absolute_import, print_function, unicode_literals, division
+
 from flask.ext.restful import fields, marshal_with, reqparse, abort
-from flask.globals import g
+from jormungandr.parking_space_availability.bss.stands_manager import ManageStands
 from jormungandr import i_manager, authentication
-from converters_collection_type import collections_to_resource_type
-from fields import stop_point, stop_area, route, line, line_group, \
+from jormungandr.interfaces.v1.converters_collection_type import collections_to_resource_type
+from jormungandr.interfaces.v1.fields import stop_point, stop_area, route, line, line_group, \
     physical_mode, commercial_mode, company, network, pagination,\
     journey_pattern_point, NonNullList, poi, poi_type,\
-    journey_pattern, connection, error, PbField
-from VehicleJourney import vehicle_journey
+    journey_pattern, trip, connection, error, PbField, contributor, dataset
+from jormungandr.interfaces.v1.VehicleJourney import vehicle_journey
 from collections import OrderedDict
-from ResourceUri import ResourceUri, protect
+from jormungandr.interfaces.v1.ResourceUri import ResourceUri, protect
 from jormungandr.interfaces.argument import ArgumentDoc
-from jormungandr.interfaces.parsers import depth_argument, date_time_format
-from errors import ManageError
-from Coord import Coord
-from jormungandr.interfaces.v1.fields import DisruptionsField, feed_publisher
+from jormungandr.interfaces.parsers import depth_argument, date_time_format, default_count_arg_type
+from jormungandr.interfaces.v1.errors import ManageError
+from jormungandr.interfaces.v1.Coord import Coord
+from jormungandr.interfaces.v1.fields import disruption_marshaller, feed_publisher, NonNullList, NonNullNested
 from jormungandr.timezone import set_request_timezone
-from flask.ext.restful.types import boolean
+from flask.ext.restful.inputs import boolean
 from jormungandr.interfaces.parsers import option_value
 from jormungandr.interfaces.common import odt_levels
-import navitiacommon.type_pb2 as type_pb2
+from jormungandr.utils import date_to_timestamp
+from jormungandr.resources_utc import ResourceUtc
 from datetime import datetime
 
-class Uri(ResourceUri):
-    parsers = {}
+
+class Uri(ResourceUri, ResourceUtc):
 
     def __init__(self, is_collection, collection, *args, **kwargs):
         kwargs['authentication'] = False
         ResourceUri.__init__(self, *args, **kwargs)
+        ResourceUtc.__init__(self)
+        self.parsers = {}
         self.parsers["get"] = reqparse.RequestParser(
             argument_class=ArgumentDoc)
         parser = self.parsers["get"]
         parser.add_argument("start_page", type=int, default=0,
                             description="The page where you want to start")
-        parser.add_argument("count", type=int, default=25,
+        parser.add_argument("count", type=default_count_arg_type, default=25,
                             description="Number of objects you want on a page")
         parser.add_argument("depth", type=depth_argument,
                             default=1,
                             description="The depth of your object")
         parser.add_argument("forbidden_id[]", type=unicode,
                             description="DEPRECATED, replaced by forbidden_uris[]",
-                            dest="forbidden_ids[]",
+                            dest="__temporary_forbidden_id[]",
                             default=[],
                             action="append")
         parser.add_argument("forbidden_uris[]", type=unicode,
-                            description="forbidden ids",
+                            description="forbidden uris",
                             dest="forbidden_uris[]",
                             default=[],
                             action="append")
         parser.add_argument("external_code", type=unicode,
                             description="An external code to query")
+        parser.add_argument("headsign", type=unicode,
+                            description="filter vehicle journeys on headsign")
         parser.add_argument("show_codes", type=boolean, default=False,
                             description="show more identification codes")
         parser.add_argument("odt_level", type=option_value(odt_levels),
@@ -94,9 +100,13 @@ class Uri(ResourceUri):
                                             " else we consider it as UTC")
         parser.add_argument("distance", type=int, default=200,
                                 description="Distance range of the query. Used only if a coord is in the query")
+        parser.add_argument("since", type=date_time_format,
+                            description="filters objects not valid before this date")
+        parser.add_argument("until", type=date_time_format,
+                            description="filters objects not valid after this date")
 
         if is_collection:
-            parser.add_argument("filter", type=str, default="",
+            parser.add_argument("filter", type=unicode, default="",
                                 description="The filter parameter")
         self.collection = collection
         self.method_decorators.insert(0, ManageError())
@@ -106,9 +116,17 @@ class Uri(ResourceUri):
 
         args = self.parsers["get"].parse_args()
 
+        # handle headsign
+        if args.get("headsign"):
+            f = u"vehicle_journey.has_headsign({})".format(protect(args["headsign"]))
+            if args.get("filter"):
+                args["filter"] += " and " + f
+            else:
+                args["filter"] = f
+
         # for retrocompatibility purpose
-        for forbid_id in args.get('forbidden_ids[]', []):
-            args.get('forbidden_uris[]', []).append(forbid_id)
+        for forbid_id in args['__temporary_forbidden_id[]']:
+            args['forbidden_uris[]'].append(forbid_id)
 
         if "odt_level" in args and args["odt_level"] != "all" and "lines" not in collection:
             abort(404, message="bad request: odt_level filter can only be applied to lines")
@@ -135,20 +153,30 @@ class Uri(ResourceUri):
         #we store the region in the 'g' object, which is local to a request
         set_request_timezone(self.region)
 
+        # change dt to utc
+        if args['since']:
+            args['_original_since'] = args['since']
+            args['since'] = date_to_timestamp(self.convert_to_utc(args['since']))
+        if args['until']:
+            args['_original_until'] = args['until']
+            args['until'] = date_to_timestamp(self.convert_to_utc(args['until']))
+
         if not self.region:
             return {"error": "No region"}, 404
-        if collection and id:
-            args["filter"] = collections_to_resource_type[collection] + ".uri="
-            args["filter"] += protect(id)
-        elif uri:
+        if uri:
             if uri[-1] == "/":
                 uri = uri[:-1]
             uris = uri.split("/")
             if collection is None:
                 collection = uris[-1] if len(uris) % 2 != 0 else uris[-2]
             args["filter"] = self.get_filter(uris, args)
-        #else:
-        #    abort(503, message="Not implemented")
+        if collection and id:
+            f = u'{o}.uri={v}'.format(o=collections_to_resource_type[collection], v=protect(id))
+            if args.get("filter"):
+                args["filter"] += " and " + f
+            else:
+                args["filter"] = f
+
         response = i_manager.dispatch(args, collection,
                                       instance_name=self.region)
         return response
@@ -167,7 +195,7 @@ def journey_pattern_points(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -190,7 +218,7 @@ def commercial_modes(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -213,7 +241,7 @@ def journey_patterns(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -236,7 +264,7 @@ def vehicle_journeys(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -244,6 +272,29 @@ def vehicle_journeys(is_collection):
                                        display_null=False)
             self.method_decorators.insert(1, collections)
     return VehicleJourneys
+
+
+def trips(is_collection):
+    class Trips(Uri):
+
+        """ Retrieves trips"""
+
+        def __init__(self):
+            Uri.__init__(self, is_collection, "trips")
+            self.collections = [
+                ("trips",
+                 NonNullList(fields.Nested(trip,
+                                           display_null=False))),
+                ("pagination", PbField(pagination)),
+                ("error", PbField(error)),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
+                ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
+                                           display_null=False)))
+            ]
+            collections = marshal_with(OrderedDict(self.collections),
+                                       display_null=False)
+            self.method_decorators.insert(1, collections)
+    return Trips
 
 
 def physical_modes(is_collection):
@@ -259,7 +310,7 @@ def physical_modes(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -281,7 +332,7 @@ def stop_points(is_collection):
                  NonNullList(fields.Nested(stop_point, display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -307,7 +358,7 @@ def stop_areas(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False))),
             ]
@@ -333,7 +384,7 @@ def connections(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -356,7 +407,7 @@ def companies(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -379,7 +430,7 @@ def poi_types(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -402,7 +453,7 @@ def routes(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -427,7 +478,7 @@ def line_groups(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
             ]
             collections = marshal_with(OrderedDict(self.collections),
                                        display_null=False)
@@ -451,7 +502,7 @@ def lines(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -477,7 +528,7 @@ def pois(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -487,6 +538,12 @@ def pois(is_collection):
             self.parsers["get"].add_argument("original_id", type=unicode,
                             description="original uri of the object you"
                                     "want to query")
+            self.parsers["get"].add_argument("bss_stands", type=bool, default=True,
+                                             description="Show bss stands availability")
+            args = self.parsers["get"].parse_args()
+            if args["bss_stands"]:
+                self.method_decorators.insert(2, ManageStands(self, 'pois'))
+
     return Pois
 
 
@@ -503,7 +560,7 @@ def networks(is_collection):
                                            display_null=False))),
                 ("pagination", PbField(pagination)),
                 ("error", PbField(error)),
-                ("disruptions", DisruptionsField),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
                 ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
                                            display_null=False)))
             ]
@@ -514,6 +571,74 @@ def networks(is_collection):
                             description="original uri of the object you"
                                     "want to query")
     return Networks
+
+
+def disruptions(is_collection):
+
+    class Disruptions(Uri):
+
+        def __init__(self):
+            Uri.__init__(self, is_collection, "disruptions")
+            self.collections = [
+                ("pagination", PbField(pagination)),
+                ("error", PbField(error)),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
+                ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
+                                           display_null=False)))
+            ]
+            collections = marshal_with(OrderedDict(self.collections),
+                                       display_null=False)
+            self.method_decorators.insert(1, collections)
+            self.parsers["get"].add_argument("original_id", type=unicode,
+                            description="original uri of the object you"
+                                    "want to query")
+    return Disruptions
+
+
+def contributors(is_collection):
+    class Contributors(Uri):
+
+        """ Retrieves contributors"""
+
+        def __init__(self):
+            Uri.__init__(self, is_collection, "contributors")
+            self.collections = [
+                ("contributors",
+                 NonNullList(fields.Nested(contributor,
+                                           display_null=False))),
+                ("pagination", PbField(pagination)),
+                ("error", PbField(error)),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
+                ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
+                                           display_null=False)))
+            ]
+            collections = marshal_with(OrderedDict(self.collections),
+                                       display_null=False)
+            self.method_decorators.insert(1, collections)
+    return Contributors
+
+
+def datasets(is_collection):
+    class Datasets(Uri):
+
+        """ Retrieves datasets"""
+
+        def __init__(self):
+            Uri.__init__(self, is_collection, "datasets")
+            self.collections = [
+                ("datasets",
+                 NonNullList(fields.Nested(dataset,
+                                           display_null=False))),
+                ("pagination", PbField(pagination)),
+                ("error", PbField(error)),
+                ("disruptions", fields.List(NonNullNested(disruption_marshaller), attribute="impacts")),
+                ("feed_publishers", NonNullList(fields.Nested(feed_publisher,
+                                           display_null=False)))
+            ]
+            collections = marshal_with(OrderedDict(self.collections),
+                                       display_null=False)
+            self.method_decorators.insert(1, collections)
+    return Datasets
 
 
 def addresses(is_collection):
@@ -527,17 +652,8 @@ def addresses(is_collection):
 
 def coords(is_collection):
     class Coords(Coord):
-
         """ Not implemented yet"""
         pass
     return Coords
 
-
-def Redirect(*args, **kwargs):
-    id_ = kwargs["id"]
-    collection = kwargs["collection"]
-    region = i_manager.get_region(object_id=id_)
-    if not region:
-        region = "{region.id}"
-    url = url_for("v1.uri", region=region, collection=collection, id=id_)
-    return redirect(url, 303)
+coord = coords

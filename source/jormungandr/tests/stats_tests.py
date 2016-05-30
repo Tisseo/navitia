@@ -26,12 +26,17 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+
+from __future__ import absolute_import, print_function, unicode_literals, division
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 from jormungandr import stat_manager
 from jormungandr.stat_manager import StatManager
 #from mock import patch
 from jormungandr.utils import str_to_time_stamp
+from jormungandr import app
+import time
+import mock
 
 
 class MockWrapper:
@@ -70,10 +75,8 @@ class MockWrapper:
         epsilon = 1e-5
         #Verify elements of request.parameters
         assert len(stat.parameters) == 3
-        assert stat.parameters[0].key == "to"
-        assert stat.parameters[0].value == "0.00188646;0.00071865"
-        assert stat.parameters[1].key == "from"
-        assert stat.parameters[1].value == "0.0000898312;0.0000898312"
+        assert {(param.key, param.value) for param in stat.parameters} >\
+               {("to", "0.00188646;0.00071865"), ("from", "0.0000898312;0.0000898312")}
 
         #Verify elements of request.coverages
         assert len(stat.coverages) == 1
@@ -86,7 +89,7 @@ class MockWrapper:
         assert len(stat.journeys) == 2
 
         assert stat.journeys[0].requested_date_time == str_to_time_stamp("20120614T080000") #1339653600
-        assert stat.journeys[0].departure_date_time == str_to_time_stamp("20120614T080042") #1339653642
+        assert stat.journeys[0].departure_date_time == str_to_time_stamp("20120614T080043") #1339653643
         assert stat.journeys[0].arrival_date_time == str_to_time_stamp("20120614T080222") #1339653742
         assert stat.journeys[0].duration == 99
         assert stat.journeys[0].type == "best"
@@ -126,9 +129,9 @@ class MockWrapper:
 
         eq_(stat.journey_request.requested_date_time, 1339653600)
         eq_(stat.journey_request.clockwise, True)
-        eq_(stat.journey_request.departure_insee, '32107')
+        eq_(stat.journey_request.departure_insee, '03430')
         eq_(stat.journey_request.departure_admin, 'admin:74435')
-        eq_(stat.journey_request.arrival_insee, '32107')
+        eq_(stat.journey_request.arrival_insee, '03430')
         eq_(stat.journey_request.arrival_admin, 'admin:74435')
 
     def check_stat_places_to_publish(self, stat):
@@ -143,7 +146,7 @@ class MockWrapper:
         self.called = True
 
 
-@dataset(["main_routing_test"])
+@dataset({"main_routing_test": {}})
 class TestStatJourneys(AbstractTestFixture):
 
     def setup(self):
@@ -186,7 +189,7 @@ class TestStatJourneys(AbstractTestFixture):
         assert mock.called
 
 
-@dataset(["main_ptref_test"])
+@dataset({"main_ptref_test": {}})
 class TestStatPlaces(AbstractTestFixture):
 
     def setup(self):
@@ -214,3 +217,21 @@ class TestStatPlaces(AbstractTestFixture):
         StatManager.publish_request = mock.check_stat_places_to_publish
         response = self.query_region("places/stop_area:stop1", display=False)
         assert mock.called
+
+class TestError(object):
+        @mock.patch.object(stat_manager, 'publish_request')
+        def test_simple_error(self, mock):
+            response = ({"places_nearby": None, "error": None}, 200)
+            #should not raise any exception
+            with app.test_request_context('/v1/places'):
+                stat_manager._manage_stat(time.time(), response)
+            assert mock.called
+
+        @mock.patch.object(stat_manager, 'publish_request')
+        def test_pagination(self, mock):
+            response = ({"places_nearby": [], "pagination": None}, 200)
+            #should not raise any exception
+            with app.test_request_context('/v1/places'):
+                stat_manager._manage_stat(time.time(), response)
+            assert mock.called
+

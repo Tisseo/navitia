@@ -1,21 +1,21 @@
 [submodule "source/utils"]
 	path = source/utils
-	url = https://github.com/CanalTP/utils
+	url = git@github.com:CanalTP/utils
 [submodule "source/third_party/osmpbfreader"]
 	path = source/third_party/osmpbfreader
-	url = https://github.com/CanalTP/libosmpbfreader
+	url = git@github.com:CanalTP/libosmpbfreader
 [submodule "source/third_party/SimpleAmqpClient"]
 	path = source/third_party/SimpleAmqpClient
-	url = https://github.com/kinnou02/SimpleAmqpClient
+	url = git@github.com:canaltp/SimpleAmqpClient.git
 [submodule "source/third_party/librabbitmq-c"]
 	path = source/third_party/librabbitmq-c
-	url = https://github.com/alanxz/rabbitmq-c
+	url = git@github.com:alanxz/rabbitmq-c
 [submodule "source/linenoise"]
 	path = source/linenoise
-	url = https://github.com/antirez/linenoise
+	url = git@github.com:antirez/linenoise
 [submodule "source/chaos-proto"]
 	path = source/chaos-proto
-	url = https://github.com/CanalTP/chaos-proto
+	url = git@github.com:CanalTP/chaos-proto
 [submodule "source/navitia-proto"]
 	path = source/navitia-proto
-	url = https://github.com/CanalTP/navitia-proto
+	url = git@github.com:CanalTP/navitia-proto

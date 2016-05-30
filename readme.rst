@@ -1,6 +1,8 @@
-********
-Navitia
-********
+.. image:: documentation/diagrams/logo_navitia_horizontal_fd_gris_250px.png
+    :alt: navitia
+    :align: center 
+
+``(pronounce [navi-sia])``
 
 .. image::  https://ci.navitia.io/buildStatus/icon?job=navitia_release
     :alt: build status
@@ -9,9 +11,7 @@ Navitia
 
 Presentation
 ============
-This is the Navitia repository.
-
-Navitia is a service providing:
+Welcome to the Navitia repository. Navitia is a service providing:
 
 #. multi-modal journeys computation
 
@@ -27,6 +27,7 @@ The API can be found at http://api.navitia.io/
 
 For more information see
 
+* documentation http://doc.navitia.io
 * main web site http://www.navitia.io
 * twitter @navitia https://twitter.com/navitia
 * google groups navitia https://groups.google.com/d/forum/navitia
@@ -58,7 +59,9 @@ Navitia is made of 3 main modules:
 
 Transportation data (in the `GTFS <https://developers.google.com/transit/gtfs/>`_ format) or routing data (from `OpenStreetMap <http://www.openstreetmap.org/>`_ for the moment) can be given to *Ed*. *Ed* produces a binary file used by *Kraken*.
 
-.. image:: documentation/diagrams/simple_archi.png
+.. image:: documentation/diagrams/Navitia_simple_architecture.png
+
+More information here: https://github.com/CanalTP/navitia/wiki/Architecture
 
 Tools
 ======
@@ -85,7 +88,7 @@ Alternatives?
 =============
 Navitia is written in python/c++, here are some alternatives:
 
-* `OpenTripPlanner <https://github.com/opentripplanner/OpenTripPlanner/>`_ : the best known, written in java
+* `OpenTripPlanner <https://github.com/opentripplanner/OpenTripPlanner/>`_ : the best known, written in java. More information here https://github.com/CanalTP/navitia/wiki/OpenTripPlanner-and-Navitia-comparison
 * `rrrr <https://github.com/bliksemlabs/rrrr>`_ : the lightest one, written in python/c
 * `Synthese <https://github.com/Open-Transport/synthese>`_ : a full stack, with CMS, written all in c++
 * `Mumoro <https://github.com/Tristramg/mumoro>`_ : a R&D MUltiModal MUltiObjective ROuting algorithm

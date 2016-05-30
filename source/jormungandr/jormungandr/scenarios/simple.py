@@ -26,16 +26,17 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask.ext.restful import abort
-from jormungandr.utils import date_to_timestamp
+from flask.globals import request
+from jormungandr.utils import date_to_timestamp, timestamp_to_str, dt_to_str, timestamp_to_datetime
 
 import navitiacommon.type_pb2 as type_pb2
 import navitiacommon.request_pb2 as request_pb2
-import navitiacommon.response_pb2 as response_pb2
 from jormungandr.interfaces.common import pb_odt_level
-from jormungandr.scenarios.utils import pb_type, pt_object_type
+from jormungandr.scenarios.utils import pb_type, pt_object_type, add_link
 from jormungandr.scenarios.utils import build_pagination
-from datetime import datetime
+from jormungandr.scenarios.utils import updated_common_journey_request_with_default
 
 
 class Scenario(object):
@@ -64,54 +65,32 @@ class Scenario(object):
         req.calendars.start_page = request['start_page']
         req.calendars.start_date = request['start_date']
         req.calendars.end_date = request['end_date']
+        req._current_datetime = date_to_timestamp(request['_current_datetime'])
         if request["forbidden_uris[]"]:
             for forbidden_uri in request["forbidden_uris[]"]:
-                req.ptref.forbidden_uri.append(forbidden_uri)
+                req.calendars.forbidden_uris.append(forbidden_uri)
 
         resp = instance.send_and_receive(req)
         return resp
 
-    def disruptions(self, request, instance):
+    def traffic_reports(self, request, instance):
         req = request_pb2.Request()
-        req.requested_api = type_pb2.disruptions
-        req.disruptions.depth = request['depth']
-        req.disruptions.filter = request['filter']
-        req.disruptions.count = request['count']
-        req.disruptions.start_page = request['start_page']
-        req.disruptions._current_datetime = date_to_timestamp(request['_current_datetime'])
+        req.requested_api = type_pb2.traffic_reports
+        req.traffic_reports.depth = request['depth']
+        req.traffic_reports.filter = request['filter']
+        req.traffic_reports.count = request['count']
+        req.traffic_reports.start_page = request['start_page']
+        req._current_datetime = date_to_timestamp(request['_current_datetime'])
 
         if request["forbidden_uris[]"]:
             for forbidden_uri in request["forbidden_uris[]"]:
-                req.ptref.forbidden_uri.append(forbidden_uri)
+                req.traffic_reports.forbidden_uris.append(forbidden_uri)
 
         resp = instance.send_and_receive(req)
         return resp
 
     def places(self, request, instance):
-        req = request_pb2.Request()
-        req.requested_api = type_pb2.places
-        req.places.q = request['q']
-        req.places.depth = request['depth']
-        req.places.count = request['count']
-        req.places.search_type = request['search_type']
-        if request["type[]"]:
-            for type in request["type[]"]:
-                if type not in pb_type:
-                    abort(422, message="{} is not an acceptable type".format(type))
-
-                req.places.types.append(pb_type[type])
-
-        if request["admin_uri[]"]:
-            for admin_uri in request["admin_uri[]"]:
-                req.places.admin_uris.append(admin_uri)
-
-        resp = instance.send_and_receive(req)
-        if len(resp.places) == 0 and request['search_type'] == 0:
-            request["search_type"] = 1
-            return self.places(request, instance)
-        build_pagination(request, resp)
-
-        return resp
+        return instance.autocomplete.get(request, instance)
 
     def pt_objects(self, request, instance):
         req = request_pb2.Request()
@@ -120,6 +99,7 @@ class Scenario(object):
         req.pt_objects.depth = request['depth']
         req.pt_objects.count = request['count']
         req.pt_objects.search_type = request['search_type']
+        req._current_datetime = date_to_timestamp(request['_current_datetime'])
         if request["type[]"]:
             for type in request["type[]"]:
                 req.pt_objects.types.append(pt_object_type[type])
@@ -142,68 +122,26 @@ class Scenario(object):
         req = request_pb2.Request()
         req.requested_api = type_pb2.place_uri
         req.place_uri.uri = request["uri"]
+        req._current_datetime = date_to_timestamp(request['_current_datetime'])
         return instance.send_and_receive(req)
 
-    def __stop_times(self, request, instance, departure_filter,
-                     arrival_filter, api):
-        req = request_pb2.Request()
-        req.requested_api = api
-        st = req.next_stop_times
-        st.departure_filter = departure_filter
-        st.arrival_filter = arrival_filter
-        if request["from_datetime"]:
-            st.from_datetime = request["from_datetime"]
-        if request["until_datetime"]:
-            st.until_datetime = request["until_datetime"]
-        st.duration = request["duration"]
-        st.depth = request["depth"]
-        st.show_codes = request["show_codes"]
-        if not "nb_stoptimes" in request:
-            st.nb_stoptimes = 0
-        else:
-            st.nb_stoptimes = request["nb_stoptimes"]
-        if not "interface_version" in request:
-            st.interface_version = 0
-        else:
-            st.interface_version = request["interface_version"]
-        st.count = 10 if not "count" in request.keys() else request["count"]
-        if not "start_page" in request:
-            st.start_page = 0
-        else:
-            st.start_page = request["start_page"]
-        if request["max_date_times"]:
-            st.max_date_times = request["max_date_times"]
-        if request["forbidden_uris[]"]:
-            for forbidden_uri in request["forbidden_uris[]"]:
-                st.forbidden_uri.append(forbidden_uri)
-        if "calendar" in request and request["calendar"]:
-            st.calendar = request["calendar"]
-        st._current_datetime = date_to_timestamp(request['_current_datetime'])
-        resp = instance.send_and_receive(req)
-        return resp
-
     def route_schedules(self, request, instance):
-        return self.__stop_times(request, instance, request["filter"], "", type_pb2.ROUTE_SCHEDULES)
+        return instance.schedule.route_schedules(request)
 
     def next_arrivals(self, request, instance):
-        return self.__stop_times(request, instance, "", request["filter"], type_pb2.NEXT_ARRIVALS)
+        return instance.schedule.next_arrivals(request)
 
     def next_departures(self, request, instance):
-        return self.__stop_times(request, instance, request["filter"], "", type_pb2.NEXT_DEPARTURES)
+        return instance.schedule.next_departures(request)
 
     def previous_arrivals(self, request, instance):
-        return self.__stop_times(request, instance, "", request["filter"], type_pb2.PREVIOUS_ARRIVALS)
+        return instance.schedule.previous_arrivals(request)
 
     def previous_departures(self, request, instance):
-        return self.__stop_times(request, instance, request["filter"], "", type_pb2.PREVIOUS_DEPARTURES)
-
-    def stops_schedules(self, request, instance):
-        return self.__stop_times(request, instance, request["departure_filter"], request["arrival_filter"],
-                                 type_pb2.STOPS_SCHEDULES)
+        return instance.schedule.previous_departures(request)
 
     def departure_boards(self, request, instance):
-        return self.__stop_times(request, instance, request["filter"], "", type_pb2.DEPARTURE_BOARDS)
-
+        return instance.schedule.departure_boards(request)
 
     def places_nearby(self, request, instance):
         req = request_pb2.Request()
@@ -213,6 +151,7 @@ class Scenario(object):
         req.places_nearby.depth = request["depth"]
         req.places_nearby.count = request["count"]
         req.places_nearby.start_page = request["start_page"]
+        req._current_datetime = date_to_timestamp(request["_current_datetime"])
         if request["type[]"]:
             for type in request["type[]"]:
                 if type not in pb_type:
@@ -229,21 +168,67 @@ class Scenario(object):
         req.requested_api = type_pb2.PTREFERENTIAL
 
         req.ptref.requested_type = requested_type
-        req.ptref.filter = request["filter"]
+        req.ptref.filter = request.get("filter", '')
         req.ptref.depth = request["depth"]
         req.ptref.start_page = request["start_page"]
         req.ptref.count = request["count"]
-        req.ptref.show_codes = request["show_codes"]
-        req.ptref.datetime = date_to_timestamp(request["_current_datetime"])
+        req._current_datetime = date_to_timestamp(request["_current_datetime"])
         if request["odt_level"]:
             req.ptref.odt_level = pb_odt_level[request["odt_level"]]
         if request["forbidden_uris[]"]:
             for forbidden_uri in request["forbidden_uris[]"]:
                 req.ptref.forbidden_uri.append(forbidden_uri)
+        if request['since']:
+            req.ptref.since_datetime = request['since']
+        if request['until']:
+            req.ptref.until_datetime = request['until']
 
         resp = instance.send_and_receive(req)
         build_pagination(request, resp)
         return resp
+
+    def graphical_isochrons(self, request, instance):
+        req = request_pb2.Request()
+        req.requested_api = type_pb2.graphical_isochron
+        req._current_datetime = date_to_timestamp(request["_current_datetime"])
+        req.isochron.min_duration = request["min_duration"]
+        journey_req = req.isochron.journeys_request
+
+        if "origin" in request and request["origin"]:
+            origin = journey_req.origin.add()
+            origin.place = request["origin"]
+            origin.access_duration = 0
+        if "destination" in request and request["destination"]:
+            destination = journey_req.destination.add()
+            destination.place = request["destination"]
+            destination.access_duration = 0
+        request["datetime"] = [request["datetime"]]
+        for dte in request["datetime"]:
+            journey_req.datetimes.append(dte)
+        journey_req.clockwise = request["clockwise"]
+        updated_common_journey_request_with_default(request, instance)
+        sn_params = journey_req.streetnetwork_params
+        sn_params.max_walking_duration_to_pt = request["max_walking_duration_to_pt"]
+        sn_params.max_bike_duration_to_pt = request["max_bike_duration_to_pt"]
+        sn_params.max_bss_duration_to_pt = request["max_bss_duration_to_pt"]
+        sn_params.max_car_duration_to_pt = request["max_car_duration_to_pt"]
+        sn_params.walking_speed = request["walking_speed"]
+        sn_params.bike_speed = request["bike_speed"]
+        sn_params.car_speed = request["car_speed"]
+        sn_params.bss_speed = request["bss_speed"]
+
+        journey_req.max_duration = request["max_duration"]
+        journey_req.max_transfers = request["max_transfers"]
+        self.origin_modes = request["origin_mode"]
+        self.destination_modes = request["destination_mode"]
+        if "forbidden_uris[]" in request and request["forbidden_uris[]"]:
+            for forbidden_uri in request["forbidden_uris[]"]:
+                req.journeys.forbidden_uris.append(forbidden_uri)
+        journey_req.streetnetwork_params.origin_mode = self.origin_modes[0]
+        journey_req.streetnetwork_params.destination_mode = self.destination_modes[0]
+        resp = instance.send_and_receive(req)
+        return resp
+
 
     def stop_areas(self, request, instance):
         return self.__on_ptref("stop_areas", type_pb2.STOP_AREA, request,instance)
@@ -284,17 +269,72 @@ class Scenario(object):
     def vehicle_journeys(self, request, instance):
         return self.__on_ptref("vehicle_journeys", type_pb2.VEHICLE_JOURNEY, request, instance)
 
+    def trips(self, request, instance):
+        return self.__on_ptref("trips", type_pb2.TRIP, request, instance)
+
     def pois(self, request, instance):
         return self.__on_ptref("pois", type_pb2.POI, request, instance)
 
     def poi_types(self, request, instance):
         return self.__on_ptref("poi_types", type_pb2.POITYPE, request, instance)
 
-    def journeys(self, request, instance):
-        raise NotImplementedError()
+    def disruptions(self, request, instance):
+        return self.__on_ptref("impact", type_pb2.IMPACT, request, instance)
 
-    def nm_journeys(self, request, instance):
+    def contributors(self, request, instance):
+
+        return self.__on_ptref("contributors", type_pb2.CONTRIBUTOR, request, instance)
+
+    def datasets(self, request, instance):
+        return self.__on_ptref("datasets", type_pb2.DATASET, request, instance)
+
+    def journeys(self, request, instance):
         raise NotImplementedError()
 
     def isochrone(self, request, instance):
         raise NotImplementedError()
+    
+    def _add_prev_link(self, resp, params):
+        prev_dt = self.previous_journey_datetime(resp.journeys)
+        if prev_dt is not None:
+            params['datetime'] = timestamp_to_str(prev_dt)
+            params['datetime_represents'] = 'arrival'
+            add_link(resp, rel='prev', **params)
+
+    def _add_next_link(self, resp, params):
+        next_dt = self.next_journey_datetime(resp.journeys)
+        if next_dt is not None:
+            params['datetime'] = timestamp_to_str(next_dt)
+            params['datetime_represents'] = 'departure'
+            add_link(resp, rel='next', **params)
+
+    def _add_first_last_links(self, resp, params):
+        soonest_departure_ts = min(j.departure_date_time for j in resp.journeys)
+        soonest_departure = timestamp_to_datetime(soonest_departure_ts)
+        if soonest_departure:
+            soonest_departure.replace(hour=0, minute=0)
+            params['datetime'] = dt_to_str(soonest_departure)
+            params['datetime_represents'] = 'departure'
+            add_link(resp, rel='first', **params)
+
+        tardiest_arrival_ts = max(j.arrival_date_time for j in resp.journeys)
+        tardiest_arrival = timestamp_to_datetime(tardiest_arrival_ts)
+        if tardiest_arrival:
+            tardiest_arrival.replace(hour=23, minute=59)
+            params['datetime'] = dt_to_str(tardiest_arrival)
+            params['datetime_represents'] = 'arrival'
+            add_link(resp, rel='last', **params)
+
+    def _compute_pagination_links(self, resp, instance):
+        if not resp.journeys:
+            return
+
+        # NOTE: we use request.args and not the parser parameters not to have the default values of the params
+        cloned_params = dict(request.args)
+        cloned_params['region'] = instance.name  # we add the region in the args to have fully qualified links
+
+        self._add_next_link(resp, cloned_params)
+        self._add_prev_link(resp, cloned_params)
+        # we also compute first/last journey link
+        self._add_first_last_links(resp, cloned_params)
+

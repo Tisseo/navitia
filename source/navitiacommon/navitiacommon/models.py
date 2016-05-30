@@ -30,19 +30,45 @@
 # www.navitia.io
 
 import uuid
+import re
 from flask_sqlalchemy import SQLAlchemy
 from geoalchemy2.types import Geography
 from flask import current_app
 from sqlalchemy.orm import load_only, backref, aliased
 from datetime import datetime
-from sqlalchemy import func, and_, UniqueConstraint
+from sqlalchemy import func, and_, UniqueConstraint, cast, true
+from sqlalchemy.dialects.postgresql import ARRAY, UUID, INTERVAL
+from navitiacommon.utils import street_source_types, address_source_types, \
+    poi_source_types, admin_source_types
+
 from navitiacommon import default_values
+import os
 
 db = SQLAlchemy()
+
 
 class TimestampMixin(object):
     created_at = db.Column(db.DateTime(), default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(), default=None, onupdate=datetime.utcnow)
+
+
+# https://bitbucket.org/zzzeek/sqlalchemy/issues/3467/array-of-enums-does-not-allow-assigning
+class ArrayOfEnum(ARRAY):
+    def bind_expression(self, bindvalue):
+        return cast(bindvalue, self)
+
+    def result_processor(self, dialect, coltype):
+        super_rp = super(ArrayOfEnum, self).result_processor(dialect, coltype)
+
+        def handle_raw_string(value):
+            if value==None:
+                return []
+            inner = re.match(r"^{(.*)}$", value).group(1)
+            return inner.split(",")
+
+        def process(value):
+            return super_rp(handle_raw_string(value))
+        return process
 
 
 class EndPoint(db.Model):
@@ -61,7 +87,8 @@ class EndPoint(db.Model):
 
     @classmethod
     def get_default(cls):
-        return cls.query.filter(cls.default == True).first_or_404()
+        return cls.query.filter(cls.default == True).first()
+
 
 class Host(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -74,15 +101,20 @@ class Host(db.Model):
     def __unicode__(self):
         return self.value
 
+
 class User(db.Model):
     __table_args__ = (UniqueConstraint('login', 'end_point_id', name='user_login_end_point_idx'),
                       UniqueConstraint('email', 'end_point_id', name='user_email_end_point_idx'))
     id = db.Column(db.Integer, primary_key=True)
     login = db.Column(db.Text, nullable=False)
     email = db.Column(db.Text, nullable=False)
+    block_until = db.Column(db.Date, nullable=True)
 
     end_point_id = db.Column(db.Integer, db.ForeignKey('end_point.id'), nullable=False)
     end_point = db.relationship('EndPoint', lazy='joined', cascade='save-update, merge')
+
+    billing_plan_id = db.Column(db.Integer, db.ForeignKey('billing_plan.id'), nullable=False)
+    billing_plan = db.relationship('BillingPlan', lazy='joined', cascade='save-update, merge')
 
     keys = db.relationship('Key', backref='user', lazy='dynamic', cascade='save-update, merge, delete')
 
@@ -90,11 +122,12 @@ class User(db.Model):
                                      lazy='joined', cascade='save-update, merge, delete')
 
     type = db.Column(db.Enum('with_free_instances', 'without_free_instances', 'super_user', name='user_type'),
-                             default='with_free', nullable=False)
+                             default='with_free_instances', nullable=False)
 
-    def __init__(self, login=None, email=None, keys=None, authorizations=None):
+    def __init__(self, login=None, email=None, block_until=None, keys=None, authorizations=None):
         self.login = login
         self.email = email
+        self.block_until = block_until
         if keys:
             self.keys = keys
         if authorizations:
@@ -143,6 +176,11 @@ class User(db.Model):
 
         return query.count() > 0
 
+    def is_blocked(self, datetime_utc):
+        if self.block_until and datetime_utc <= self.block_until:
+            return True
+
+        return False
 
 class Key(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -164,6 +202,20 @@ class Key(db.Model):
     def get_by_token(cls, token):
         return cls.query.filter_by(token=token).first()
 
+class PoiType(db.Model):
+    uri = db.Column(db.Text, nullable=False)
+    name = db.Column(db.Text, nullable=True)
+    instance_id = db.Column(db.Integer, db.ForeignKey('instance.id'), nullable=False)
+
+    __tablename__ = 'poi_type'
+    __table_args__ = (db.PrimaryKeyConstraint('instance_id', 'uri'), )
+
+    def __init__(self, uri, name=None, instance=None):
+        self.uri = uri
+        self.name = name
+        self.instance = instance
+
+
 class Instance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, unique=True, nullable=False)
@@ -173,11 +225,14 @@ class Instance(db.Model):
             lazy='dynamic', cascade='save-update, merge, delete')
 
     jobs = db.relationship('Job', backref='instance', lazy='dynamic', cascade='save-update, merge, delete')
+
+    poi_types = db.relationship('PoiType', backref=backref('instance'),
+                               lazy='dynamic', cascade='save-update, merge, delete')
     # ============================================================
     # params for jormungandr
     # ============================================================
     #the scenario used by jormungandr, by default we use the default scenario (clever isn't it?)
-    scenario = db.Column(db.Text, nullable=False, default='default')
+    scenario = db.Column(db.Text, nullable=False, default='new_default')
 
     #order of the journey, this order is for clockwise request, else it is reversed
     journey_order = db.Column(db.Enum('arrival_time', 'departure_time', name='journey_order'),
@@ -224,6 +279,25 @@ class Instance(db.Model):
     max_duration_fallback_mode = db.Column(db.Enum('walking', 'bss', 'bike', 'car', name='max_duration_fallback_mode'),
             default=default_values.max_duration_fallback_mode, nullable=False)
 
+    max_duration = db.Column(db.Integer, default=default_values.max_duration, nullable=False, server_default='86400')
+
+    walking_transfer_penalty = db.Column(db.Integer, default=default_values.walking_transfer_penalty, nullable=False,
+                                         server_default='2')
+
+    night_bus_filter_max_factor = db.Column(db.Float, default=default_values.night_bus_filter_max_factor,
+                                            nullable=False)
+
+    night_bus_filter_base_factor = db.Column(db.Integer, default=default_values.night_bus_filter_base_factor,
+                                             nullable=False, server_default='3600')
+
+    priority = db.Column(db.Integer, default=default_values.priority,
+                                  nullable=False, server_default='0')
+                                  
+    bss_provider = db.Column(db.Boolean, default=default_values.bss_provider,
+                                  nullable=False, server_default=true())
+
+    max_additional_connections = db.Column(db.Integer, default=default_values.max_additional_connections,
+                                  nullable=False, server_default='2')
 
     def __init__(self, name=None, is_free=False, authorizations=None,
                  jobs=None):
@@ -261,6 +335,58 @@ class Instance(db.Model):
 
     def __repr__(self):
         return '<Instance %r>' % self.name
+
+
+class TravelerProfile(db.Model):
+    # http://stackoverflow.com/questions/24872541/could-not-assemble-any-primary-key-columns-for-mapped-table
+    __tablename__ = 'traveler_profile'
+    coverage_id = db.Column(db.Integer, db.ForeignKey('instance.id'), nullable=False)
+    traveler_type = db.Column('traveler_type',
+                              db.Enum('standard', 'slow_walker', 'fast_walker', 'luggage', 'wheelchair',
+                                      # Temporary Profiles
+                                      'cyclist', 'motorist',
+                                      name='traveler_type'),
+                              default='standard', nullable=False)
+
+    __table_args__ = (db.PrimaryKeyConstraint('coverage_id', 'traveler_type'), )
+
+    walking_speed = db.Column(db.Float, default=default_values.walking_speed, nullable=False)
+
+    bike_speed = db.Column(db.Float, default=default_values.bike_speed, nullable=False)
+
+    bss_speed = db.Column(db.Float, default=default_values.bss_speed, nullable=False)
+
+    car_speed = db.Column(db.Float, default=default_values.car_speed, nullable=False)
+
+    wheelchair = db.Column(db.Boolean, default=False, nullable=False)
+
+    max_walking_duration_to_pt = db.Column(db.Integer, default=default_values.max_walking_duration_to_pt, nullable=False)
+
+    max_bike_duration_to_pt = db.Column(db.Integer, default=default_values.max_bike_duration_to_pt, nullable=False)
+
+    max_bss_duration_to_pt = db.Column(db.Integer, default=default_values.max_bss_duration_to_pt, nullable=False)
+
+    max_car_duration_to_pt = db.Column(db.Integer, default=default_values.max_car_duration_to_pt, nullable=False)
+
+    fallback_mode = db.Enum('walking', 'car', 'bss', 'bike', name='fallback_mode')
+
+    first_section_mode = db.Column(ArrayOfEnum(fallback_mode), nullable=False)
+
+    last_section_mode = db.Column(ArrayOfEnum(fallback_mode), nullable=False)
+
+    @classmethod
+    def get_by_coverage_and_type(cls, coverage, traveler_type):
+        model = cls.query.join(Instance).filter(
+            and_(Instance.name == coverage,
+                 cls.traveler_type == traveler_type)
+        ).first()
+        return model
+
+    @classmethod
+    def get_all_by_coverage(cls, coverage):
+        models = cls.query.join(Instance).filter(
+            and_(Instance.name == coverage))
+        return models
 
 
 class Api(db.Model):
@@ -310,8 +436,27 @@ class Job(db.Model, TimestampMixin):
     data_sets = db.relationship('DataSet', backref='job', lazy='dynamic',
                                 cascade='delete')
 
+    metrics = db.relationship('Metric', backref='job', lazy='dynamic',
+                                cascade='delete')
+
     def __repr__(self):
         return '<Job %r>' % self.id
+
+
+class Metric(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey('job.id'), nullable=False)
+
+    type = db.Column(db.Enum('ed2nav', 'fusio2ed', 'gtfs2ed', 'osm2ed', 'geopal2ed', 'synonym2ed', 'poi2ed',
+                             name='metric_type'), nullable=False)
+    dataset_id = db.Column(db.Integer, db.ForeignKey('data_set.id'), nullable=True)
+    duration = db.Column(INTERVAL)
+
+    dataset = db.relationship('DataSet', lazy='joined')
+
+
+    def __repr__(self):
+        return '<Metric {}>'.format(self.id)
 
 
 class DataSet(db.Model):
@@ -320,7 +465,67 @@ class DataSet(db.Model):
     family_type = db.Column(db.Text, nullable=False)
     name = db.Column(db.Text, nullable=False)
 
+    uid = db.Column(UUID, unique=True)
+
     job_id = db.Column(db.Integer, db.ForeignKey('job.id'))
+
+    def __init__(self):
+        self.uid = str(uuid.uuid4())
+
+    @classmethod
+    def find_by_uid(cls, uid):
+        if not uid:
+            #old dataset don't have uid, we don't want to get one of them
+            return None
+        return cls.query.filter_by(uid=uid).first()
 
     def __repr__(self):
         return '<DataSet %r>' % self.id
+
+
+class BillingPlan(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.Text, nullable=False)
+    max_request_count = db.Column(db.Integer, default=0)
+    max_object_count = db.Column(db.Integer, default=0)
+    default = db.Column(db.Boolean, nullable=False, default=False)
+
+    end_point_id = db.Column(db.Integer, db.ForeignKey('end_point.id'), nullable=False)
+    end_point = db.relationship('EndPoint', lazy='joined', cascade='save-update, merge')
+
+    @classmethod
+    def get_default(cls, end_point):
+        return cls.query.filter_by(default=True, end_point=end_point).first()
+
+
+class AutocompleteParameter(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.Text, nullable=False, unique=True)
+    street = db.Column(db.Enum(*street_source_types, name='source_street'), nullable=True)
+    address = db.Column(db.Enum(address_source_types, name='source_address'), nullable=True)
+    poi = db.Column(db.Enum(*poi_source_types, name='source_poi'), nullable=True)
+    admin = db.Column(db.Enum(*admin_source_types, name='source_admin'), nullable=True)
+    admin_level = db.Column(ARRAY(db.Integer), nullable=False)
+
+    def __init__(self, name=None, street=None, address=None,
+                 poi=None, admin=None, admin_level=None):
+        self.name = name
+        self.street = street
+        self.address = address
+        self.poi = poi
+        self.admin = admin
+        self.admin_level = admin_level
+
+    def main_dir(self, root_path):
+        return os.path.join(root_path, self.name)
+
+    def source_dir(self, root_path):
+        return os.path.join(self.main_dir(root_path), "source")
+
+    def backup_dir(self, root_path):
+        return os.path.join(self.main_dir(root_path), "backup")
+
+    def __repr__(self):
+        return '<AutocompleteParameter %r>' % self.name
+
+

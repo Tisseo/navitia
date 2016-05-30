@@ -82,25 +82,29 @@ void Data::build_block_id() {
     /// Two vehicle_journeys with the same block_id vj1 are consecutive if
     /// the last arrival_time of vj1 <= to the departure_time of vj2
     std::sort(vehicle_journeys.begin(), vehicle_journeys.end(),
-              [](const types::VehicleJourney* vj1, const types::VehicleJourney* vj2) {
+              [this](const types::VehicleJourney* vj1, const types::VehicleJourney* vj2) {
         if(vj1->block_id != vj2->block_id) {
             return vj1->block_id < vj2->block_id;
-        } else if (vj1->utc_to_local_offset != vj2->utc_to_local_offset) {
-            // we don't want to link the splited vjs
-            return vj1->utc_to_local_offset < vj2->utc_to_local_offset;
-        } else  if (vj1->stop_time_list.empty() || vj2->stop_time_list.empty()) {
-            return vj1->stop_time_list.size() < vj2->stop_time_list.size();
         } else {
-            return vj1->stop_time_list.front()->departure_time <
-                    vj2->stop_time_list.front()->departure_time;
+            auto offset1 = tz_wrapper.tz_handler.get_first_utc_offset(*vj1->validity_pattern);
+            auto offset2 = tz_wrapper.tz_handler.get_first_utc_offset(*vj2->validity_pattern);
+
+            // we don't want to link the splited vjs
+            if (offset1 != offset2) {
+                return offset1 < offset2;
+            }
+            else if (vj1->stop_time_list.empty() || vj2->stop_time_list.empty()) {
+                return vj1->stop_time_list.size() < vj2->stop_time_list.size();
+            } else {
+                return vj1->stop_time_list.front()->departure_time <
+                        vj2->stop_time_list.front()->departure_time;
+            }
         }
-    }
-    );
+    });
 
     types::VehicleJourney* prev_vj = nullptr;
-    for(auto* vj : vehicle_journeys) {
-        if(prev_vj && prev_vj->block_id != "" &&
-           prev_vj->block_id == vj->block_id){
+    for (auto* vj : vehicle_journeys) {
+        if (prev_vj && prev_vj->block_id != "" && prev_vj->block_id == vj->block_id) {
             //NOTE: we do nothing for vj with empty stop times, they will be removed in the clean()
             if (! vj->stop_time_list.empty() && ! prev_vj->stop_time_list.empty()) {
 
@@ -111,10 +115,11 @@ void Data::build_block_id() {
                 // This is not supposed to happen
                 // @TODO: Add a parameter to avoid too long connection
                 // they can be for instance due to bad data
-                if(vj->stop_time_list.front()->departure_time >= prev_vj->stop_time_list.back()->arrival_time) {
+                if (vj->stop_time_list.front()->departure_time >= prev_vj->stop_time_list.back()->arrival_time) {
 
                     //we add another check that the vjs are on the same offset (that they are not the from vj split on different dst)
-                    if (vj->utc_to_local_offset == prev_vj->utc_to_local_offset) {
+                    if (tz_wrapper.tz_handler.get_first_utc_offset(*vj->validity_pattern) ==
+                            tz_wrapper.tz_handler.get_first_utc_offset(*prev_vj->validity_pattern)) {
                         prev_vj->next_vj = vj;
                         vj->prev_vj = prev_vj;
                     }
@@ -180,6 +185,9 @@ void Data::shift_vp_left(types::ValidityPattern& vp) {
         }
         vp.beginning_date = begin_date;
         vp.days <<= 1;
+
+        // we also need to shift the timezone dst period
+        tz_wrapper.build_tz(meta.production_date);
     }
     vp.days >>= 1;
 }
@@ -238,16 +246,15 @@ static bool compare(const std::pair<ed::types::StopArea*, size_t>& p1,
 void Data::build_route_destination(){
     std::unordered_map<ed::types::Route*, std::map<ed::types::StopArea*, size_t>> destinations;
     for (const auto* vj : vehicle_journeys) {
-        if (! vj->tmp_route || vj->stop_time_list.empty()) { continue; }
-        if (vj->tmp_route->destination) { continue; } // we have a destination, don't create one
-        if (! vj->stop_time_list.back()->journey_pattern_point
-            || ! vj->stop_time_list.back()->journey_pattern_point->stop_point
-            || ! vj->stop_time_list.back()->journey_pattern_point->stop_point->stop_area) {
+        if (! vj->route || vj->stop_time_list.empty()) { continue; }
+        if (vj->route->destination) { continue; } // we have a destination, don't create one
+        if (! vj->stop_time_list.back()->stop_point
+            || ! vj->stop_time_list.back()->stop_point->stop_area) {
             continue;
         }
-        ++destinations[vj->tmp_route][vj->stop_time_list.back()->journey_pattern_point->stop_point->stop_area];
+        ++destinations[vj->route][vj->stop_time_list.back()->stop_point->stop_area];
     }
-    for (const auto& map_route: destinations) { // we use a const auto& to avoid useless copy of the map
+    for (const auto& map_route: destinations) {
         if (map_route.second.empty()) { continue; } // we never know
         const auto max = boost::max_element(map_route.second, compare);
         map_route.first->destination = max->first;
@@ -255,9 +262,9 @@ void Data::build_route_destination(){
 }
 
 void Data::complete(){
-    build_journey_patterns();
-    build_journey_pattern_points();
     build_block_id();
+    build_shape_from_prev();
+    pick_up_drop_of_on_borders();
 
     build_grid_validity_pattern();
     build_associated_calendar();
@@ -265,7 +272,6 @@ void Data::complete(){
     shift_stop_times();
     finalize_frequency();
 
-    ::ed::normalize_uri(journey_patterns);
     ::ed::normalize_uri(routes);
 
     // set StopPoint from old zonal ODT to is_zonal
@@ -275,7 +281,7 @@ void Data::complete(){
                {VehicleJourneyType::adress_to_stop_point, VehicleJourneyType::odt_point_to_point}))
         {
             for (const auto* st: vj->stop_time_list) {
-                st->journey_pattern_point->stop_point->is_zonal = true;
+                st->stop_point->is_zonal = true;
             }
         }
     }
@@ -312,105 +318,31 @@ void Data::complete(){
 
 void Data::clean() {
     auto logger = log4cplus::Logger::getInstance("log");
-
     std::set<std::string> toErase;
+    int erase_emptiness = 0, erase_no_circulation = 0, erase_invalid_stoptimes = 0;
 
-    typedef std::vector<ed::types::VehicleJourney *> vjs;
-    std::unordered_map<std::string, vjs> journey_pattern_vj;
-    for(auto it = vehicle_journeys.begin(); it != vehicle_journeys.end(); ++it) {
-        journey_pattern_vj[(*it)->journey_pattern->uri].push_back((*it));
-    }
-
-    int erase_overlap = 0, erase_emptiness = 0, erase_no_circulation = 0, erase_invalid_stoptimes = 0;
-
-    for(auto it1 = journey_pattern_vj.begin(); it1 != journey_pattern_vj.end(); ++it1) {
-
-        for(auto vj1 = it1->second.begin(); vj1 != it1->second.end(); ++vj1) {
-            if (vj_to_erase.count(*vj1)) {
-                toErase.insert((*vj1)->uri);
-                continue;
-            }
-            if((*vj1)->stop_time_list.empty()) {
-                toErase.insert((*vj1)->uri);
-                ++erase_emptiness;
-                continue;
-            }
-            if((*vj1)->validity_pattern->days.none() && (*vj1)->adapted_validity_pattern->days.none()) {
-                toErase.insert((*vj1)->uri);
-                ++erase_no_circulation;
-                continue;
-            }
-            for(auto vj2 = (vj1+1); vj2 != it1->second.end(); ++vj2) {
-                if(((*vj1)->validity_pattern->days & (*vj2)->validity_pattern->days).any()  &&
-                        (*vj1)->stop_time_list.size() > 0 && (*vj2)->stop_time_list.size() > 0) {
-                    ed::types::VehicleJourney *vjs1, *vjs2;
-                    if((*vj1)->stop_time_list.front()->departure_time <= (*vj2)->stop_time_list.front()->departure_time) {
-                        vjs1 = *vj1;
-                        vjs2 = *vj2;
-                    }
-                    else {
-                        vjs1 = *vj2;
-                        vjs2 = *vj1;
-                    }
-
-                    using ed::types::StopTime;
-
-                    const bool same_itl = boost::equal((*vj1)->stop_time_list, (*vj2)->stop_time_list,
-                                                         [](const StopTime* st1, const StopTime* st2) {
-                                                             return st1->local_traffic_zone == st2->local_traffic_zone;
-                                                         });
-                    if (!same_itl){
-                        LOG4CPLUS_WARN(logger, "Data::clean(): are equal with different local trafic zone: "
-                                       << (*vj1)->uri << " and " << (*vj2)->uri);
-                        continue;
-
-                    }
-
-                    const bool are_equal =
-                        (*vj1)->validity_pattern->days != (*vj2)->validity_pattern->days
-                        && boost::equal((*vj1)->stop_time_list, (*vj2)->stop_time_list,
-                                     [](const StopTime* st1, const StopTime* st2) {
-                                         return st1->departure_time == st2->departure_time
-                                         && st1->arrival_time == st2->arrival_time;
-                                     });
-                    if (are_equal) {
-                        LOG4CPLUS_WARN(logger, "Data::clean(): are equal with different overlapping vp: "
-                                       << (*vj1)->uri << " and " << (*vj2)->uri);
-                        continue;
-                    }
-
-                    for(auto rp = (*vj1)->journey_pattern->journey_pattern_point_list.begin(); rp != (*vj1)->journey_pattern->journey_pattern_point_list.end();++rp) {
-                        if(vjs1->stop_time_list.at((*rp)->order)->departure_time >= vjs2->stop_time_list.at((*rp)->order)->departure_time ||
-                           vjs1->stop_time_list.at((*rp)->order)->arrival_time >= vjs2->stop_time_list.at((*rp)->order)->arrival_time) {
-                            //toErase.insert((*vj2)->uri);
-                            LOG4CPLUS_WARN(logger, "Data::clean(): overlap: "
-                                           << (*vj1)->uri << ":"
-                                           << (*vj1)->stop_time_list.front()->departure_time << "->"
-                                           << (*vj1)->stop_time_list.at((*rp)->order)->departure_time
-                                           << "->"
-                                           << (*vj1)->stop_time_list.at((*rp)->order)->arrival_time
-                                           << " and "
-                                           << (*vj2)->uri << ":"
-                                           << (*vj2)->stop_time_list.front()->departure_time << "->"
-                                           << (*vj2)->stop_time_list.at((*rp)->order)->departure_time
-                                           << "->"
-                                           << (*vj2)->stop_time_list.at((*rp)->order)->arrival_time
-                                );
-
-                            ++erase_overlap;
-                            break;
-                        }
-                    }
-                }
-            }
-            // we check that no stop times are negatives
-            for (const auto st: (*vj1)->stop_time_list) {
-                if (st->departure_time < 0 || st->arrival_time < 0) {
-                    toErase.insert((*vj1)->uri);
-                    ++erase_invalid_stoptimes;
-                    break;
-                }
-            }
+    for (auto* vj: vehicle_journeys) {
+        if (vj_to_erase.count(vj)) {
+            toErase.insert(vj->uri);
+            continue;
+        }
+        if (vj->stop_time_list.empty()) {
+            toErase.insert(vj->uri);
+            ++erase_emptiness;
+            continue;
+        }
+        if (vj->validity_pattern->days.none() && vj->adapted_validity_pattern->days.none()) {
+            toErase.insert(vj->uri);
+            ++erase_no_circulation;
+            continue;
+        }
+        // we check that no stop times are negatives
+        const auto st_is_invalid = [](const types::StopTime* st) {
+            return st->departure_time < 0 || st->arrival_time < 0;
+        };
+        if (std::any_of(vj->stop_time_list.begin(), vj->stop_time_list.end(), st_is_invalid)) {
+            toErase.insert(vj->uri);
+            ++erase_invalid_stoptimes;
         }
     }
 
@@ -479,8 +411,8 @@ void Data::clean() {
     }
     vehicle_journeys.resize(num_elements);
 
-    if (erase_overlap || erase_emptiness || erase_no_circulation || erase_invalid_stoptimes){
-        LOG4CPLUS_INFO(logger, "Data::clean(): " << erase_overlap <<  " vehicle_journeys have been deleted because they overlap, "
+    if (erase_emptiness || erase_no_circulation || erase_invalid_stoptimes) {
+        LOG4CPLUS_INFO(logger, "Data::clean(): "
                        << erase_emptiness << " because they do not contain any clean stop_times, "
                        << erase_no_circulation << " because they are never valid "
                        << " and " << erase_invalid_stoptimes << " because the stop times were negatives");
@@ -500,54 +432,6 @@ void Data::clean() {
     stop_point_connections.resize(std::distance(stop_point_connections.begin(), it_end));
     LOG4CPLUS_INFO(logger, num_elements-stop_point_connections.size()
                    << " stop point connections deleted because of duplicate connections");
-}
-
-static void affect_shape(nt::LineString& to, const nt::MultiLineString& from) {
-    if (from.empty()) return;
-    if (to.size() < from.front().size()) { to = from.front(); }
-}
-
-// TODO : For now we construct one route per journey pattern
-// We should factorise the routes.
-void Data::build_journey_patterns() {
-    auto logger = log4cplus::Logger::getInstance("log");
-    LOG4CPLUS_INFO(logger, "building journey patterns...");
-
-    // Associate each line-uri with the number of journey_pattern's found up to now
-    for(auto it1 = this->vehicle_journeys.begin(); it1 != this->vehicle_journeys.end(); ++it1){
-        types::VehicleJourney * vj1 = *it1;
-        ed::types::Route* route = vj1->tmp_route;
-        // If the VehicleJourney does not belong to any journey_pattern
-        if(vj1->journey_pattern == 0) {
-            std::string journey_pattern_uri = vj1->tmp_line->uri;
-            journey_pattern_uri += "-";
-            journey_pattern_uri += boost::lexical_cast<std::string>(this->journey_patterns.size());
-
-            types::JourneyPattern * journey_pattern = new types::JourneyPattern();
-            journey_pattern->uri = journey_pattern_uri;
-            if(route == nullptr){
-                route = new types::Route();
-                route->line = vj1->tmp_line;
-                route->uri = journey_pattern->uri;
-                route->name = journey_pattern->name;
-                this->routes.push_back(route);
-            }
-            journey_pattern->route = route;
-            journey_pattern->physical_mode = vj1->physical_mode;
-            affect_shape(journey_pattern->shape, find_or_default(vj1->shape_id, shapes));
-            vj1->journey_pattern = journey_pattern;
-            this->journey_patterns.push_back(journey_pattern);
-
-            for(auto it2 = it1 + 1; it1 != this->vehicle_journeys.end() && it2 != this->vehicle_journeys.end(); ++it2){
-                types::VehicleJourney * vj2 = *it2;
-                if(vj2->journey_pattern == 0 && same_journey_pattern(vj1, vj2)){
-                    vj2->journey_pattern = vj1->journey_pattern;
-                    affect_shape(journey_pattern->shape, find_or_default(vj2->shape_id, shapes));
-                }
-            }
-        }
-    }
-    LOG4CPLUS_INFO(logger, "Number of journey_patterns : " << journey_patterns.size());
 }
 
 typedef nt::LineString::const_iterator LineStringIter;
@@ -621,58 +505,32 @@ create_shape(const nt::GeographicalCoord& from,
     return simplified;
 }
 
-void Data::build_journey_pattern_points(){
-    auto logger = log4cplus::Logger::getInstance("log");
-    LOG4CPLUS_TRACE(logger, "Construct journey_pattern points");
-    std::map<std::string, ed::types::JourneyPatternPoint*> journey_pattern_point_map;
-
-    size_t nb_stop_time = 0;
-    for(types::VehicleJourney * vj : this->vehicle_journeys){
+void Data::build_shape_from_prev() {
+    for (types::VehicleJourney* vj: vehicle_journeys) {
         const nt::GeographicalCoord* prev_coord = nullptr;
-        int stop_seq = 0;
-        for(types::StopTime * stop_time : vj->stop_time_list){
-            ++nb_stop_time;
-            std::string journey_pattern_point_extcode = vj->journey_pattern->uri + ":" + stop_time->tmp_stop_point->uri+":"+boost::lexical_cast<std::string>(stop_seq);
-            auto journey_pattern_point_it = journey_pattern_point_map.find(journey_pattern_point_extcode);
-            types::JourneyPatternPoint * journey_pattern_point;
-            if(journey_pattern_point_it == journey_pattern_point_map.end()) {
-                journey_pattern_point = new types::JourneyPatternPoint();
-                journey_pattern_point->journey_pattern = vj->journey_pattern;
-                journey_pattern_point->journey_pattern->journey_pattern_point_list.push_back(journey_pattern_point);
-                journey_pattern_point->stop_point = stop_time->tmp_stop_point;
-                journey_pattern_point_map[journey_pattern_point_extcode] = journey_pattern_point;
-                journey_pattern_point->order = stop_seq;
-                journey_pattern_point->uri = journey_pattern_point_extcode;
-                if (prev_coord) {
-                    journey_pattern_point->shape_from_prev =
-                        create_shape(*prev_coord,
-                                     stop_time->tmp_stop_point->coord,
-                                     vj->journey_pattern->shape);
+        for (types::StopTime* stop_time: vj->stop_time_list) {
+            if (prev_coord) {
+                const auto& shape = find_or_default(vj->shape_id, shapes);
+                if (! shape.empty()) {
+                    stop_time->shape_from_prev =
+                        create_shape(*prev_coord, stop_time->stop_point->coord, shape.front());
                 }
-                this->journey_pattern_points.push_back(journey_pattern_point);
-            } else {
-                journey_pattern_point = journey_pattern_point_it->second;
             }
-            prev_coord = &stop_time->tmp_stop_point->coord;
-            ++stop_seq;
-            stop_time->journey_pattern_point = journey_pattern_point;
+            prev_coord = &stop_time->stop_point->coord;
         }
     }
+}
 
-    for(types::JourneyPattern *journey_pattern : this->journey_patterns){
-        if(! journey_pattern->journey_pattern_point_list.empty()){
-            types::JourneyPatternPoint * last = journey_pattern->journey_pattern_point_list.back();
-            if(last->stop_point->stop_area != NULL)
-                journey_pattern->name = last->stop_point->stop_area->name;
-            else
-                journey_pattern->name = last->stop_point->name;
-            if(journey_pattern->route->name.empty()){
-                journey_pattern->route->name = journey_pattern->name;
-            }
+void Data::pick_up_drop_of_on_borders() {
+    for (auto* vj: vehicle_journeys) {
+        if (vj->stop_time_list.empty()) { continue; }
+        if (! vj->prev_vj) {
+            vj->stop_time_list.front()->drop_off_allowed = false;
+        }
+        if (! vj->next_vj) {
+            vj->stop_time_list.back()->pick_up_allowed = false;
         }
     }
-    LOG4CPLUS_INFO(logger, "Number of journey_pattern points : " << journey_pattern_points.size()
-                   << " for " << nb_stop_time << " stop times");
 }
 
 static types::ValidityPattern get_union_validity_pattern(const types::MetaVehicleJourney* meta_vj) {
@@ -741,8 +599,8 @@ void Data::build_associated_calendar() {
     size_t nb_matched(0);
     size_t nb_ignored(0);
 
-    for(auto meta_vj_pair : meta_vj_map) {
-        auto& meta_vj = meta_vj_map[meta_vj_pair.first]; //meta_vj_pair.second;
+    for(auto& meta_vj_pair : meta_vj_map) {
+        auto& meta_vj = meta_vj_pair.second;
 
         assert (! meta_vj.theoric_vj.empty());
 
@@ -766,7 +624,7 @@ void Data::build_associated_calendar() {
 
         for (types::Calendar* calendar : this->calendars) {
             for (types::Line* line : calendar->line_list) {
-                if (line->uri == first_vj->journey_pattern->route->line->uri)
+                if (line->uri == first_vj->route->line->uri)
                     calendar_list.push_back(calendar);
             }
         }
@@ -832,23 +690,6 @@ void Data::build_associated_calendar() {
     }
 }
 
-// Check if two vehicle_journey's belong to the same journey_pattern
-bool same_journey_pattern(types::VehicleJourney * vj1, types::VehicleJourney * vj2){
- 
-    if (vj1->tmp_line != vj2->tmp_line || vj1->tmp_route != vj2->tmp_route){
-        return false;
-    }
-
-    if(vj1->stop_time_list.size() != vj2->stop_time_list.size())
-        return false;
-
-    for(size_t i = 0; i < vj1->stop_time_list.size(); ++i)
-        if(vj1->stop_time_list[i]->tmp_stop_point != vj2->stop_time_list[i]->tmp_stop_point){
-            return false;
-        }
-    return true;
-}
-
 //For frequency based trips, make arrival and departure time relative from first stop.
 void Data::finalize_frequency() {
     for(auto * vj : this->vehicle_journeys) {
@@ -864,6 +705,135 @@ void Data::finalize_frequency() {
             }
         }
     }
+}
+
+
+/*
+ * we need the list of dst periods over the years of the validity period
+ *
+ *                                  validity period
+ *                              [-----------------------]
+ *                        2013                                  2014
+ *       <------------------------------------><-------------------------------------->
+ *[           non DST   )[  DST    )[        non DST     )[   DST     )[     non DST          )
+ *
+ * We thus create a partition of the time with all period with the UTC offset
+ *
+ *       [    +7h       )[  +8h    )[       +7h          )[   +8h     )[      +7h     )
+ */
+std::vector<EdTZWrapper::PeriodWithUtcShift>
+EdTZWrapper::get_dst_periods(const boost::gregorian::date_period& validity_period) const {
+
+    if (validity_period.is_null()) {
+        return {};
+    }
+    std::vector<int> years;
+    //we want to have all the overlapping year
+    //so add each time 1 year and continue till the first day of the year is after the end of the period (cf gtfs_parser_test.boost_periods)
+    for (boost::gregorian::year_iterator y_it(validity_period.begin()); boost::gregorian::date((*y_it).year(), 1, 1) < validity_period.end(); ++y_it) {
+        years.push_back((*y_it).year());
+    }
+
+    BOOST_ASSERT(! years.empty());
+    bool is_dst_start_smaller = (boost_timezone->dst_local_start_time(years.back()).date() <
+                                 boost_timezone->dst_local_end_time(years.back()).date());
+    auto utc_jan_offset = boost_timezone->base_utc_offset();
+    auto utc_june_offset = boost_timezone->base_utc_offset() + boost_timezone->dst_offset();
+    if (!is_dst_start_smaller) {
+        utc_jan_offset = boost_timezone->base_utc_offset() + boost_timezone->dst_offset();
+        utc_june_offset = boost_timezone->base_utc_offset();
+    }
+
+    std::vector<PeriodWithUtcShift> res;
+    for (int year: years) {
+
+        auto saving_start_time = boost_timezone->dst_local_start_time(year).date();
+        auto saving_end_time = boost_timezone->dst_local_end_time(year).date();
+
+        if (!is_dst_start_smaller) {
+            saving_start_time = boost_timezone->dst_local_end_time(year).date();
+            saving_end_time = boost_timezone->dst_local_start_time(year).date();
+        }
+
+        if (! res.empty()) {
+            //if res is not empty we add the additional period without the dst
+            //from the previous end date to the beggining of the dst next year
+            res.push_back({ {res.back().period.end(), saving_start_time}, utc_jan_offset });
+
+        } else {
+            //for the first elt, we add a non dst
+            auto first_day_of_year = boost::gregorian::date(year, 1, 1);
+            if (boost_timezone->dst_local_start_time(year).date() != first_day_of_year) {
+                res.push_back({ {first_day_of_year, saving_start_time}, utc_jan_offset });
+            }
+        }
+
+        res.push_back({ {saving_start_time, saving_end_time}, utc_june_offset });
+    }
+
+    //we add the last non DST period
+    res.push_back({ {res.back().period.end(), boost::gregorian::date(years.back() + 1, 1, 1)}, utc_jan_offset});
+
+    //we want the shift in seconds, and it is in minute in the tzdb
+    for (auto& p_shift: res) {
+        p_shift.utc_shift *= 60;
+    }
+    return res;
+}
+
+
+void EdTZWrapper::build_tz(const boost::gregorian::date_period& validity_period) {
+    const auto& splited_production_period = split_over_dst(validity_period);
+    tz_handler = nt::TimeZoneHandler(tz_name, validity_period.begin(), splited_production_period);
+}
+
+nt::TimeZoneHandler::dst_periods
+EdTZWrapper::split_over_dst(const boost::gregorian::date_period& validity_period) const {
+    nt::TimeZoneHandler::dst_periods res;
+
+    if (! boost_timezone) {
+        LOG4CPLUS_FATAL(log4cplus::Logger::getInstance("log"), "no timezone available, cannot compute dst split");
+        return res;
+    }
+
+    boost::posix_time::time_duration utc_offset = boost_timezone->base_utc_offset();
+
+    if (! boost_timezone->has_dst()) {
+        //no dst -> easy way out, no split, we just have to take the utc offset into account
+        res[utc_offset.total_seconds() / 60].push_back(validity_period);
+        return res;
+    }
+
+    std::vector<PeriodWithUtcShift> dst_periods = get_dst_periods(validity_period);
+
+    //we now compute all intersection between periods
+    //to use again the example of get_dst_periods:
+    //                                      validity period
+    //                                  [----------------------------]
+    //                            2013                                  2014
+    //           <------------------------------------><-------------------------------------->
+    //    [           non DST   )[  DST    )[        non DST     )[   DST     )[     non DST          )
+    //
+    // we create the periods:
+    //
+    //                                  [+8)[       +7h          )[+8h)
+    //
+    // all period_with_utc_shift are grouped by dst offsets.
+    // ie in the previous example there are 2 period_with_utc_shift:
+    //                        1/        [+8)                      [+8h)
+    //                        2/            [       +7h          )
+    for (const auto& dst_period: dst_periods) {
+
+        if (! validity_period.intersects(dst_period.period)) {
+            //no intersection, we don't consider it
+            continue;
+        }
+        auto intersec = validity_period.intersection(dst_period.period);
+
+        res[dst_period.utc_shift].push_back(intersec);
+    }
+
+    return res;
 }
 
 Georef::~Georef(){

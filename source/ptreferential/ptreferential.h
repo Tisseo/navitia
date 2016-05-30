@@ -56,22 +56,32 @@ www.navitia.io
 using navitia::type::Type_e;
 namespace navitia{ namespace ptref{
 
-// Un filter est du type stop_area.uri = "kikoolol"
+// Filter is something like `stop_area.uri = "kikoolol"` or `vehicle_journey.has_headsign("john")`
 struct Filter {
-    navitia::type::Type_e navitia_type; //< Le type parsé
-    std::string object; //< L'objet sous forme de chaîne de caractère ("stop_area")
-    std::string attribute; //< L'attribu ("uri")
-    Operator_e op; //< la comparaison ("=")
-    std::string value; //< la valeur comparée ("kikoolol")
+    navitia::type::Type_e navitia_type; // parsed type
+    std::string object; // concerned object ("stop_area", "vehicle_journey")
+    std::string attribute; // Attribute ("uri")
+    Operator_e op; // comparison operator ("=")
+    std::string value; // right value compared ("kikoolol") or arg used in method ("john")
+    std::string method; // method called (has_headsign)
+    std::vector<std::string> args; // method arguments
 
-    Filter(std::string object, std::string attribute, Operator_e op, std::string value) : object(object), attribute(attribute), op(op), value(value) {}
-    Filter(std::string object, std::string value) : object(object), op(HAVING), value(value) {}
-    Filter(std::string value) : object("journey_pattern_point"), op(AFTER), value(value) {}
+    Filter(std::string object, std::string attribute, Operator_e op, std::string value):
+        object(std::move(object)), attribute(std::move(attribute)), op(op), value(std::move(value)) {}
+    Filter(std::string object, std::string value):
+        object(std::move(object)), op(HAVING), value(std::move(value)) {}
+    Filter(std::string value): object("journey_pattern_point"), op(AFTER), value(std::move(value)) {}
+    Filter(std::string object, std::string method, boost::optional<std::vector<std::string>> args):
+        object(std::move(object)), op(Operator_e::EQ), method(std::move(method)) {
+        if (args) {
+            this->args = *args;
+        }
+    }
 
     Filter() {}
 };
 
-//@TODO heriter de navitia::exception
+//@TODO inherit from navitia::exception
 struct ptref_error : public std::exception {
     std::string more;
 
@@ -95,20 +105,22 @@ struct parsing_error : public ptref_error{
 };
 
 /// Exécute une requête sur les données Data : retourne les idx des objets demandés
-std::vector<type::idx_t> make_query(type::Type_e requested_type,
-                                    std::string request,
+type::Indexes make_query(const type::Type_e requested_type,
+                                    const std::string& request,
                                     const std::vector<std::string>& forbidden_uris,
                                     const type::OdtLevel_e odt_level,
-                                    const type::Data &data);
+                                    const boost::optional<boost::posix_time::ptime>& since,
+                                    const boost::optional<boost::posix_time::ptime>& until,
+                                    const type::Data& data);
 
-std::vector<type::idx_t> make_query(type::Type_e requested_type,
-                                    std::string request,
+type::Indexes make_query(const type::Type_e requested_type,
+                                    const std::string& request,
                                     const std::vector<std::string>& forbidden_uris,
-                                    const type::Data &data);
+                                    const type::Data& data);
 
-std::vector<type::idx_t> make_query(type::Type_e requested_type,
-                                    std::string request,
-                                    const type::Data &data);
+type::Indexes make_query(const type::Type_e requested_type,
+                                    const std::string& request,
+                                    const type::Data& data);
 
 
 /// Trouve le chemin d'un type de données à un autre
@@ -116,19 +128,15 @@ std::vector<type::idx_t> make_query(type::Type_e requested_type,
 std::map<Type_e,Type_e> find_path(Type_e source);
 
 /// À parti d'un élément, on veut retrouver tous ceux de destination
-std::vector<type::idx_t> get(Type_e source, Type_e destination, type::idx_t source_idx, type::PT_Data & data);
+navitia::type::Indexes get(Type_e source, Type_e destination, type::idx_t source_idx, type::PT_Data & data);
 
 
 std::vector<Filter> parse(std::string request);
 
-std::vector<type::idx_t>::iterator sort_and_get_new_end(std::vector<type::idx_t>& list_idx);
+type::Indexes get_difference(const type::Indexes&, const type::Indexes&);
+type::Indexes get_intersection(const type::Indexes&, const type::Indexes&);
 
-std::vector<type::idx_t> get_difference(std::vector<type::idx_t>& list_idx1,
-                                        std::vector<type::idx_t>& list_idx2);
-
-std::vector<type::idx_t> get_intersection(std::vector<type::idx_t>& list_idx1,
-                                        std::vector<type::idx_t>& list_idx2);
-std::vector<type::idx_t> manage_odt_level(const std::vector<type::idx_t>& final_indexes,
+type::Indexes manage_odt_level(const type::Indexes& final_indexes,
                                           const navitia::type::Type_e requested_type,
                                           const navitia::type::OdtLevel_e,
                                           const type::Data & data);

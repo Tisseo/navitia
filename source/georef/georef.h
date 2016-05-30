@@ -37,11 +37,12 @@ www.navitia.io
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/adj_list_serialize.hpp>
 #include <boost/serialization/serialization.hpp>
-#include <boost/serialization/vector.hpp>
+#include "utils/serialization_vector.h"
 #include <boost/serialization/utility.hpp>
 #include <boost/serialization/set.hpp>
 #include <map>
 #include <set>
+#include <functional>
 
 
 namespace nt = navitia::type;
@@ -155,6 +156,8 @@ public:
     }
     std::string get_label() const;
 
+    void sort_house_numbers();
+
 #ifdef _DEBUG_DIJKSTRA_QUANTUM_
     template <typename Stream, typename G>
     void print(Stream& stream, const G& g){
@@ -190,7 +193,7 @@ struct PathItem {
     };
     TransportCaracteristic transportation = TransportCaracteristic::Walk;
 
-    double get_length() const;
+    double get_length(double speed_factor) const;
 };
 
 /** Itinéraire complet */
@@ -214,9 +217,9 @@ struct GeoRef {
     navitia::time_duration default_time_parking_park = seconds(5 * 60);
 
     std::vector<POIType*> poitypes;
-    std::map<std::string, nt::idx_t> poitype_map;
+    std::map<std::string, POIType*> poitype_map;
     std::vector<POI*> pois;
-    std::map<std::string, nt::idx_t> poi_map;
+    std::map<std::string, POI*> poi_map;
     proximitylist::ProximityList<type::idx_t> poi_proximity_list;
     std::vector<Way*> ways;
     std::map<std::string, nt::idx_t> way_map;
@@ -263,8 +266,8 @@ struct GeoRef {
 
     template<class Archive> void save(Archive & ar, const unsigned int) const {
         ar & ways & way_map & graph & offsets & fl_admin & fl_way & pl & projected_stop_points
-                & admins & admin_map &  pois & fl_poi & poitypes &poitype_map & poi_map & synonyms & ghostwords & poi_proximity_list
-                & nb_vertex_by_mode;
+                & admins & admin_map &  pois & fl_poi & poitypes & poitype_map & poi_map & synonyms
+                & ghostwords & poi_proximity_list & nb_vertex_by_mode;
     }
 
     template<class Archive> void load(Archive & ar, const unsigned int) {
@@ -272,8 +275,8 @@ struct GeoRef {
         // On avait donc une fuite de mémoire
         graph.clear();
         ar & ways & way_map & graph & offsets & fl_admin & fl_way & pl & projected_stop_points
-                & admins & admin_map & pois & fl_poi & poitypes &poitype_map & poi_map & synonyms & ghostwords & poi_proximity_list
-                & nb_vertex_by_mode;
+                & admins & admin_map & pois & fl_poi & poitypes & poitype_map & poi_map & synonyms
+                & ghostwords & poi_proximity_list & nb_vertex_by_mode;
     }
     BOOST_SERIALIZATION_SPLIT_MEMBER()
 
@@ -296,7 +299,7 @@ struct GeoRef {
     std::vector<nf::Autocomplete<nt::idx_t>::fl_quality> find_ways(const std::string & str, const int nbmax, const int search_type,std::function<bool(nt::idx_t)> keep_element, const std::set<std::string>& ghostwords) const;
 
 
-    const std::vector<Admin*> find_admins(const type::GeographicalCoord&) const;
+    std::vector<Admin*> find_admins(const type::GeographicalCoord&) const;
 
     /**
      * Project each stop_point on the georef network
@@ -324,6 +327,8 @@ struct GeoRef {
         return nearest_edge(coordinates, pl, offsets[mode]);
     }
     std::pair<int, const Way*> nearest_addr(const type::GeographicalCoord&) const;
+    std::pair<int, const Way*> nearest_addr(const type::GeographicalCoord& coord,
+                                            const std::function<bool(const Way&)>& filter) const;
 
     void add_way(const Way& w);
 
@@ -337,6 +342,8 @@ struct GeoRef {
     type::Mode_e get_mode(vertex_t vertex) const;
     PathItem::TransportCaracteristic get_caracteristic(edge_t edge) const;
     ~GeoRef();
+    GeoRef() = default;
+    GeoRef(const GeoRef& other) = default;
 };
 
 /** When given a coordinate, we have to associate it with the street network.
@@ -366,6 +373,9 @@ struct ProjectionData {
     /// The coordinate projected on the edge
     type::GeographicalCoord projected;
 
+    //the original coordinate before projection
+    type::GeographicalCoord real_coord;
+
     /// Distance between the projected point and the ends
     flat_enum_map<Direction, double> distances {{{-1, -1}}};
 
@@ -376,7 +386,7 @@ struct ProjectionData {
     ProjectionData(const type::GeographicalCoord & coord, const GeoRef &sn, type::idx_t offset, const proximitylist::ProximityList<vertex_t> &prox);
 
     template<class Archive> void serialize(Archive & ar, const unsigned int) {
-        ar & vertices & projected & distances & found;
+        ar & vertices & projected & distances & found & real_coord;
     }
 
     void init(const type::GeographicalCoord & coord, const GeoRef & sn, edge_t nearest_edge);
@@ -392,7 +402,7 @@ struct POIType : public nt::Nameable, nt::Header{
         ar &idx &uri &name;
     }
 
-    std::vector<type::idx_t> get(type::Type_e type, const GeoRef & data) const;
+    type::Indexes get(type::Type_e type, const GeoRef & data) const;
 };
 
 
@@ -414,7 +424,7 @@ struct POI : public nt::Nameable, nt::Header{
         ar &idx & uri & name & weight & coord & admin_list & properties & poitype_idx & visible & address_number & address_name & label;
     }
 
-    std::vector<type::idx_t> get(type::Type_e type, const GeoRef &) const;
+    type::Indexes get(type::Type_e type, const GeoRef &) const;
 
     private:
 };

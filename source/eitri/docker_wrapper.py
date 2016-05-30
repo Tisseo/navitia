@@ -33,7 +33,7 @@ from retrying import retry
 import psycopg2
 
 # postgres/postgis image
-POSTGIS_IMAGE = 'github.com/helmi03/docker-postgis.git'
+POSTGIS_IMAGE = 'github.com/CanalTP/docker-postgis.git'
 POSTGIS_CONTAINER_NAME = 'postgis:2.1'
 
 
@@ -72,7 +72,8 @@ class PostgresDocker(object):
         self.docker = docker.Client(base_url='unix://var/run/docker.sock')
 
         log.info("building the temporary docker image")
-        self.docker.build(POSTGIS_IMAGE, tag=POSTGIS_CONTAINER_NAME, rm=True)
+        for build_output in self.docker.build(POSTGIS_IMAGE, tag=POSTGIS_CONTAINER_NAME, rm=True):
+            log.debug(build_output)
 
         self.container_id = self.docker.create_container(POSTGIS_CONTAINER_NAME).get('Id')
 
@@ -116,4 +117,9 @@ class PostgresDocker(object):
     @retry(stop_max_delay=10000, wait_fixed=100,
            retry_on_exception=lambda e: isinstance(e, Exception))
     def test_db_cnx(self):
-        psycopg2.connect(self.get_db_params().cnx_string())
+        psycopg2.connect(
+            database=self.get_db_params().dbname,
+            user=self.get_db_params().user,
+            password=self.get_db_params().password,
+            host=self.get_db_params().host
+        )

@@ -26,12 +26,15 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 from jormungandr.scenarios import journey_filter
+from jormungandr.scenarios.utils import DepartureJourneySorter, ArrivalJourneySorter
 from jormungandr.scenarios.journey_filter import _to_be_deleted
 import navitiacommon.response_pb2 as response_pb2
+from navitiacommon import default_values
 from jormungandr.scenarios.default import Scenario, are_equals
 from jormungandr.utils import str_to_time_stamp
-from nose.tools import eq_
+import random
 
 
 def empty_journeys_test():
@@ -61,8 +64,9 @@ def different_arrival_times_test():
     journey2.sections[0].duration = 2 * 60
 
     scenario.sort_journeys(response, 'arrival_time')
-    eq_(response.journeys[0].arrival_date_time, str_to_time_stamp("20140422T0758"))
-    eq_(response.journeys[1].arrival_date_time, str_to_time_stamp("20140422T0800"))
+    assert response.journeys[0].arrival_date_time ==  str_to_time_stamp("20140422T0758")
+    assert response.journeys[1].arrival_date_time ==  str_to_time_stamp("20140422T0800")
+
 
 def different_departure_times_test():
     scenario = Scenario()
@@ -84,8 +88,8 @@ def different_departure_times_test():
     journey2.sections[0].duration = 2 * 60
 
     scenario.sort_journeys(response, 'departure_time')
-    eq_(response.journeys[0].departure_date_time, str_to_time_stamp("20140422T0758"))
-    eq_(response.journeys[1].departure_date_time, str_to_time_stamp("20140422T0800"))
+    assert response.journeys[0].departure_date_time ==  str_to_time_stamp("20140422T0758")
+    assert response.journeys[1].departure_date_time ==  str_to_time_stamp("20140422T0800")
 
 
 def different_duration_test():
@@ -110,8 +114,8 @@ def different_duration_test():
     scenario.sort_journeys(response, 'arrival_time')
     assert response.journeys[0].arrival_date_time == str_to_time_stamp("20140422T0800")
     assert response.journeys[1].arrival_date_time == str_to_time_stamp("20140422T0800")
-    assert response.journeys[0].duration == 5*60
-    assert response.journeys[1].duration == 3*60
+    assert response.journeys[0].duration == 3*60
+    assert response.journeys[1].duration == 5*60
 
 
 def different_nb_transfers_test():
@@ -237,7 +241,8 @@ def create_dummy_journey():
 
     return journey
 
-def journeys_equality_test_different_journeys():
+
+def test_journeys_equality_test_different_journeys():
     """
     test the are_equals method, applied to different journeys
     """
@@ -252,7 +257,7 @@ def journeys_equality_test_different_journeys():
     assert not are_equals(journey1, journey2)
 
 
-def journeys_equality_test_different_nb_sections():
+def test_journeys_equality_test_different_nb_sections():
     """
     test the are_equals method, applied to journeys with different number of sections
     """
@@ -267,7 +272,7 @@ def journeys_equality_test_different_nb_sections():
     assert not are_equals(journey1, journey2)
 
 
-def journeys_equality_test_same_journeys():
+def test_journeys_equality_test_same_journeys():
     """No question, a  journey must be equal to self"""
     journey1 = create_dummy_journey()
 
@@ -285,7 +290,7 @@ def journeys_gen(list_responses):
                 yield j
 
 
-def journeys_equality_test_almost_same_journeys():
+def test_journeys_equality_test_almost_same_journeys():
     """
     test the are_equals method, applied to different journeys, but with meaningless differences
     """
@@ -302,7 +307,7 @@ def journeys_equality_test_almost_same_journeys():
     assert are_equals(journey1, journey2)
 
 
-def similar_journeys_test():
+def test_similar_journeys():
 
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
@@ -315,12 +320,12 @@ def similar_journeys_test():
     journey2.duration = 43
     journey2.sections[0].uris.vehicle_journey = 'bob'
 
-    journey_filter._filter_similar_journeys(journeys_gen(responses), {})
+    journey_filter._filter_similar_vj_journeys(list(journeys_gen(responses)), {})
 
-    assert len([journeys_gen(responses)]) == 1
+    assert len(list(journeys_gen(responses))) == 1
 
 
-def similar_journeys_test2():
+def test_similar_journeys_test2():
 
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
@@ -334,12 +339,12 @@ def similar_journeys_test2():
     journey2.duration = 43
     journey2.sections[-1].uris.vehicle_journey = 'bob'
 
-    journey_filter._filter_similar_journeys(journeys_gen(responses), {})
+    journey_filter._filter_similar_vj_journeys(list(journeys_gen(responses)), {})
 
-    assert len([journeys_gen(responses)]) == 1
+    assert len(list(journeys_gen(responses))) == 1
 
 
-def similar_journeys_test3():
+def test_similar_journeys_test3():
 
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
@@ -353,17 +358,130 @@ def similar_journeys_test3():
     journey2.duration = 43
     journey2.sections[-1].uris.vehicle_journey = 'bobette'
 
-    journey_filter._filter_similar_journeys(journeys_gen(responses), {})
+    journey_filter._filter_similar_vj_journeys(list(journeys_gen(responses)), {})
 
-    assert journey2 in journeys_gen(responses)
+    assert 'to_delete' not in journey1.tags
+    assert 'to_delete' in journey2.tags
 
+
+def test_similar_journeys_different_transfer():
+    """
+     If 2 journeys take the same vjs but with a different number of sections,
+     one should be filtered
+    """
+    responses = [response_pb2.Response()]
+    journey1 = responses[0].journeys.add()
+    journey1.sections.add()
+    journey1.duration = 42
+    journey1.sections[-1].uris.vehicle_journey = 'bob'
+    journey1.sections.add()
+    journey1.duration = 42
+    journey1.sections[-1].uris.vehicle_journey = 'bobette'
+
+    responses.append(response_pb2.Response())
+    journey2 = responses[-1].journeys.add()
+    journey2.sections.add()
+    journey2.duration = 43
+    journey2.sections[-1].uris.vehicle_journey = 'bob'
+    journey2.sections.add()
+    journey2.duration = 43
+    journey2.sections[-1].type = response_pb2.TRANSFER
+    journey2.sections.add()
+    journey2.duration = 43
+    journey2.sections[-1].uris.vehicle_journey = 'bobette'
+
+    journey_filter._filter_similar_vj_journeys(list(journeys_gen(responses)), {})
+
+    assert 'to_delete' not in journey1.tags
+    assert 'to_delete' in journey2.tags
+
+
+def test_similar_journeys_walking_bike():
+    """
+    If we have 2 direct path, one walking and one by bike, we should
+     not filter any journey
+    """
+    responses = [response_pb2.Response()]
+    journey1 = responses[0].journeys.add()
+    journey1.duration = 42
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.STREET_NETWORK
+    journey1.sections[-1].street_network.mode = response_pb2.Walking
+
+    responses.append(response_pb2.Response())
+    journey2 = responses[-1].journeys.add()
+    journey2.duration = 42
+    journey2.sections.add()
+    journey2.sections[-1].type = response_pb2.STREET_NETWORK
+    journey2.sections[-1].street_network.mode = response_pb2.Bike
+
+    journey_filter._filter_similar_vj_journeys(list(journeys_gen(responses)), {})
+
+    assert 'to_delete' not in journey1.tags
+    assert 'to_delete' not in journey2.tags
+
+
+def test_similar_journeys_car_park():
+    """
+    We have to consider a journey with
+    CAR / PARK / WALK to be equal to CAR / PARK
+    """
+    responses = [response_pb2.Response()]
+    journey1 = response_pb2.Journey()
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.STREET_NETWORK
+    journey1.sections[-1].street_network.mode = response_pb2.Car
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.PARK
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.STREET_NETWORK
+    journey1.sections[-1].street_network.mode = response_pb2.Walking
+
+    journey2 = response_pb2.Journey()
+    journey2.sections.add()
+    journey2.sections[-1].type = response_pb2.STREET_NETWORK
+    journey2.sections[-1].street_network.mode = response_pb2.Car
+    journey2.sections.add()
+    journey2.sections[-1].type = response_pb2.PARK
+
+    assert journey_filter.compare(journey1, journey2, journey_filter.similar_journeys_vj_generator)
+
+
+def test_similar_journeys_bss_park():
+    """
+    We have to consider a journey with
+    WALK / GET A BIKE / BSS to be equals to GET A BIKE / BSS
+    """
+    responses = [response_pb2.Response()]
+    journey1 = response_pb2.Journey()
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.STREET_NETWORK
+    journey1.sections[-1].street_network.mode = response_pb2.Walking
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.BSS_RENT
+    journey1.sections.add()
+    journey1.sections[-1].type = response_pb2.STREET_NETWORK
+    journey1.sections[-1].street_network.mode = response_pb2.Bss
+
+    journey2 = response_pb2.Journey()
+    journey2.sections.add()
+    journey2.sections[-1].type = response_pb2.BSS_RENT
+    journey2.sections.add()
+    journey2.sections[-1].type = response_pb2.STREET_NETWORK
+    journey2.sections[-1].street_network.mode = response_pb2.Bss
+
+    assert journey_filter.compare(journey1, journey2, journey_filter.similar_journeys_vj_generator)
 
 class MockInstance(object):
     def __init__(self):
         pass  #TODO when we'll got instances's param
 
-def too_late_journeys():
-    request = {'datetime': 1000}
+
+def test_too_late_journeys():
+    request = {'datetime': 1000,
+               '_night_bus_filter_max_factor': default_values.night_bus_filter_max_factor,
+               '_night_bus_filter_base_factor': default_values.night_bus_filter_base_factor,
+               }
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
     journey1.departure_date_time = 2000
@@ -378,14 +496,19 @@ def too_late_journeys():
     journey3.departure_date_time = 10000
     journey3.arrival_date_time = 13000
 
-    journey_filter._filter_not_coherent_journeys(journeys_gen(responses), MockInstance(), request, request)
+    journey_filter._filter_not_coherent_journeys(list(journeys_gen(responses)),
+                                                 MockInstance(), request)
 
-    assert journey1 in journeys_gen(responses)
-    assert journey2 not in journeys_gen(responses)
+    assert 'to_delete' not in journey1.tags
+    assert 'to_delete' not in journey2.tags
+    assert 'to_delete' in journey3.tags
 
 
-def not_too_late_journeys():
-    request = {'datetime': 1000}
+def test_not_too_late_journeys():
+    request = {'datetime': 1000,
+               '_night_bus_filter_max_factor': default_values.night_bus_filter_max_factor,
+               '_night_bus_filter_base_factor': default_values.night_bus_filter_base_factor,
+               }
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
     journey1.departure_date_time = 2000
@@ -396,16 +519,20 @@ def not_too_late_journeys():
     journey2.departure_date_time = 3100
     journey2.arrival_date_time = 3200
 
-    journey_filter._filter_not_coherent_journeys(journeys_gen(responses), MockInstance(), request, request)
+    journey_filter._filter_not_coherent_journeys(list(journeys_gen(responses)),
+                                                 MockInstance(), request)
 
-    journeys = [journeys_gen(responses)]
-
-    assert journey1 in journeys
-    assert journey2 in journeys
+    assert 'to_delete' not in journey1.tags
+    assert 'to_delete' not in journey2.tags
 
 
-def not_too_late_journeys_non_clockwise():
-    request = {'datetime': 10000, 'clockwise': False}
+def test_not_too_late_journeys_non_clockwise():
+    request = {'datetime': 12000,
+               'clockwise': False,
+               '_night_bus_filter_max_factor': default_values.night_bus_filter_max_factor,
+               '_night_bus_filter_base_factor': default_values.night_bus_filter_base_factor,
+               }
+
     responses = [response_pb2.Response()]
     journey1 = responses[0].journeys.add()
     journey1.departure_date_time = 2000  # way too soon compared to the second one
@@ -413,16 +540,200 @@ def not_too_late_journeys_non_clockwise():
 
     responses.append(response_pb2.Response())
     journey2 = responses[-1].journeys.add()
-    journey2.departure_date_time = 8000
-    journey2.arrival_date_time = 9000
+    journey2.departure_date_time = 10000
+    journey2.arrival_date_time = 11000
 
     journey3 = responses[-1].journeys.add() # before journey2, but acceptable
-    journey3.departure_date_time = 7000
-    journey3.arrival_date_time = 7500
+    journey3.departure_date_time = 8000
+    journey3.arrival_date_time = 9000
 
-    journey_filter._filter_not_coherent_journeys(journeys_gen(responses), MockInstance(), request, request)
+    journey_filter._filter_not_coherent_journeys(list(journeys_gen(responses)),
+                                                 MockInstance(), request)
 
-    journeys = [journeys_gen(responses)]
-    assert journey1 not in journeys
-    assert journey2 in journeys
-    assert journey3 in journeys
+    assert 'to_delete' in journey1.tags
+    assert 'to_delete' not in journey2.tags
+    assert 'to_delete' not in journey3.tags
+
+def test_departure_sort():
+    """
+    we want to sort by departure hour, then by duration
+    """
+    j1 = response_pb2.Journey()
+    j1.departure_date_time = str_to_time_stamp('20151005T071000')
+    j1.arrival_date_time = str_to_time_stamp('20151005T081900')
+    j1.duration = j1.arrival_date_time - j1.departure_date_time
+    j1.nb_transfers = 0
+
+    j2 = response_pb2.Journey()
+    j2.departure_date_time = str_to_time_stamp('20151005T072200')
+    j2.arrival_date_time = str_to_time_stamp('20151005T083500')
+    j2.duration = j2.arrival_date_time - j2.departure_date_time
+    j2.nb_transfers = 0
+
+    j3 = response_pb2.Journey()
+    j3.departure_date_time = str_to_time_stamp('20151005T074500')
+    j3.arrival_date_time = str_to_time_stamp('20151005T091200')
+    j3.duration = j3.arrival_date_time - j3.departure_date_time
+    j3.nb_transfers = 0
+
+    j4 = response_pb2.Journey()
+    j4.departure_date_time = str_to_time_stamp('20151005T074500')
+    j4.arrival_date_time = str_to_time_stamp('20151005T091100')
+    j4.duration = j4.arrival_date_time - j4.departure_date_time
+    j4.nb_transfers = 0
+
+    j5 = response_pb2.Journey()
+    j5.departure_date_time = str_to_time_stamp('20151005T074500')
+    j5.arrival_date_time = str_to_time_stamp('20151005T090800')
+    j5.duration = j5.arrival_date_time - j5.departure_date_time
+    j5.nb_transfers = 0
+
+    result = [j1, j2, j3, j4, j5]
+    random.shuffle(result)
+
+    compartor = DepartureJourneySorter(True)
+    result.sort(compartor)
+    assert result[0] ==  j1
+    assert result[1] ==  j2
+    assert result[2] ==  j5
+    assert result[3] ==  j4
+    assert result[4] ==  j3
+
+def test_arrival_sort():
+    """
+    we want to sort by arrival hour, then by duration
+    """
+    j1 = response_pb2.Journey()
+    j1.departure_date_time = str_to_time_stamp('20151005T071000')
+    j1.arrival_date_time = str_to_time_stamp('20151005T081900')
+    j1.duration = j1.arrival_date_time - j1.departure_date_time
+    j1.nb_transfers = 0
+
+    j2 = response_pb2.Journey()
+    j2.departure_date_time = str_to_time_stamp('20151005T072200')
+    j2.arrival_date_time = str_to_time_stamp('20151005T083500')
+    j2.duration = j2.arrival_date_time - j2.departure_date_time
+    j2.nb_transfers = 0
+
+    j3 = response_pb2.Journey()
+    j3.departure_date_time = str_to_time_stamp('20151005T074500')
+    j3.arrival_date_time = str_to_time_stamp('20151005T091200')
+    j3.duration = j3.arrival_date_time - j3.departure_date_time
+    j3.nb_transfers = 0
+
+    j4 = response_pb2.Journey()
+    j4.departure_date_time = str_to_time_stamp('20151005T075000')
+    j4.arrival_date_time = str_to_time_stamp('20151005T091200')
+    j4.duration = j4.arrival_date_time - j4.departure_date_time
+    j4.nb_transfers = 0
+
+    j5 = response_pb2.Journey()
+    j5.departure_date_time = str_to_time_stamp('20151005T075500')
+    j5.arrival_date_time = str_to_time_stamp('20151005T091200')
+    j5.duration = j5.arrival_date_time - j5.departure_date_time
+    j5.nb_transfers = 0
+
+    result = [j1, j2, j3, j4, j5]
+    random.shuffle(result)
+
+    compartor = ArrivalJourneySorter(True)
+    result.sort(compartor)
+    assert result[0] ==  j1
+    assert result[1] ==  j2
+    assert result[2] ==  j5
+    assert result[3] ==  j4
+    assert result[4] ==  j3
+
+def test_heavy_journey_walking():
+    """
+    we don't filter any journey with walking
+    """
+    request = {'_min_bike': 10, '_min_car': 20}
+    journey = response_pb2.Journey()
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Walking
+    journey.sections[-1].duration = 5
+
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' not in journey.tags
+
+def test_heavy_journey_bike():
+    """
+    the first time the duration of the biking section is superior to the min value, so we keep the journey
+    on the second test the duration is inferior to the min, so we delete the journey
+    """
+    request = {'_min_bike': 10, '_min_car': 20}
+    journey = response_pb2.Journey()
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Bike
+    journey.sections[-1].duration = 15
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' not in journey.tags
+
+    journey.sections[-1].duration = 5
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' in journey.tags
+
+def test_heavy_journey_car():
+    """
+    the first time the duration of the car section is superior to the min value, so we keep the journey
+    on the second test the duration is inferior to the min, so we delete the journey
+    """
+    request = {'_min_bike': 10, '_min_car': 20}
+    journey = response_pb2.Journey()
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Car
+    journey.sections[-1].duration = 25
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' not in journey.tags
+
+    journey.sections[-1].duration = 15
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' in journey.tags
+
+def test_heavy_journey_bss():
+    """
+    we should not remove any bss journey since it is already in concurrence with the walking
+    """
+    request = {'_min_bike': 10, '_min_car': 20}
+    journey = response_pb2.Journey()
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Walking
+    journey.sections[-1].duration = 5
+
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.BSS_RENT
+    journey.sections[-1].duration = 5
+
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Bike
+    journey.sections[-1].duration = 5
+
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.BSS_PUT_BACK
+    journey.sections[-1].duration = 5
+
+    journey.sections.add()
+    journey.sections[-1].type = response_pb2.STREET_NETWORK
+    journey.sections[-1].street_network.mode = response_pb2.Walking
+    journey.sections[-1].duration = 5
+
+    journey_filter._filter_too_short_heavy_journeys([journey], request)
+
+    assert 'to_delete' not in journey.tags
+

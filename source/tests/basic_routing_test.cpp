@@ -50,6 +50,11 @@ www.navitia.io
  *   8h     9h
  *   8h               9h
  */
+static boost::gregorian::date_period period(std::string beg, std::string end) {
+    boost::gregorian::date start_date = boost::gregorian::from_undelimited_string(beg);
+    boost::gregorian::date end_date = boost::gregorian::from_undelimited_string(end); //end is not in the period
+    return {start_date, end_date};
+}
 
 int main(int argc, const char* const argv[]) {
     navitia::init_app();
@@ -59,7 +64,7 @@ int main(int argc, const char* const argv[]) {
     b.vj("l1")("A", 8*3600)("B", 8*3600+5*60);
     b.vj("l2")("A", 15*3600)("B", 15*3600+5*60);
     b.vj("l3")("C", 14*3600+7*60)("D", 15*3600);
-    b.vj("l4")("C", 15*3600+10*60)("D", 16*3600);
+    auto* vj = b.vj("l4")("C", 15*3600+10*60)("D", 16*3600).make();
     b.vj("l5","10", "", true)("A", 15*3600)("D", 15*3600+10*60);
     b.vj("l6")("E", 8*3600)("F", 9*3600);
     b.vj("l7")("G", 17*3600)("H", 18*3600);
@@ -67,6 +72,29 @@ int main(int argc, const char* const argv[]) {
     b.vj("l9")("I1", 8*3600)("I3", 9*3600);
     b.connection("B", "C", 2*60);
     b.connection("F", "G", 2*60);
+
+    b.data->pt_data->codes.add(b.sps.at("A"), "external_code", "stop_point:A");
+
+    navitia::type::Dataset* ds = new navitia::type::Dataset();
+    ds->idx = b.data->pt_data->datasets.size();
+    ds->uri = "base_dataset";
+    ds->name = "base dataset";
+    ds->validation_period = period("20160101", "20161230");
+    ds->vehiclejourney_list.push_back(vj);
+    vj->dataset = ds;
+
+    navitia::type::Contributor* cr = new navitia::type::Contributor();
+    cr->idx = b.data->pt_data->contributors.size();
+    cr->uri = "base_contributor";
+    cr->name = "base contributor";
+    cr->license = "L-contributor";
+    cr->website = "www.canaltp.fr";
+    cr->dataset_list.push_back(ds);
+    ds->contributor = cr;
+
+    b.data->pt_data->datasets.push_back(ds);
+    b.data->pt_data->contributors.push_back(cr);
+
     b.data->pt_data->index();
     b.data->build_raptor();
     b.data->build_uri();

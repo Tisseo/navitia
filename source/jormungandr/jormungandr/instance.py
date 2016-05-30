@@ -29,13 +29,15 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from contextlib import contextmanager
-import Queue
+import queue
 from threading import Lock
 from flask.ext.restful import abort
 import zmq
 from navitiacommon import response_pb2, request_pb2, type_pb2
 from navitiacommon.default_values import get_value_or_default
+from jormungandr.timezone import set_request_instance_timezone
 import logging
 from .exceptions import DeadSocketException
 from navitiacommon import models
@@ -45,25 +47,32 @@ from shapely import wkt
 from shapely.geos import ReadingError
 from shapely import geometry
 from flask import g
-import json
+import flask
+import pybreaker
+from jormungandr import georef, planner, schedule, realtime_schedule, ptref
 
 type_to_pttype = {
-      "stop_area" : request_pb2.PlaceCodeRequest.StopArea,
-      "network" : request_pb2.PlaceCodeRequest.Network,
-      "company" : request_pb2.PlaceCodeRequest.Company,
-      "line" : request_pb2.PlaceCodeRequest.Line,
-      "route" : request_pb2.PlaceCodeRequest.Route,
-      "vehicle_journey" : request_pb2.PlaceCodeRequest.VehicleJourney,
-      "stop_point" : request_pb2.PlaceCodeRequest.StopPoint,
-      "calendar" : request_pb2.PlaceCodeRequest.Calendar
+      "stop_area": request_pb2.PlaceCodeRequest.StopArea,
+      "network": request_pb2.PlaceCodeRequest.Network,
+      "company": request_pb2.PlaceCodeRequest.Company,
+      "line": request_pb2.PlaceCodeRequest.Line,
+      "route": request_pb2.PlaceCodeRequest.Route,
+      "vehicle_journey": request_pb2.PlaceCodeRequest.VehicleJourney,
+      "stop_point": request_pb2.PlaceCodeRequest.StopPoint,
+      "calendar": request_pb2.PlaceCodeRequest.Calendar
 }
+
+@app.before_request
+def _init_g():
+    g.instances_model = {}
+
 
 class Instance(object):
 
-    def __init__(self, context, name):
+    def __init__(self, context, name, zmq_socket, realtime_proxies_configuration=[]):
         self.geom = None
-        self._sockets = Queue.Queue()
-        self.socket_path = None
+        self._sockets = queue.Queue()
+        self.socket_path = zmq_socket
         self._scenario = None
         self._scenario_name = None
         self.nb_created_socket = 0
@@ -73,11 +82,24 @@ class Instance(object):
         self.timezone = None  # timezone will be fetched from the kraken
         self.publication_date = -1
         self.is_up = True
+        self.breaker = pybreaker.CircuitBreaker(fail_max=app.config['CIRCUIT_BREAKER_MAX_INSTANCE_FAIL'],
+                                                reset_timeout=app.config['CIRCUIT_BREAKER_INSTANCE_TIMEOUT_S'])
+        self.georef = georef.Kraken(self)
+        self.planner = planner.Kraken(self)
+        self.ptref = ptref.PtRef(self)
 
+        self.schedule = schedule.MixedSchedule(self)
+        self.realtime_proxy_manager = realtime_schedule.RealtimeProxyManager(realtime_proxies_configuration, self)
+        from jormungandr.autocomplete.kraken import Kraken
+        self.autocomplete = Kraken()
+
+    def get_models(self):
+        if self.name not in g.instances_model:
+            g.instances_model[self.name] = self._get_models()
+        return g.instances_model[self.name]
 
     @cache.memoize(app.config['CACHE_CONFIGURATION'].get('TIMEOUT_PARAMS', 300))
     def _get_models(self):
-        # we use the id because sqlalchemy session keep a map of  {id => instance} so we don't do a request each time we want the model
         if app.config['DISABLE_DATABASE']:
             return None
         return models.Instance.get_by_name(self.name)
@@ -95,135 +117,174 @@ class Instance(object):
             try:
                 module = import_module('jormungandr.scenarios.{}'.format(override_scenario))
             except ImportError:
+                logger.exception('sceneario not found')
                 abort(404, message='invalid scenario: {}'.format(override_scenario))
             scenario = module.Scenario()
             g.scenario = scenario
             return scenario
 
-        if not self._scenario:
+        instance_db = self.get_models()
+        scenario_name = instance_db.scenario if instance_db else 'default'
+        if not self._scenario or scenario_name != self._scenario_name:
             logger = logging.getLogger(__name__)
-            instance_db = self._get_models()
-            if instance_db:
-                logger.info('loading of scenario %s for instance %s', instance_db.scenario, self.name)
-                self._scenario_name = instance_db.scenario
-                module = import_module('jormungandr.scenarios.{}'.format(instance_db.scenario))
-                self._scenario = module.Scenario()
-            else:
-                logger.warn('instance %s not found in db, we use the default script', self.name)
-                module = import_module('jormungandr.scenarios.default')
-                self._scenario_name = 'default'
-                self._scenario = module.Scenario()
+            logger.info('loading of scenario %s for instance %s', scenario_name, self.name)
+            self._scenario_name = scenario_name
+            module = import_module('jormungandr.scenarios.{}'.format(scenario_name))
+            self._scenario = module.Scenario()
 
-        #we save the used scenario for futur use
+        #we save the used scenario for future use
         g.scenario = self._scenario
         return self._scenario
 
     @property
     def journey_order(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('journey_order', instance_db, self.name)
 
     @property
     def max_walking_duration_to_pt(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_walking_duration_to_pt', instance_db, self.name)
 
     @property
     def max_bss_duration_to_pt(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_bss_duration_to_pt', instance_db, self.name)
 
     @property
     def max_bike_duration_to_pt(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_bike_duration_to_pt', instance_db, self.name)
 
     @property
     def max_car_duration_to_pt(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_car_duration_to_pt', instance_db, self.name)
 
     @property
     def walking_speed(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('walking_speed', instance_db, self.name)
 
     @property
     def bss_speed(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('bss_speed', instance_db, self.name)
 
     @property
     def bike_speed(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('bike_speed', instance_db, self.name)
 
     @property
     def car_speed(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('car_speed', instance_db, self.name)
 
     @property
     def max_nb_transfers(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_nb_transfers', instance_db, self.name)
 
     @property
     def min_tc_with_car(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_tc_with_car', instance_db, self.name)
 
     @property
     def min_tc_with_bike(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_tc_with_bike', instance_db, self.name)
 
     @property
     def min_tc_with_bss(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_tc_with_bss', instance_db, self.name)
 
     @property
     def min_bike(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_bike', instance_db, self.name)
 
     @property
     def min_bss(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_bss', instance_db, self.name)
 
     @property
     def min_car(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_car', instance_db, self.name)
 
     @property
     def factor_too_long_journey(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('factor_too_long_journey', instance_db, self.name)
 
     @property
     def min_duration_too_long_journey(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('min_duration_too_long_journey', instance_db, self.name)
 
     @property
     def max_duration_criteria(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_duration_criteria', instance_db, self.name)
 
     @property
     def max_duration_fallback_mode(self):
-        instance_db = self._get_models()
+        instance_db = self.get_models()
         return get_value_or_default('max_duration_fallback_mode', instance_db, self.name)
+
+    @property
+    def priority(self):
+        instance_db = self.get_models()
+        return get_value_or_default('priority', instance_db, self.name)
+
+    @property
+    def bss_provider(self):
+        instance_db = self.get_models()
+        return get_value_or_default('bss_provider', instance_db, self.name)
+
+    @property
+    def max_additional_connections(self):
+        instance_db = self.get_models()
+        return get_value_or_default('max_additional_connections', instance_db, self.name)
+
+    @property
+    def is_free(self):
+        instance_db = self.get_models()
+        if not instance_db:
+            return False
+        else:
+            return instance_db.is_free
+
+    @property
+    def max_duration(self):
+        instance_db = self.get_models()
+        return get_value_or_default('max_duration', instance_db, self.name)
+
+    @property
+    def walking_transfer_penalty(self):
+        instance_db = self.get_models()
+        return get_value_or_default('walking_transfer_penalty', instance_db, self.name)
+
+    @property
+    def night_bus_filter_max_factor(self):
+        instance_db = self.get_models()
+        return get_value_or_default('night_bus_filter_max_factor', instance_db, self.name)
+
+    @property
+    def night_bus_filter_base_factor(self):
+        instance_db = self.get_models()
+        return get_value_or_default('night_bus_filter_base_factor', instance_db, self.name)
 
     @contextmanager
     def socket(self, context):
         socket = None
         try:
             socket = self._sockets.get(block=False)
-        except Queue.Empty:
+        except queue.Empty:
             socket = context.socket(zmq.REQ)
             socket.connect(self.socket_path)
             self.lock.acquire()
@@ -235,11 +296,26 @@ class Instance(object):
             if not socket.closed:
                 self._sockets.put(socket)
 
-    def send_and_receive(self,
+    def send_and_receive(self, *args, **kwargs):
+        """
+        encapsulate all call to kraken in a circuit breaker, this way we don't loose time calling dead instance
+        """
+        try:
+            return self.breaker.call(self._send_and_receive, *args, **kwargs)
+        except pybreaker.CircuitBreakerError as e:
+            raise DeadSocketException(self.name, self.socket_path)
+
+
+    def _send_and_receive(self,
                          request,
                          timeout=app.config.get('INSTANCE_TIMEOUT', 10000),
                          quiet=False):
         with self.socket(self.context) as socket:
+            try:
+                request.request_id = flask.request.id
+            except RuntimeError:
+                #we aren't in a flask context, so there is no request
+                pass
             socket.send(request.SerializeToString())
             if socket.poll(timeout=timeout) > 0:
                 pb = socket.recv()
@@ -252,7 +328,7 @@ class Instance(object):
                 socket.close()
                 if not quiet:
                     logger = logging.getLogger(__name__)
-                    logger.error('request on %s failed: %s', self.socket_path, str(request))
+                    logger.error('request on %s failed: %s', self.socket_path, unicode(request))
                 raise DeadSocketException(self.name, self.socket_path)
 
     def get_id(self, id_):
@@ -293,7 +369,8 @@ class Instance(object):
         req.place_code.type = type_to_pttype[type_]
         req.place_code.type_code = "external_code"
         req.place_code.code = id_
-        return self.send_and_receive(req)
+        #we set the timeout to 1s
+        return self.send_and_receive(req, 1000)
 
     def has_external_code(self, type_, id_):
         """
@@ -312,7 +389,7 @@ class Instance(object):
         """
         update the property of an instance from a response if the metadatas field if present
         """
-        if response.HasField("metadatas") and response.publication_date != self.publication_date:
+        if response.HasField(b"metadatas") and response.publication_date != self.publication_date:
             with self.lock as lock:
                 if response.metadatas.shape and response.metadatas.shape != "":
                     try:
@@ -323,6 +400,7 @@ class Instance(object):
                 else:
                     self.geom = None
                 self.timezone = response.metadatas.timezone
+        set_request_instance_timezone(self)
 
     def init(self):
         """
@@ -335,7 +413,7 @@ class Instance(object):
             resp = self.send_and_receive(req, timeout=1000, quiet=True)
             self.update_property(resp)
             #the instance is automatically updated on a call
-            if resp.HasField('publication_date') and self.publication_date != resp.publication_date:
+            if resp.HasField(b'publication_date') and self.publication_date != resp.publication_date:
                 self.publication_date = resp.publication_date
                 return True
         except DeadSocketException:

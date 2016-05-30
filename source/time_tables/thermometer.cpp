@@ -31,13 +31,16 @@ www.navitia.io
 #include "thermometer.h"
 #include "ptreferential/ptreferential.h"
 #include "time.h"
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/topological_sort.hpp>
+#include <boost/range/algorithm/sort.hpp>
 
 namespace navitia { namespace timetables {
 
 
 static uint32_t get_lower_bound(std::vector<vector_size>& pre_computed_lb, type::idx_t max_sp) {
     uint32_t result = 0;
-    for(unsigned int sp = 0; sp < (max_sp +1); ++sp) {
+    for (unsigned int sp = 0; sp < (max_sp +1); ++sp) {
         result += std::max(pre_computed_lb[0][sp], pre_computed_lb[1][sp]);
     }
     return result;
@@ -46,10 +49,10 @@ static uint32_t get_lower_bound(std::vector<vector_size>& pre_computed_lb, type:
 static std::vector<vector_size>
 pre_compute_lower_bound(const std::vector<vector_idx>& journey_patterns, type::idx_t max_sp) {
     std::vector<vector_size> lower_bounds;
-    for(auto journey_pattern : journey_patterns) {
+    for (auto journey_pattern : journey_patterns) {
         lower_bounds.push_back(vector_size());
         lower_bounds.back().insert(lower_bounds.back().begin(), max_sp+1, 0);
-        for(auto sp : journey_pattern) {
+        for (auto sp : journey_pattern) {
             ++lower_bounds.back()[sp];
         }
     }
@@ -60,23 +63,24 @@ std::pair<vector_idx, bool> Thermometer::recc(std::vector<vector_idx> &journey_p
     ++depth;
     ++nb_branches;
     uint32_t lower_bound = lower_bound_, upper_bound = upper_bound_;
-    std::vector<type::idx_t> result;
+    vector_idx result;
 
 
-    std::vector<type::idx_t> possibilities = generate_possibilities(journey_patterns, pre_computed_lb);
+    vector_idx possibilities = generate_possibilities(journey_patterns, pre_computed_lb);
     bool res_bool = possibilities.empty();
-    for(auto poss_spidx : possibilities) {
-        if(nb_branches > 5000 && !result.empty())
+    for (auto poss_spidx : possibilities) {
+        if (nb_branches > 5000 && !result.empty())
             break;
         int temp1 = std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
         std::vector<uint32_t> to_retail = untail(journey_patterns, poss_spidx, pre_computed_lb);
         lower_bound = lower_bound - temp1 + std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
 
         uint32_t u = upper_bound;
-        if(u != std::numeric_limits<uint32_t>::max())
+        if (u != std::numeric_limits<uint32_t>::max()) {
             --u;
+        }
 
-        if(lower_bound >= u) {
+        if (lower_bound >= u) {
             int temp = std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
             retail(journey_patterns, poss_spidx, to_retail, pre_computed_lb);
             lower_bound = lower_bound - temp + std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
@@ -85,9 +89,9 @@ std::pair<vector_idx, bool> Thermometer::recc(std::vector<vector_idx> &journey_p
             int temp = std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
             retail(journey_patterns, poss_spidx, to_retail, pre_computed_lb);
             lower_bound = lower_bound - temp + std::max(pre_computed_lb[0][poss_spidx], pre_computed_lb[1][poss_spidx]);
-            if(tmp.second){
+            if (tmp.second){
                 tmp.first.push_back(poss_spidx);
-                if(!res_bool|| (tmp.second && tmp.first.size() < upper_bound)) {
+                if (!res_bool || (tmp.second && tmp.first.size() < upper_bound)) {
                     result = tmp.first;
                     res_bool = true;
                     upper_bound = result.size();
@@ -107,8 +111,8 @@ static uint32_t get_max_sp(const std::vector<vector_idx>& journey_patterns) {
 
     uint32_t max_sp = std::numeric_limits<uint32_t>::min();
 
-    for(auto journey_pattern : journey_patterns) {
-        for(auto i : journey_pattern) {
+    for (auto journey_pattern : journey_patterns) {
+        for (auto i : journey_pattern) {
             if(i > max_sp)
                 max_sp = i;
         }
@@ -118,39 +122,104 @@ static uint32_t get_max_sp(const std::vector<vector_idx>& journey_patterns) {
 }
 
 void Thermometer::generate_thermometer(const type::Route* route) {
-        std::vector<vector_idx> stop_points;
-        for(auto jp : route->journey_pattern_list) {
-            stop_points.push_back(vector_idx());
-            for(auto jpp : jp->journey_pattern_point_list) {
-                stop_points.back().push_back(jpp->stop_point->idx);
+    std::set<vector_idx> stop_point_lists;
+    route->for_each_vehicle_journey([&](const type::VehicleJourney& vj) {
+            vector_idx stop_point_list;
+            for (const auto& st: vj.stop_time_list) {
+                stop_point_list.push_back(st.stop_point->idx);
             }
-        }
-        this->generate_thermometer(stop_points);
+            stop_point_lists.insert(std::move(stop_point_list));
+            return true;
+        });
+    generate_thermometer(std::vector<vector_idx>(stop_point_lists.begin(), stop_point_lists.end()));
 }
 
-void Thermometer::generate_thermometer(const std::vector<vector_idx> &journey_patterns) {
+// Define types for next function 'generate_topological_thermometer'
+struct VertexProperties
+{
+    type::idx_t idx;
+    VertexProperties() : idx(0) {}
+    VertexProperties(type::idx_t const& i): idx(i) {}
+};
+using Graph = boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS, VertexProperties>;
+using Vertex = boost::graph_traits<Graph>::vertex_descriptor;
 
-    uint32_t max_sp = get_max_sp(journey_patterns);
-    nb_branches = 0;
-    std::vector<vector_idx> req;
-    if(journey_patterns.size() > 1) {
-        for(auto v : journey_patterns) {
-            if(req.empty())
-                req.push_back(v);
-            else {
-                nb_branches = 0;
-                req.push_back(v);
-                auto plb = pre_compute_lower_bound(req, max_sp);
-                uint32_t lowerbound = get_lower_bound(plb, max_sp);
-                auto tp = recc(req, plb, lowerbound, max_sp).first;
-                req.clear();
+// Generate an topologicaly exact thermometer
+// return false if topological sort fail (because of a cycle)
+// return true if succeed
+bool Thermometer::generate_topological_thermometer(const std::vector<vector_idx> &stop_point_lists) {
 
-                req.push_back(tp);
+    Graph stop_point_graph;
+    std::map<type::idx_t, Vertex> vertex_map;
+    for (const auto& v: stop_point_lists) {
+        if (v.empty()) { continue; }
+        bool first = true;
+        Vertex previous_vx = v.front();
+        for (auto sp : v) {
+            Vertex current_vx;
+
+            // We don't add a vertex twice
+            auto it = vertex_map.find(sp);
+            if (it == vertex_map.end()) {
+                current_vx = boost::add_vertex(VertexProperties(sp), stop_point_graph);
+                vertex_map[sp] = current_vx;
+            } else {
+                current_vx = it->second;
             }
+            if (!first) {
+                boost::add_edge(previous_vx, current_vx, stop_point_graph);
+            }
+            first = false;
+            previous_vx = current_vx;
+        }
+    }
+
+    std::vector<Vertex> c;
+    try {
+        boost::topological_sort(stop_point_graph, std::back_inserter(c));
+    } catch (const boost::not_a_dag &) {
+        // Graph contains cycles : we need to try custom algorithm
+        return false;
+    }
+
+    // Build thermometer with sort result
+    for (auto it = c.rbegin(); it != c.rend(); ++it) {
+        thermometer.push_back(stop_point_graph[*it].idx);
+    }
+    return true;
+}
+
+void Thermometer::generate_thermometer(const std::vector<vector_idx> &sps) {
+    // We prefere to have the biggest jp first, because the heuristic
+    // has less chance to do bad choice if critical jp are used first.
+    std::vector<vector_idx> stop_point_lists = sps;
+    boost::range::sort(stop_point_lists, [](const vector_idx& a, const vector_idx&b) { return a.size() > b.size(); });
+
+    if (stop_point_lists.size() > 1) {
+        // Try a topological_sort first
+        //If succeed, return, else use custom algorithm
+        if (generate_topological_thermometer(stop_point_lists)) { return; }
+
+        uint32_t max_sp = get_max_sp(stop_point_lists);
+        nb_branches = 0;
+        std::vector<vector_idx> req;
+        for (auto v : stop_point_lists) {
+            if (req.empty()) { 
+                req.push_back(v);
+                continue;
+            }
+            nb_branches = 0;
+            req.push_back(v);
+            auto plb = pre_compute_lower_bound(req, max_sp);
+            uint32_t lowerbound = get_lower_bound(plb, max_sp);
+            auto tp = recc(req, plb, lowerbound, max_sp).first;
+            req.clear();
+
+            req.push_back(tp);
         }
         thermometer = req.back();
-    } else if(journey_patterns.size() == 1){
-        thermometer = journey_patterns.back();
+    } else if(stop_point_lists.size() == 1) {
+        thermometer = stop_point_lists.back();
     }
 
 }
@@ -162,22 +231,23 @@ vector_idx Thermometer::get_thermometer() const {
 
 
 
-std::vector<uint32_t> Thermometer::match_journey_pattern(const type::JourneyPattern & journey_pattern) const {
-    std::vector<type::idx_t> tmp;
-    for(auto jpp : journey_pattern.journey_pattern_point_list)
-        tmp.push_back(jpp->stop_point->idx);
+std::vector<uint32_t> Thermometer::stop_times_order(const type::VehicleJourney& vj) const {
+    vector_idx tmp;
+    for (const auto& st: vj.stop_time_list) {
+        tmp.push_back(st.stop_point->idx);
+    }
     
-    return match_journey_pattern(tmp);
+    return stop_times_order_helper(tmp);
 }
 
-std::vector<uint32_t> Thermometer::match_journey_pattern(const vector_idx &stop_point_list) const {
+std::vector<uint32_t> Thermometer::stop_times_order_helper(const vector_idx &stop_point_list) const {
     std::vector<uint32_t> result;
     auto it = thermometer.begin();
-    for(type::idx_t spidx : stop_point_list) {
+    for (type::idx_t spidx : stop_point_list) {
         it = std::find(it, thermometer.end(),  spidx);
-        if(it==thermometer.end())
+        if (it == thermometer.end()) {
             throw cant_match(spidx);
-        else {
+        } else {
             result.push_back( distance(thermometer.begin(), it));
         }
         ++it;
@@ -188,15 +258,14 @@ std::vector<uint32_t> Thermometer::match_journey_pattern(const vector_idx &stop_
 
 vector_idx Thermometer::generate_possibilities(const std::vector<vector_idx> &journey_patterns, std::vector<vector_size> &pre_computed_lb) {
 
-    //C'est qu'il n'y a pas de possibilités possibles
-    if(journey_patterns[0].empty() && journey_patterns[1].empty())
-        return {};
+    // There is no possible solution
+    if (journey_patterns[0].empty() && journey_patterns[1].empty()) { return {}; }
 
 
-    //Si la journey_pattern une est vide, ou bien si le dernier de la journey_pattern n'est pas présent dans la journey_pattern 0, on renvoie la tete de la journey_pattern 1
-    if(journey_patterns[0].empty() || (!journey_patterns[1].empty() && pre_computed_lb[0][journey_patterns[1].back()] == 0) ) {
+    // If journey_pattern 1 is empty, or if the journey_pattern last element is not present in journey_pattern0, we return the head of journey_pattern 1
+    if (journey_patterns[0].empty() || (!journey_patterns[1].empty() && pre_computed_lb[0][journey_patterns[1].back()] == 0) ) {
         return {journey_patterns[1].back()};
-    } else if(journey_patterns[1].empty() ||(!journey_patterns[0].empty() && pre_computed_lb[1][journey_patterns[0].back()] == 0)) { //Même chose mais avec la journey_pattern 0
+    } else if (journey_patterns[1].empty() || (!journey_patterns[0].empty() && pre_computed_lb[1][journey_patterns[0].back()] == 0)) { // The same for journey_pattern 0
         return {journey_patterns[0].back()};
     }
 
@@ -204,11 +273,11 @@ vector_idx Thermometer::generate_possibilities(const std::vector<vector_idx> &jo
     auto count1 = std::count(journey_patterns[0].begin(), journey_patterns[0].end(), journey_patterns[1].back());
     auto count2 = std::count(journey_patterns[1].begin(), journey_patterns[1].end(), journey_patterns[0].back());
 
-    if(count1 > count2) {
+    if (count1 > count2) {
         return {journey_patterns[0].back(), journey_patterns[1].back()};
-    } else if(count1 < count2) {
+    } else if (count1 < count2) {
         return {journey_patterns[1].back(), journey_patterns[0].back()};
-    } else if(journey_patterns[0].size() < journey_patterns[1].size()) {
+    } else if (journey_patterns[0].size() < journey_patterns[1].size()) {
         return {journey_patterns[0].back(), journey_patterns[1].back()};
     } else {
         return {journey_patterns[1].back(), journey_patterns[0].back()};
@@ -217,13 +286,13 @@ vector_idx Thermometer::generate_possibilities(const std::vector<vector_idx> &jo
 
 std::vector<uint32_t> Thermometer::untail(std::vector<vector_idx> &journey_patterns, type::idx_t spidx, std::vector<vector_size> &pre_computed_lb) {
     std::vector<uint32_t> result;
-    if(spidx != type::invalid_idx) {
-        if((journey_patterns[0].size() > 0) && (journey_patterns[0].back() == spidx)) {
+    if (spidx != type::invalid_idx) {
+        if ((journey_patterns[0].size() > 0) && (journey_patterns[0].back() == spidx)) {
             journey_patterns[0].pop_back();
             result.push_back(0);
             --pre_computed_lb[0][spidx];
         }
-        if((journey_patterns[1].size() > 0) && (journey_patterns[1].back() == spidx)) {
+        if ((journey_patterns[1].size() > 0) && (journey_patterns[1].back() == spidx)) {
             journey_patterns[1].pop_back();
             result.push_back(1);
             --pre_computed_lb[1][spidx];
@@ -233,7 +302,7 @@ std::vector<uint32_t> Thermometer::untail(std::vector<vector_idx> &journey_patte
 }
 
 void Thermometer::retail(std::vector<vector_idx> &journey_patterns, type::idx_t spidx, const std::vector<uint32_t> &to_retail, std::vector<vector_size> &pre_computed_lb) {
-    for(auto i : to_retail) {
+    for (auto i : to_retail) {
         journey_patterns[i].push_back(spidx);
         ++pre_computed_lb[i][spidx];
     }

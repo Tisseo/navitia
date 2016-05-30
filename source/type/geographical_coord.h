@@ -40,7 +40,7 @@ www.navitia.io
 #include <boost/geometry/multi/geometries/multi_linestring.hpp>
 #include <boost/geometry/multi/geometries/register/multi_linestring.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/serialization/vector.hpp>
+#include "utils/serialization_vector.h"
 
 namespace navitia { namespace type {
 
@@ -65,8 +65,8 @@ struct GeographicalCoord{
     constexpr static double coord_epsilon = 1e-15;
     /// Ordre des coordonnées utilisé par ProximityList
     bool operator<(const GeographicalCoord &other) const {
-        if ( fabs(lon() - other.lon()) > coord_epsilon )
-            return lon() < other.lon();
+        if (lon() < other.lon()) { return true; }
+        if (other.lon() < lon()) { return false; }
         return lat() < other.lat();
     }
     bool operator != (const GeographicalCoord &other) const {
@@ -76,12 +76,14 @@ struct GeographicalCoord{
 
     constexpr static double N_DEG_TO_RAD = 0.01745329238;
     constexpr static double N_M_TO_DEG = 1.0/111319.9;
-    /** Calcule la distance Grand Arc entre deux nœuds
+    constexpr static double EARTH_RADIUS_IN_METERS = 6372797.560856;
+
+    /** Calculate the distance between two points
       *
-      * On utilise la formule de Haversine
+      * We use the Haversine frmula
       * http://en.wikipedia.org/wiki/Law_of_haversines
       *
-      * Si c'est des coordonnées non degrés, alors on utilise la distance euclidienne
+      * If the coordinate ara not in degree, thus we use euclidean distance
       */
     double distance_to(const GeographicalCoord & other) const;
 
@@ -166,4 +168,14 @@ namespace boost { namespace serialization {
         std::vector<navitia::type::GeographicalCoord>& impl = ring;
         ar & boost::serialization::make_nvp("ring", impl);
     }
-}}
+}}// namespace navitia::type
+
+navitia::type::GeographicalCoord in_the_right_interval(double lon, double lat);
+
+namespace boost { namespace geometry { namespace model {
+
+std::ostream& operator<<(std::ostream& os, const navitia::type::Polygon& points);
+
+std::ostream& operator<<(std::ostream& os, const navitia::type::MultiPolygon& polygons);
+
+}}}//namespace boost::geometry::model

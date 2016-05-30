@@ -27,10 +27,11 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from __future__ import absolute_import, print_function, unicode_literals, division
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 
-@dataset([])
+@dataset({})
 class TestEmptyEndPoint(AbstractTestFixture):
     """
     Test main entry points.
@@ -75,7 +76,7 @@ class TestEmptyEndPoint(AbstractTestFixture):
 
 
 
-@dataset([])
+@dataset({})
 class TestHttps(AbstractTestFixture):
     """
     Test if https link are returned for forced hosts
@@ -101,7 +102,7 @@ class TestHttps(AbstractTestFixture):
         assert versions[0]['links'][0]['href'].startswith('http://')
 
 
-@dataset(['main_routing_test', 'main_ptref_test'])
+@dataset({'main_routing_test':{},  'main_ptref_test': {}})
 class TestEndPoint(AbstractTestFixture):
     """
     Test the end point with 2 regions loaded
@@ -152,4 +153,4 @@ class TestEndPoint(AbstractTestFixture):
         json_response = self.query("/v1/coverage/main_routing_test/status")
 
         is_valid_region_status(get_not_null(json_response, "status"))
-        assert json_response["status"]["is_open_data"] == True
+        assert json_response["status"]["is_open_data"] == False

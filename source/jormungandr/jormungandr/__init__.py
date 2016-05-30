@@ -29,16 +29,18 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 import logging
 import logging.config
 import os
 from flask import Flask, got_request_exception
-from flask.ext.restful import Api
+from flask_restful import Api
 from flask.ext.cache import Cache
 from flask.ext.cors import CORS
 import sys
 from jormungandr.exceptions import log_exception
 from jormungandr.helper import ReverseProxied, NavitiaRequest
+from jormungandr import compat, utils
 
 app = Flask(__name__)
 app.config.from_object('jormungandr.default_settings')
@@ -47,7 +49,7 @@ if 'JORMUNGANDR_CONFIG_FILE' in os.environ:
 
 app.request_class = NavitiaRequest
 CORS(app, vary_headers=True, allow_credentials=True, send_wildcard=False,
-		headers=['Access-Control-Request-Headers', 'Authorization'])
+        headers=['Access-Control-Request-Headers', 'Authorization'])
 app.config['CORS_HEADERS'] = 'Content-Type'
 
 if 'LOGGER' in app.config:
@@ -60,24 +62,35 @@ else:  # Default is std out
 app.wsgi_app = ReverseProxied(app.wsgi_app)
 got_request_exception.connect(log_exception, app)
 
-rest_api = Api(app, catch_all_404s=True)
+#we want the old behavior for reqparse
+compat.patch_reqparse()
+
+rest_api = Api(app, catch_all_404s=True, serve_challenge_on_401=True)
 
 from navitiacommon.models import db
 db.init_app(app)
 cache = Cache(app, config=app.config['CACHE_CONFIGURATION'])
 
+if app.config['AUTOCOMPLETE'] is not None:
+    global_autocomplete = utils.create_object(app.config['AUTOCOMPLETE']['class_path'],
+                                              **app.config['AUTOCOMPLETE']['kwargs'])
+else:
+    global_autocomplete = None
+
+
 from jormungandr.instance_manager import InstanceManager
 
-i_manager = InstanceManager(ini_files=app.config.get('INI_FILE', None),
-                            instances_dir=app.config.get('INSTANCES_DIR', None),
+i_manager = InstanceManager(instances_dir=app.config.get('INSTANCES_DIR', None),
                             start_ping=app.config.get('START_MONITORING_THREAD', True))
 i_manager.initialisation()
 
 from jormungandr.stat_manager import StatManager
 stat_manager = StatManager()
 
-from jormungandr import api
+from jormungandr.parking_space_availability.bss.bss_provider_manager import BssProviderManager
+bss_provider_manager = BssProviderManager(app.config['BSS_PROVIDER'])
 
+from jormungandr import api
 
 def setup_package():
     i_manager.stop()

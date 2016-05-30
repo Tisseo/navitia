@@ -27,6 +27,7 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from jormungandr import i_manager
 
 collections_to_resource_type = {
@@ -34,11 +35,12 @@ collections_to_resource_type = {
     "networks": "network", "commercial_modes": "commercial_mode",
     "physical_modes": "physical_mode", "companies": "company",
     "stop_areas": "stop_area", "lines": "line", "line_groups": "line_group",
-    "addresses": "address", "coords": "coord"}
+    "addresses": "address", "coords": "coord", "trips": "trip", "contributors": "contributor",
+    "datasets": "dataset"}
 
 resource_type_to_collection = dict((resource_type, collection)
                                    for (collection, resource_type)
-                                   in collections_to_resource_type.iteritems())
+                                   in collections_to_resource_type.items())
 
 types_not_ptrefable = ["addresses", "administrative_regions"]
 
@@ -82,8 +84,7 @@ class Uri:
             self.is_region = False
             lonlatsplitted = self.region_or_coord_part.split(";")
             if len(lonlatsplitted) != 2:
-                raise InvalidUriException(", unable to parse lon or lat",
-                                          lonlat)
+                raise InvalidUriException(", unable to parse lon or lat " + self.region_or_coord_part)
             lon = lonlatsplitted[0]
             lat = lonlatsplitted[1]
             try:
@@ -120,7 +121,7 @@ class Uri:
         resource_types = ["connections", "stop_points", "networks",
                           "commercial_modes", "physical_modes", "companies",
                           "stop_areas", "routes", "lines", "line_groups", "addresses",
-                          "administrative_regions", "coords", "pois"]
+                          "administrative_regions", "coords", "pois", "trips", "contributors", "datasets"]
 
         return resource_type in resource_types
 

@@ -31,23 +31,34 @@ www.navitia.io
 #pragma once
 #include "type/pb_converter.h"
 #include "routing/routing.h"
-#include "get_stop_times.h"
+#include "routing/get_stop_times.h"
 
 
 namespace navitia { namespace timetables {
 typedef std::vector<DateTime> vector_datetime;
-typedef std::pair<uint32_t, uint32_t> stop_point_line;
-typedef std::vector<datetime_stop_time> vector_dt_st;
+typedef std::pair<routing::SpIdx, routing::RouteIdx> stop_point_route;
+typedef std::vector<routing::datetime_stop_time> vector_dt_st;
 
-pbnavitia::Response departure_board(const std::string &filter,
-                                    boost::optional<const std::string> calendar_id,
-                                    const std::vector<std::string>& forbidden_uris,
-                                    const boost::posix_time::ptime datetime,
-                                    uint32_t duration,
-                                    uint32_t depth, uint32_t max_date_times,
-                                    int interface_version,
-                                    int count, int start_page, const type::Data &data, bool disruption_active,
-                                    bool show_codes=false);
-}
+void departure_board(PbCreator& pb_creator, const std::string &filter,
+                     boost::optional<const std::string> calendar_id,
+                     const std::vector<std::string>& forbidden_uris,
+                     const boost::posix_time::ptime datetime,
+                     uint32_t duration, uint32_t depth,
+                     int count, int start_page,
+                     const type::RTLevel rt_level,
+                     const size_t items_per_route_point);
 
-}
+
+bool between_opening_and_closing(const time_duration& me,
+                                 const time_duration& opening,
+                                 const time_duration& closing);
+
+time_duration length_of_time(const time_duration& duration_1,
+                             const time_duration& duration_2);
+
+bool line_closed (const time_duration& duration,
+                  const time_duration& opening,
+                  const time_duration& closing,
+                  const pt::ptime& date );
+
+}}

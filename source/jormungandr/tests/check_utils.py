@@ -27,9 +27,13 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
-from collections import deque, defaultdict
+from __future__ import absolute_import, print_function, unicode_literals, division
+from collections import deque, defaultdict, namedtuple
+from functools import partial
+from future.moves.itertools import zip_longest
 from nose.tools import *
 import json
+from jormungandr.scenarios.qualifier import compare_field, reverse_compare_field
 from navitiacommon import request_pb2, response_pb2
 from datetime import datetime
 import logging
@@ -235,9 +239,9 @@ def is_valid_lat(str):
 
 
 def is_valid_lon(str):
-    lat = get_valid_float(str)
+    lon = get_valid_float(str)
 
-    assert 180.0 >= lat >= -180.0, "lon should be between -180 and 180"
+    assert 180.0 >= lon >= -180.0, "lon should be between -180 and 180"
 
 
 def is_valid_coord(coord):
@@ -272,7 +276,7 @@ def check_links(object, tester, href_mandatory=True):
     """
     links = get_links_dict(object)
 
-    for link_name, link in links.iteritems():
+    for link_name, link in links.items():
         def get_bool(name):
             """ give boolean if in dict, else False"""
             if name in link:
@@ -367,9 +371,9 @@ def query_from_str(str):
     for convenience, convert a url to a dict
 
     >>> query_from_str("toto/tata?bob=toto&bobette=tata&bobinos=tutu")
-    {'bobette': 'tata', 'bobinos': 'tutu', 'bob': 'toto'}
+    {u'bobette': u'tata', u'bobinos': u'tutu', u'bob': u'toto'}
     >>> query_from_str("toto/tata?bob=toto&bob=tata&bob=titi&bob=tata&bobinos=tutu")
-    {'bobinos': 'tutu', 'bob': ['toto', 'tata', 'titi', 'tata']}
+    {u'bobinos': u'tutu', u'bob': [u'toto', u'tata', u'titi', u'tata']}
 
     Note: the query can be encoded, so the split it either on the encoded or the decoded value
     """
@@ -398,7 +402,7 @@ def is_valid_feed_publisher(feed_publisher):
     get_not_null(feed_publisher, 'url')
 
 
-def is_valid_journey_response(response, tester, query_str):
+def is_valid_isochrone_response(response, tester, query_str):
     if isinstance(query_str, basestring):
         query_dict = query_from_str(query_str)
     else:
@@ -406,64 +410,57 @@ def is_valid_journey_response(response, tester, query_str):
 
     journeys = get_not_null(response, "journeys")
 
-    all_sections = unique_dict('id')
     assert len(journeys) > 0, "we must at least have one journey"
     for j in journeys:
-        is_valid_journey(j, tester, query_dict)
-
-        for s in j['sections']:
-            all_sections[s['id']] = s
-
-    # check the fare section
-    # the fares must be structurally valid and all link to sections must be ok
-    all_tickets = unique_dict('id')
-    fares = response['tickets']
-    for f in fares:
-        is_valid_ticket(f, tester)
-        all_tickets[f['id']] = f
+        is_valid_isochrone(j, tester, query_dict)
 
     check_internal_links(response, tester)
 
     #check other links
-    check_links(response, tester)
+    #Don't work for now :'(
+    #check_links(response, tester)
+
 
     # more checks on links, we want the prev/next/first/last,
     # to have forwarded all params, (and the time must be right)
-    journeys_links = get_links_dict(response)
 
-    for l in ["prev", "next", "first", "last"]:
-        assert l in journeys_links
-        url = journeys_links[l]['href']
-
-        additional_args = query_from_str(url)
-        for k, v in additional_args.iteritems():
-            if k == 'datetime':
-                #TODO check datetime
-                continue
-            if k == 'datetime_represents':
-                query_dt_rep = query_dict.get('datetime_represents', 'departure')
-                if l in ['prev', 'last']:
-                    #the datetime_represents is negated
-                    if query_dt_rep == 'departure':
-                        assert v == 'arrival'
-                    else:
-                        assert v == 'departure'
-                else:
-                    query_dt_rep == v
-
-                continue
-
-            eq_(query_dict[k], v)
 
     feed_publishers = get_not_null(response, "feed_publishers")
     for feed_publisher in feed_publishers:
         is_valid_feed_publisher(feed_publisher)
+
+    if query_dict.get('debug', False):
+        assert 'debug' in response
+    else:
+        assert 'debug' not in response
+
+def is_valid_isochrone(journey, tester, query):
+    arrival = get_valid_datetime(journey['arrival_date_time'])
+    departure = get_valid_datetime(journey['departure_date_time'])
+    request = get_valid_datetime(journey['requested_date_time'])
+
+    assert arrival >= departure
+
+    if 'datetime_represents' not in query or query['datetime_represents'] == "departure":
+        #for 'departure after' query, the departure must be... after \o/
+        assert departure >= request
+    else:
+        assert arrival <= request
+
+    journey_links = get_links_dict(journey)
+
+    assert 'journeys' in journey_links
+
+    additional_args = query_from_str(journey_links['journeys']['href'])
+    for k, v in query.items():
+        eq_(additional_args[k], v)
 
 
 def is_valid_journey(journey, tester, query):
     arrival = get_valid_datetime(journey['arrival_date_time'])
     departure = get_valid_datetime(journey['departure_date_time'])
     request = get_valid_datetime(journey['requested_date_time'])
+    assert journey["type"]
 
     assert arrival >= departure
     # test if duration time is consistent with arrival and departure
@@ -491,6 +488,38 @@ def is_valid_journey(journey, tester, query):
 
     assert last_arrival == arrival
     assert get_valid_datetime(journey['sections'][-1]['arrival_date_time']) == last_arrival
+
+    if query.get('debug', False):
+        assert 'debug' in journey
+    else:
+        assert 'debug' not in journey
+
+
+def is_valid_geojson_coord(coord):
+    is_valid_lon(coord[0])
+    is_valid_lat(coord[1])
+
+
+def is_valid_multipolygon_geojson(geojson):
+    assert geojson['type'] == 'MultiPolygon'
+    for p in get_not_null(geojson, 'coordinates'):
+        outer = p[0]
+        for c in outer:
+            is_valid_geojson_coord(c)
+        for inner in p[1:]:
+            for c in inner:
+                is_valid_geojson_coord(c)
+
+
+def is_valid_graphical_isochron(isochron, tester, query):
+
+    for g in get_not_null(isochron, 'isochrons'):
+        geojson = g['geojson']
+        assert geojson
+        is_valid_multipolygon_geojson(geojson)
+
+    for feed_publisher in get_not_null(isochron, 'feed_publishers'):
+        is_valid_feed_publisher(feed_publisher)
 
 
 def is_valid_section(section, query):
@@ -547,13 +576,16 @@ def is_valid_stop_area(stop_area, depth_check=1):
 
     for c in stop_area.get('comments', []):
         is_valid_comment(c)
+    for physical_mode in stop_area.get("physical_modes", []):
+        is_valid_physical_mode(physical_mode)
+    for commercial_mode in stop_area.get("commercial_modes", []):
+        is_valid_commercial_mode(commercial_mode)
 
 
 def is_valid_stop_point(stop_point, depth_check=1):
     """
     check the structure of a stop point
     """
-
     get_not_null(stop_point, "name")
     is_valid_label(get_not_null(stop_point, "label"))
     coord = get_not_null(stop_point, "coord")
@@ -561,6 +593,10 @@ def is_valid_stop_point(stop_point, depth_check=1):
 
     for c in stop_point.get('comments', []):
         is_valid_comment(c)
+    for physical_mode in stop_point.get("physical_modes", []):
+        is_valid_physical_mode(physical_mode)
+    for commercial_mode in stop_point.get("commercial_modes", []):
+        is_valid_commercial_mode(commercial_mode)
 
     if depth_check > 0:
         is_valid_stop_area(get_not_null(stop_point, "stop_area"), depth_check-1)
@@ -599,6 +635,11 @@ def is_valid_company(company, depth_check=1):
 def is_valid_physical_mode(physical_mode, depth_check=1):
     get_not_null(physical_mode, "name")
     get_not_null(physical_mode, "id")
+
+
+def is_valid_commercial_mode(commercial_mode, depth_check=1):
+    get_not_null(commercial_mode, "name")
+    get_not_null(commercial_mode, "id")
 
 
 def is_valid_line(line, depth_check=1):
@@ -719,10 +760,11 @@ def is_valid_pt_object(pt_object, depth_check=1):
                            'vehicle_journey',
                            'calendar',
                            'company',
-                           "stop_area",
-                           "stop_point",
-                           "poi",
-                           "address")
+                           'stop_area',
+                           'stop_point',
+                           'poi',
+                           'address',
+                           'trip')
 
     # if it's a line, it should pass the 'is_valid_line' test,
     # if it's a stop_area, it should pass the 'is_valid_stop_area' test ...
@@ -735,10 +777,10 @@ def is_valid_pt_object(pt_object, depth_check=1):
         assert get_not_null(pt_object, pt_obj_type)['label'] == n
     if pt_obj_type == 'line':
         # the line network, commercial_mode, code and name should be in the label
-        check_embedded_line_label(n, pt_obj_type['line'], depth_check)
+        check_embedded_line_label(n, pt_object['line'], depth_check)
     if pt_obj_type == 'route':
         # the line network, commercial_mode, code and name should be in the label
-        check_embedded_route_label(n, pt_obj_type['route'], depth_check)
+        check_embedded_route_label(n, pt_object['route'], depth_check)
 
 
 def check_embedded_line_label(label, line, depth_check):
@@ -805,6 +847,8 @@ def is_valid_vehicle_journey(vj, depth_check=1):
         is_valid_comment(c)
 
     if depth_check > 0:
+        is_valid_trip(get_not_null(vj, "trip"), depth_check=depth_check-1)
+
         is_valid_journey_pattern(get_not_null(vj, 'journey_pattern'), depth_check=depth_check-1)
         is_valid_validity_pattern(get_not_null(vj, 'validity_pattern'), depth_check=depth_check-1)
 
@@ -813,7 +857,9 @@ def is_valid_vehicle_journey(vj, depth_check=1):
         for st in stoptimes:
             get_valid_time(get_not_null(st, 'arrival_time'))
             get_valid_time(get_not_null(st, 'departure_time'))
+            is_valid_stop_point(get_not_null(st, 'stop_point'), depth_check=depth_check-1)
 
+            # the JPP are kept only for backward compatibility
             if depth_check > 1:
                 #with depth > 1 (we are already in the stoptime nested object), we don't want jpp
                 is_valid_journey_pattern_point(get_not_null(st, 'journey_pattern_point'), depth_check - 2)
@@ -824,6 +870,11 @@ def is_valid_vehicle_journey(vj, depth_check=1):
         assert 'stop_times' not in vj
         assert 'journey_pattern' not in vj
         assert 'validity_pattern' not in vj
+
+
+def is_valid_trip(trip, depth_check=1):
+    get_not_null(trip, "id")
+    get_not_null(trip, "name")
 
 
 def is_valid_journey_pattern(jp, depth_check=1):
@@ -856,6 +907,7 @@ def is_valid_region_status(status):
     is_valid_date(get_not_null(status, 'start_production_date'))
     get_valid_datetime(get_not_null(status, 'last_load_at'), possible_errors=True)
     get_valid_datetime(get_not_null(status, 'publication_date'), possible_errors=True)
+    get_not_null(status, 'is_realtime_loaded')
 
 
 # for () are mandatory for the label even if is reality it is not
@@ -869,6 +921,10 @@ def is_valid_label(label):
     return m is not None
 
 
+def is_valid_rt_level(level):
+    assert level in ('base_schedule', 'adapted_schedule', 'realtime')
+
+
 def get_disruptions(obj, response):
     """
     unref disruption links are return the list of disruptions
@@ -880,21 +936,53 @@ def get_disruptions(obj, response):
     return [all_disruptions[d['id']] for d in obj['links'] if d['type'] == 'disruption']
 
 
-def is_valid_disruption(disruption):
+def is_valid_disruption(disruption, chaos_disrup=True):
     get_not_null(disruption, 'id')
     get_not_null(disruption, 'disruption_id')
     s = get_not_null(disruption, 'severity')
     get_not_null(s, 'name')
     get_not_null(s, 'color')
-    get_not_null(s, 'effect')
-    msg = get_not_null(disruption, 'messages')
-    assert len(msg) > 0
+    effect = get_not_null(s, 'effect')
+    msg = disruption.get('messages', [])
+
+    if chaos_disrup:
+        # for chaos message is mandatory
+        assert len(msg) > 0
+
     for m in msg:
         get_not_null(m, "text")
         channel = get_not_null(m, 'channel')
         get_not_null(channel, "content_type")
         get_not_null(channel, "id")
         get_not_null(channel, "name")
+
+    for impacted_obj in get_not_null(disruption, 'impacted_objects'):
+        pt_obj = get_not_null(impacted_obj, 'pt_object')
+        is_valid_pt_object(pt_obj, depth_check=0)
+
+        # for the vj, if it's not a cancellation we need to have the list of impacted stoptimes
+        if get_not_null(pt_obj, 'embedded_type') == 'trip' and effect != 'NO_SERVICE':
+            impacted_stops = get_not_null(impacted_obj, 'impacted_stops')
+
+            assert len(impacted_stops) > 0
+            for impacted_stop in impacted_stops:
+                is_valid_stop_point(get_not_null(impacted_stop, 'stop_point'), depth_check=0)
+
+                assert(get_not_null(impacted_stop, "stop_time_effect") in ('added', 'deleted', 'delayed'))
+
+                if 'base_arrival_time' in impacted_stop:
+                    get_valid_time(impacted_stop['base_arrival_time'])
+                if 'base_departure_time' in impacted_stop:
+                    get_valid_time(impacted_stop['base_departure_time'])
+                if 'amended_arrival_time' in impacted_stop:
+                    get_valid_time(impacted_stop['amended_arrival_time'])
+                if 'amended_departure_time' in impacted_stop:
+                    get_valid_time(impacted_stop['amended_departure_time'])
+
+                # we need at least either the base or the departure information
+                assert 'base_arrival_time' in impacted_stop and 'base_departure_time' in impacted_stop or \
+                       'amended_arrival_time' in impacted_stop and 'amended_arrival_time' in impacted_stop
+
 
 s_coord = "0.0000898312;0.0000898312"  # coordinate of S in the dataset
 r_coord = "0.00188646;0.00071865"  # coordinate of R in the dataset
@@ -935,4 +1023,81 @@ def is_valid_stop_date_time(stop_date_time):
     assert get_valid_datetime(stop_date_time['arrival_date_time'])
     get_not_null(stop_date_time, 'departure_date_time')
     assert get_valid_datetime(stop_date_time['departure_date_time'])
+    get_not_null(stop_date_time, 'base_departure_date_time')
+    assert get_valid_datetime(stop_date_time['base_departure_date_time'])
+    get_not_null(stop_date_time, 'base_arrival_date_time')
+    assert get_valid_datetime(stop_date_time['base_arrival_date_time'])
 
+
+def get_used_vj(response):
+    """
+    return for each journeys the list of taken vj
+    """
+    journeys_vj = []
+    for j in get_not_null(response, 'journeys'):
+        vjs = []
+        for s in get_not_null(j, 'sections'):
+            for l in s.get('links', []):
+                if l['type'] == 'vehicle_journey':
+                    vjs.append(l['id'])
+                    break
+        journeys_vj.append(vjs)
+
+    return journeys_vj
+
+
+def get_arrivals(response):
+    """
+    return a list with the journeys arrival times
+    """
+    return [j['arrival_date_time'] for j in get_not_null(response, 'journeys')]
+
+
+Journey = namedtuple('Journey', ['sections'])
+Section = namedtuple('Section', ['departure_date_time', 'arrival_date_time',
+                                 'base_departure_date_time', 'base_arrival_date_time',
+                                 'stop_date_times'])
+SectionStopDT = namedtuple('SectionStopDT', ['departure_date_time', 'arrival_date_time',
+                                             'base_departure_date_time', 'base_arrival_date_time'])
+
+def check_journey(journey, ref_journey):
+    """
+    check the values in a journey
+    """
+    for section, ref_section in zip_longest(journey['sections'], ref_journey.sections):
+        eq_(section.get('departure_date_time'), ref_section.departure_date_time)
+        eq_(section.get('arrival_date_time'), ref_section.arrival_date_time)
+        eq_(section.get('base_departure_date_time'), ref_section.base_departure_date_time)
+        eq_(section.get('base_arrival_date_time'), ref_section.base_arrival_date_time)
+        for stop_dt, ref_stop_dt in zip_longest(section.get('stop_date_times', []), ref_section.stop_date_times):
+            eq_(stop_dt.get('departure_date_time'), ref_stop_dt.departure_date_time)
+            eq_(stop_dt.get('arrival_date_time'), ref_stop_dt.arrival_date_time)
+            eq_(stop_dt.get('base_departure_date_time'), ref_stop_dt.base_departure_date_time)
+            eq_(stop_dt.get('base_arrival_date_time'), ref_stop_dt.base_arrival_date_time)
+
+
+def generate_pt_journeys(response):
+    """ generate all journeys with at least a public transport section """
+    for j in response.get('journeys', []):
+        if any(s for s in j.get('sections', []) if s['type'] == 'public_transport'):
+            yield j
+
+
+def new_default_pagination_journey_comparator(clockwise):
+    """same as new_default.__get_best_for_criteria but for python dict
+    compare first on departure (or arrival for non clockwise), then on:
+    - duration
+    - number of transfers
+    """
+    def make_crit(func, reverse=False):
+        if not reverse:
+            return partial(compare_field, func=func)
+        return partial(reverse_compare_field, func=func)
+
+    main_criteria = make_crit(lambda j: get_valid_datetime(j['departure_date_time'])) if clockwise \
+        else make_crit(lambda j: get_valid_datetime(j['arrival_date_time']), reverse=True)
+
+    return [main_criteria,
+            make_crit(lambda j: get_valid_int(j['duration'])),
+            make_crit(lambda j: len(j.get('sections', []))),
+    ]

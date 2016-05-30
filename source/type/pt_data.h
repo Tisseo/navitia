@@ -38,7 +38,10 @@ www.navitia.io
 #include "proximity_list/proximity_list.h"
 #include "utils/flat_enum_map.h"
 #include "utils/functions.h"
+#include "utils/obj_factory.h"
 #include "comment_container.h"
+#include "code_container.h"
+#include "headsign_handler.h"
 
 #include <boost/serialization/map.hpp>
 #include "utils/serialization_unordered_map.h"
@@ -55,34 +58,14 @@ namespace type {
 
 typedef std::map<std::string, std::string> code_value_map_type;
 typedef std::map<std::string, code_value_map_type> type_code_codes_map_type;
-typedef flat_enum_map<pbnavitia::PlaceCodeRequest::Type, type_code_codes_map_type> ext_codes_map_type;
 struct PT_Data : boost::noncopyable{
 #define COLLECTION_AND_MAP(type_name, collection_name) std::vector<type_name*> collection_name; std::unordered_map<std::string, type_name *> collection_name##_map;
     ITERATE_NAVITIA_PT_TYPES(COLLECTION_AND_MAP)
 
-#define REINDEX(type_name, collection_name) void reindex_##collection_name() {\
-        std::for_each(collection_name.begin(), collection_name.end(), Indexer<nt::idx_t>());}
-    ITERATE_NAVITIA_PT_TYPES(REINDEX)
-
-#define ERASE_OBJ(type_name, collection_name) \
-    void remove_from_collections(const type_name& obj) { \
-        const auto it_map = collection_name##_map.find(obj.uri);\
-        if (it_map != collection_name##_map.end()) {\
-            collection_name##_map.erase(it_map);\
-        }\
-        collection_name.erase(collection_name.begin() + obj.idx);\
-    }\
-    void erase_obj(const type_name* obj) {\
-        remove_from_collections(*obj);\
-        delete obj;\
-    }
-    ITERATE_NAVITIA_PT_TYPES(ERASE_OBJ)
-
-    ext_codes_map_type ext_codes_map;
     std::vector<StopPointConnection*> stop_point_connections;
 
-    // meta vj map
-    std::map<std::string, MetaVehicleJourney*> meta_vj;
+    // meta vj factory
+    navitia::ObjFactory<MetaVehicleJourney> meta_vjs;
 
     //associated cal for vj
     std::vector<AssociatedCalendar*> associated_calendars;
@@ -100,7 +83,7 @@ struct PT_Data : boost::noncopyable{
     proximitylist::ProximityList<idx_t> stop_point_proximity_list;
 
     //Message
-    new_disruption::DisruptionHolder disruption_holder;
+    disruption::DisruptionHolder disruption_holder;
 
     // rtree for zonal stop_points
     MultiPolygonMap<const StopPoint*> stop_points_by_area;
@@ -108,18 +91,40 @@ struct PT_Data : boost::noncopyable{
     // Comments container
     Comments comments;
 
+    // Code container
+    CodeContainer codes;
+
+    // Headsign handler
+    HeadsignHandler headsign_handler;
+
+    // timezone manager
+    TimeZoneManager tz_manager;
+
+    // shape manager
+    struct ShapeManager {
+        const LineString* get(const LineString& l) { return &*set.insert(l).first; }
+        template<class Archive> void serialize(Archive & ar, const unsigned int) { ar & set; }
+    private:
+        std::set<LineString> set;
+    };
+    ShapeManager shape_manager;
+
     template<class Archive> void serialize(Archive & ar, const unsigned int) {
         ar
+                & shape_manager // before anything
         #define SERIALIZE_ELEMENTS(type_name, collection_name) & collection_name & collection_name##_map
                 ITERATE_NAVITIA_PT_TYPES(SERIALIZE_ELEMENTS)
-                & ext_codes_map & stop_area_autocomplete & stop_point_autocomplete & line_autocomplete
+                & stop_area_autocomplete & stop_point_autocomplete & line_autocomplete
                 & network_autocomplete & mode_autocomplete & route_autocomplete
                 & stop_area_proximity_list & stop_point_proximity_list
                 & stop_point_connections
                 & disruption_holder
-                & meta_vj
+                & meta_vjs
                 & stop_points_by_area
-                & comments;
+                & comments
+                & codes
+                & headsign_handler
+                & tz_manager;
     }
 
     /** Initialise tous les indexes
@@ -145,8 +150,8 @@ struct PT_Data : boost::noncopyable{
 
     size_t nb_stop_times() const {
         size_t nb = 0;
-        for (const auto jp:journey_patterns) {
-            jp->for_each_vehicle_journey([&](const nt::VehicleJourney& vj){
+        for (const auto* route: routes) {
+            route->for_each_vehicle_journey([&](const nt::VehicleJourney& vj){
                 nb += vj.stop_time_list.size();
                 return true;
             });
@@ -154,21 +159,7 @@ struct PT_Data : boost::noncopyable{
         return nb;
     }
 
-    type::ValidityPattern* get_or_create_validity_pattern(const ValidityPattern& vp_ref) {
-        for (auto vp : validity_patterns) {
-            if (vp->days == vp_ref.days && vp->beginning_date == vp_ref.beginning_date) {
-                return vp;
-            }
-        }
-        auto vp = new nt::ValidityPattern();
-        vp->idx = validity_patterns.size();
-        vp->uri = make_adapted_uri(vp->uri);
-        vp->beginning_date = vp_ref.beginning_date;
-        vp->days = vp_ref.days;
-        validity_patterns.push_back(vp);
-        validity_patterns_map[vp->uri] = vp;
-        return vp;
-    }
+    type::ValidityPattern* get_or_create_validity_pattern(const ValidityPattern& vp_ref);
 
     /** Retrouve un élément par un attribut arbitraire de type chaine de caractères
       *
@@ -181,6 +172,9 @@ struct PT_Data : boost::noncopyable{
 
     /** Définis les idx des différents objets */
     void index();
+
+    Indexes
+    get_impacts_idx(const std::vector<boost::shared_ptr<disruption::Impact>>& impacts) const;
 
     const StopPointConnection*
     get_stop_point_connection(const StopPoint& from, const StopPoint& to) const;

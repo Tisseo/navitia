@@ -27,13 +27,14 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask.ext.restful import Resource, abort
-from converters_collection_type import collections_to_resource_type
-from converters_collection_type import resource_type_to_collection
+from jormungandr.interfaces.v1.converters_collection_type import collections_to_resource_type
+from jormungandr.interfaces.v1.converters_collection_type import resource_type_to_collection
 from jormungandr import utils
 from jormungandr.interfaces.v1.StatedResource import StatedResource
 from jormungandr.stat_manager import manage_stat_caller
-from make_links import add_id_links, clean_links, add_pagination_links
+from jormungandr.interfaces.v1.make_links import add_id_links, clean_links, add_pagination_links
 from functools import wraps
 from collections import OrderedDict, deque
 from flask import url_for
@@ -65,7 +66,7 @@ class ResourceUri(StatedResource):
             self.method_decorators.append(authentication_required)
 
     def get_filter(self, items, args):
-        filter_list = []
+        filter_list = [args["filter"]] if args.get("filter") else []
         if len(items) % 2 != 0:
             items = items[:-1]
         type_ = None
@@ -118,15 +119,15 @@ class add_computed_resources(object):
             collection = None
             kwargs["_external"] = True
             templated = True
-            for key in data.keys():
-                if key in collections_to_resource_type.keys():
+            for key in data:
+                if key in collections_to_resource_type:
                     collection = key
-                if key in resource_type_to_collection.keys():
+                if key in resource_type_to_collection:
                     collection = resource_type_to_collection[key]
             if collection is None:
                 return response
             kwargs["uri"] = collection + '/'
-            if "id" in kwargs.keys():
+            if "id" in kwargs:
                 kwargs["uri"] += kwargs["id"]
                 del kwargs["id"]
                 templated = False
@@ -172,27 +173,25 @@ class complete_links(object):
         self.resource = resource
     def complete(self, data, collect):
         queue = deque()
-        result = []
-        for v in data.itervalues():
-            queue.append(v)
+        result = deque()
+        queue.extend(data.values())
         collect_type = collect["type"]
+        del_types = collect["del"]
         while queue:
             elem = queue.pop()
             if isinstance(elem, (list, tuple)):
                 queue.extend(elem)
-            elif hasattr(elem, 'iterkeys'):
-                if 'type' in elem and elem['type'] == collect_type:
+            elif hasattr(elem, 'keys'):
+                if elem.get('type') == collect_type:
                     if collect_type == "notes":
                         result.append({"id": elem['id'], "value": elem['value'], "type": collect_type})
                     elif collect_type == "exceptions":
-                        type_= "Remove"
-                        if elem['except_type'] == 0:
-                            type_ = "Add"
-                        result.append({"id": elem['id'], "date": elem['date'], "type" : type_})
-                    for del_ in collect["del"]:
-                        del elem[del_]
+                        type_ = "Add" if elem['except_type'] == 0 else "Remove"
+                        result.append({"id": elem['id'], "date": elem['date'], "type": type_})
+
+                    map(elem.pop, del_types)
                 else:
-                    queue.extend(elem.itervalues())
+                    queue.extend(elem.values())
         return result
 
     def __call__(self, f):

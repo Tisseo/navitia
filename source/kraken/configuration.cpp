@@ -37,7 +37,9 @@ namespace po = boost::program_options;
 
 namespace navitia { namespace kraken{
 
-po::options_description get_options_description(const boost::optional<std::string> name, const boost::optional<std::string> zmq){
+po::options_description get_options_description(const boost::optional<std::string> name,
+                                                const boost::optional<std::string> zmq,
+                                                const boost::optional<bool> display_contributors ){
     po::options_description desc("Allowed options");
     desc.add_options()
         ("GENERAL.database", po::value<std::string>()->default_value("data.nav.lz4"), "path to the data file")
@@ -51,6 +53,17 @@ po::options_description get_options_description(const boost::optional<std::strin
          "name of the instance")
 
         ("GENERAL.nb_threads", po::value<int>()->default_value(1), "number of workers threads")
+        ("GENERAL.is_realtime_enabled", po::value<bool>()->default_value(false),
+                                        "enable loading of realtime data")
+        ("GENERAL.kirin_timeout", po::value<int>()->default_value(60000),
+                                  "timeout in ms for loading realtime data from kirin")
+        ("GENERAL.kirin_retry_timeout", po::value<int>()->default_value(5*60*1000),
+                                  "timeout in ms before retrying to load realtime data")
+
+        ("GENERAL.display_contributors", display_contributors ?
+             po::value<bool>()->default_value(*display_contributors) : po::value<bool>()->default_value(false),
+         "display all contributors in feed publishers")
+        ("GENERAL.raptor_cache_size", po::value<int>()->default_value(10), "maximum number of stored raptor caches")
 
         ("BROKER.host", po::value<std::string>()->default_value("localhost"), "host of rabbitmq")
         ("BROKER.port", po::value<int>()->default_value(5672), "port of rabbitmq")
@@ -59,6 +72,8 @@ po::options_description get_options_description(const boost::optional<std::strin
         ("BROKER.vhost", po::value<std::string>()->default_value("/"), "vhost for rabbitmq")
         ("BROKER.exchange", po::value<std::string>()->default_value("navitia"), "exchange used in rabbitmq")
         ("BROKER.rt_topics", po::value<std::vector<std::string>>(), "list of realtime topic for this instance")
+        ("BROKER.timeout", po::value<int>()->default_value(100), "timeout for maintenance worker in millisecond")
+        ("BROKER.sleeptime", po::value<int>()->default_value(1), "sleeptime for maintenance worker in second")
 
         ("CHAOS.database", po::value<std::string>(), "Chaos database connection string");
 
@@ -104,8 +119,20 @@ boost::optional<std::string> Configuration::chaos_database() const{
     }
     return result;
 }
-int Configuration::nb_thread() const{
-    return this->vm["GENERAL.nb_threads"].as<int>();
+int Configuration::nb_threads() const{
+    int nb_threads = vm["GENERAL.nb_threads"].as<int>();
+    if (nb_threads < 0) {
+        throw std::invalid_argument("nb_threads cannot be negative");
+    }
+    return size_t(nb_threads);
+}
+
+bool Configuration::is_realtime_enabled() const{
+    return this->vm["GENERAL.is_realtime_enabled"].as<bool>();
+}
+
+int Configuration::kirin_timeout() const{
+    return this->vm["GENERAL.kirin_timeout"].as<int>();
 }
 
 std::string Configuration::broker_host() const{
@@ -127,10 +154,40 @@ std::string Configuration::broker_exchange() const{
     return this->vm["BROKER.exchange"].as<std::string>();
 }
 
+int Configuration::broker_timeout() const {
+    return vm["BROKER.timeout"].as<int>();
+}
+
+int Configuration::broker_sleeptime() const {
+    return vm["BROKER.sleeptime"].as<int>();
+}
+
 std::vector<std::string> Configuration::rt_topics() const{
     if(! this->vm.count("BROKER.rt_topics")){
         return std::vector<std::string>();
     }
     return this->vm["BROKER.rt_topics"].as<std::vector<std::string>>();
+}
+
+int Configuration::kirin_retry_timeout() const{
+    return vm["GENERAL.kirin_retry_timeout"].as<int>();
+}
+
+bool Configuration::display_contributors() const{
+    if(!this->vm.count("GENERAL.display_contributors")){
+        return false;
+    }
+    return vm["GENERAL.display_contributors"].as<bool>();
+}
+
+size_t Configuration::raptor_cache_size() const{
+    if (! vm.count("GENERAL.raptor_cache_size")) {
+        return 10;
+    }
+    int raptor_cache_size = vm["GENERAL.raptor_cache_size"].as<int>();
+    if (raptor_cache_size < 1) {
+        throw std::invalid_argument("raptor_cache_size must be strictly positive");
+    }
+    return size_t(raptor_cache_size);
 }
 }}//namespace

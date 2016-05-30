@@ -46,19 +46,23 @@ struct logger_initialized {
 BOOST_GLOBAL_FIXTURE( logger_initialized )
 
 
-static pbnavitia::Request create_request(bool wheelchair, std::string destination) {
+static pbnavitia::Request create_request(bool wheelchair, const std::string& destination) {
     pbnavitia::Request req;
     req.set_requested_api(pbnavitia::PLANNER);
     pbnavitia::JourneysRequest* j = req.mutable_journeys();
     j->set_clockwise(true);
     j->set_wheelchair(wheelchair);
-    j->set_disruption_active(true);
+    j->set_realtime_level(pbnavitia::ADAPTED_SCHEDULE);
     j->set_max_duration(std::numeric_limits<int32_t>::max());
     j->set_max_transfers(42);
     j->add_datetimes(navitia::test::to_posix_timestamp("20150314T080000"));
     auto sn_params = j->mutable_streetnetwork_params();
     sn_params->set_origin_mode("walking");
     sn_params->set_destination_mode("walking");
+    sn_params->set_walking_speed(1);
+    sn_params->set_bike_speed(1);
+    sn_params->set_car_speed(1);
+    sn_params->set_bss_speed(1);
     pbnavitia::LocationContext* from = j->add_origin();
     from->set_place("A");
     from->set_access_duration(0);
@@ -69,6 +73,31 @@ static pbnavitia::Request create_request(bool wheelchair, std::string destinatio
     return req;
 }
 
+static pbnavitia::Request create_isochron_request(int max_duration, int min_duration, const std::string& origin) {
+    pbnavitia::Request req;
+    req.set_requested_api(pbnavitia::graphical_isochron);
+    pbnavitia::GraphicalIsochronRequest* g = req.mutable_isochron();
+    g->set_min_duration(min_duration);
+    pbnavitia::JourneysRequest* j = g->mutable_journeys_request();
+    j->set_clockwise(true);
+    j->set_wheelchair(true);
+    j->set_realtime_level(pbnavitia::ADAPTED_SCHEDULE);
+    j->set_max_duration(max_duration);
+    j->set_max_transfers(42);
+    j->add_datetimes(navitia::test::to_posix_timestamp("20150314T080000"));
+    auto sn_params = j->mutable_streetnetwork_params();
+    sn_params->set_origin_mode("walking");
+    sn_params->set_destination_mode("walking");
+    sn_params->set_walking_speed(1);
+    sn_params->set_bike_speed(1);
+    sn_params->set_car_speed(1);
+    sn_params->set_bss_speed(1);
+    pbnavitia::LocationContext* from = j->add_origin();
+    from->set_place(origin);
+    from->set_access_duration(0);
+
+    return req;
+}
 /**
   * Accessibility tests
   *
@@ -110,6 +139,13 @@ struct fixture {
                 ("stop_point:A", "9:00"_t)("stop_point:B", "10:00"_t);
         b.vj("l3")
                 ("stop_point:A", "10:00"_t)("stop_point:C", "11:00"_t);
+        using coord = navitia::type::GeographicalCoord;
+        coord coord_Paris = {2.3522219000000177, 48.856614};
+        coord coord_Notre_Dame = {2.35, 48.853};
+        coord coord_Pantheon = {2.3461,48.8463};
+        b.sps["stop_point:A"]->coord = coord_Paris;
+        b.sps["stop_point:B"]->coord = coord_Notre_Dame;
+        b.sps["stop_point:C"]->coord = coord_Pantheon;
 
         b.finish();
         b.generate_dummy_basis();
@@ -158,4 +194,40 @@ BOOST_FIXTURE_TEST_CASE(wheelchair_on_stop_tests, fixture) {
     pbnavitia::Response resp = w.dispatch(no_wheelchair_request);
 
     BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::NO_SOLUTION);
+}
+
+BOOST_FIXTURE_TEST_CASE(graphical_isochrone_test, fixture) {
+    const auto isochron_request = create_isochron_request(7200, 0, "A");
+    pbnavitia::Response resp = w.dispatch(isochron_request);
+
+    BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::ITINERARY_FOUND);
+    BOOST_REQUIRE_EQUAL(resp.graphical_isochrons_size(), 1);
+    const auto& isochron = resp.graphical_isochrons(0).geojson();
+    BOOST_REQUIRE_EQUAL(isochron.polygons_size(), 1);
+    const auto& poly = isochron.polygons(0).outer();
+    BOOST_CHECK(poly.coordinates().size() > 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(graphical_isochrone_test_with_min, fixture) {
+    const auto isochron_request = create_isochron_request(7200, 200, "A");
+    pbnavitia::Response resp = w.dispatch(isochron_request);
+
+    BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::ITINERARY_FOUND);
+    BOOST_REQUIRE_EQUAL(resp.graphical_isochrons_size(), 1);
+    const auto& isochron = resp.graphical_isochrons(0).geojson();
+    BOOST_CHECK(isochron.polygons_size() > 0);
+    int i = 0;
+    for (int j = 0; j < isochron.polygons_size(); j++) {
+        const auto& outer = isochron.polygons(j).outer();
+        // We check the outer is a round thus it has at least 3 points
+        BOOST_CHECK(outer.coordinates().size() > 3);
+        if (isochron.polygons(j).inners_size() > 0)  {
+            i = i + 1;
+            for (int k = 0; k < isochron.polygons(j).inners_size(); k++) {
+                const auto& inner = isochron.polygons(j).inners(k);
+                BOOST_CHECK(inner.coordinates().size() > 3);
+            }
+        }
+    }
+    BOOST_CHECK(i > 0);
 }

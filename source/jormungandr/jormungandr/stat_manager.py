@@ -29,6 +29,7 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask import request, g
 from functools import wraps
 from navitiacommon import stat_pb2
@@ -43,6 +44,7 @@ from threading import Lock
 import time
 import sys
 import kombu
+
 f_datetime = "%Y%m%dT%H%M%S"
 
 def init_journey(stat_journey):
@@ -160,8 +162,16 @@ class StatManager(object):
         self.fill_result(stat_request, call_result)
         self.publish_request(stat_request)
 
+    def fill_info_response(self, stat_info_response, call_result):
+        """
+        store data from response of all requests
+        """
+        if 'pagination' in call_result[0] and call_result[0]['pagination'] \
+                and 'items_on_page' in call_result[0]['pagination']:
+            stat_info_response.object_count = call_result[0]['pagination']['items_on_page']
+
     def fill_result(self, stat_request, call_result):
-        if 'error' in call_result[0]:
+        if 'error' in call_result[0] and call_result[0]['error']:
             self.fill_error(stat_request, call_result[0]['error'])
 
         #We do not save informations of journeys and sections for a request
@@ -172,22 +182,25 @@ class StatManager(object):
 
     def fill_request(self, stat_request, call_result):
         """
-        Remplir requests
+        fill stat requests message (protobuf)
         """
         dt = datetime.utcnow()
         stat_request.request_date = int(time.mktime(dt.timetuple()))
         # Note: for stat we don't want to abort if no token has been
         # given (it's up to the authentication process)
-        user = get_user(token=get_token(), abort_if_no_token=False)
+        token = get_token()
+        user = get_user(token=token, abort_if_no_token=False)
+
         if user is not None:
             stat_request.user_id = user.id
             stat_request.user_name = user.login
             if user.end_point_id:
                 stat_request.end_point_id = user.end_point_id
                 stat_request.end_point_name = user.end_point.name
-
+        if (token is not None):
+            stat_request.token = token
         stat_request.application_id = -1
-        app_name = get_app_name(get_token())
+        app_name = get_app_name(token)
         if app_name:
             stat_request.application_name = app_name
         else:
@@ -202,6 +215,9 @@ class StatManager(object):
         stat_request.path = request.path
 
         stat_request.response_size = sys.getsizeof(call_result[0])
+
+        self.fill_info_response(stat_request.info_response, call_result)
+
 
     def register_interpreted_parameters(self, args):
         """
@@ -221,7 +237,7 @@ class StatManager(object):
                 stat_parameter.value = unicode(value)
 
         if hasattr(g, 'stat_interpreted_parameters'):
-            for item in g.stat_interpreted_parameters.iteritems():
+            for item in g.stat_interpreted_parameters.items():
                 if isinstance(item[1], list):
                     for value in item[1]:
                         stat_parameter = stat_request.interpreted_parameters.add()
@@ -453,7 +469,7 @@ class StatManager(object):
             stat_coord.lon = float(to_lon)
 
         except ValueError as e:
-            logging.getLogger(__name__).warn('Unable to parse coordinates: %s', str(e))
+            logging.getLogger(__name__).warn('Unable to parse coordinates: %s', unicode(e))
 
     def fill_sections(self, stat_journey, resp_journey):
         previous_section = None
@@ -467,6 +483,9 @@ class StatManager(object):
         pbf = stat_request.SerializeToString()
         with self.lock:
             try:
+                if self.producer is None:
+                    #if the initialization failed we have to retry the creation of the objects
+                    self._init_rabbitmq()
                 self.producer.publish(pbf)
             except self.connection.connection_errors + self.connection.channel_errors:
                 logging.getLogger(__name__).exception('Server went away, will be reconnected..')

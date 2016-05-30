@@ -27,10 +27,11 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask.ext.restful import Resource, fields, marshal_with
-from jormungandr import i_manager
+from jormungandr import i_manager, travelers_profile
 from jormungandr.protobuf_to_dict import protobuf_to_dict
-from fields import instance_status_with_parameters
+from jormungandr.interfaces.v1.fields import instance_status_with_parameters
 from jormungandr import app
 from navitiacommon import models
 
@@ -44,12 +45,10 @@ class Status(Resource):
     def get(self, region):
         response = protobuf_to_dict(i_manager.dispatch({}, "status", instance_name=region), use_enum_labels=True)
         instance = i_manager.instances[region]
-        is_open_data = True
-        if not app.config['DISABLE_DATABASE']:
-            if instance and instance.name:
-                instance_db = models.Instance.get_by_name(instance.name)
-                if instance_db:
-                    is_open_data = instance_db.is_free
-        response['status']["is_open_data"] = is_open_data
+        response['status']["is_open_data"] = instance.is_free
         response['status']['parameters'] = instance
+        response['status']['traveler_profiles'] = travelers_profile.TravelerProfile.get_profiles_by_coverage(region)
+        response['status']['realtime_proxies'] = []
+        for realtime_proxy in instance.realtime_proxy_manager.realtime_proxies.values():
+            response['status']['realtime_proxies'].append(realtime_proxy.status())
         return response, 200

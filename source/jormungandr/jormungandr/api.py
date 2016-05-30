@@ -29,13 +29,16 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+
+from __future__ import absolute_import, print_function, unicode_literals, division
 import importlib
 from flask_restful.representations import json
 from flask import request, make_response
-from jormungandr import rest_api
+from jormungandr import rest_api, app
 from jormungandr.index import index
 from jormungandr.modules_loader import ModulesLoader
 import ujson
+import logging
 
 
 @rest_api.representation("text/jsonp")
@@ -44,7 +47,7 @@ def output_jsonp(data, code, headers=None):
     resp = json.output_json(data, code, headers)
     callback = request.args.get('callback', False)
     if callback:
-        resp.data = str(callback) + '(' + resp.data + ')'
+        resp.data = unicode(callback) + '(' + resp.data + ')'
     return resp
 
 
@@ -55,10 +58,24 @@ def output_json(data, code, headers=None):
     resp.headers.extend(headers or {})
     return resp
 
+
+@app.after_request
+def access_log(response, *args, **kwargs):
+    logger = logging.getLogger('jormungandr.access')
+    query_string = request.query_string.decode(request.url_charset, 'replace')
+    logger.info(u'"%s %s?%s" %s', request.method, request.path, query_string, response.status_code)
+    return response
+
+@app.after_request
+def add_request_id(response, *args, **kwargs):
+    response.headers['navitia-request-id'] = request.id
+    return response
+
+
 # If modules are configured, then load and run them
 if 'MODULES' in rest_api.app.config:
     rest_api.module_loader = ModulesLoader(rest_api)
-    for prefix, module_info in rest_api.app.config['MODULES'].iteritems():
+    for prefix, module_info in rest_api.app.config['MODULES'].items():
         module_file = importlib.import_module(module_info['import_path'])
         module = getattr(module_file, module_info['class_name'])
         rest_api.module_loader.load(module(rest_api, prefix))

@@ -33,15 +33,18 @@ www.navitia.io
 #include "boost/functional/hash.hpp"
 namespace navitia { namespace timetables {
 
-typedef std::vector<type::idx_t> vector_idx;
+typedef std::vector<idx_t> vector_idx;
 typedef std::vector<uint16_t> vector_size;
 
 struct Thermometer {
     void generate_thermometer(const std::vector<vector_idx> &journey_patterns);
     void generate_thermometer(const type::Route* route);
     vector_idx get_thermometer() const;
-    std::vector<uint32_t> match_journey_pattern(const type::JourneyPattern & journey_pattern) const;
-    std::vector<uint32_t> match_journey_pattern(const vector_idx &journey_pattern) const;
+
+    // res[stop_time.order()] correspond to the index of the
+    // thermometer for a stop time of the given vj
+    std::vector<uint32_t> stop_times_order(const type::VehicleJourney&) const;
+    std::vector<uint32_t> stop_times_order_helper(const vector_idx &stop_points) const;
 
     struct cant_match {
         type::idx_t jpp_idx;
@@ -55,6 +58,8 @@ private :
     vector_idx thermometer;
     std::string filter;
     int nb_branches = 0;
+
+    bool generate_topological_thermometer(const std::vector<vector_idx> &journey_patterns);
 
     std::vector<uint32_t> untail(std::vector<vector_idx> &journey_patterns, type::idx_t spidx, std::vector<vector_size> &pre_computed_lb);
     void retail(std::vector<vector_idx> &journey_patterns, type::idx_t spidx, const std::vector<uint32_t> &to_retail, std::vector<vector_size> &pre_computed_lb);

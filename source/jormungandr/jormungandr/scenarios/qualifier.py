@@ -29,6 +29,7 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 import navitiacommon.response_pb2 as response_pb2
 from functools import partial
 from datetime import datetime, timedelta
@@ -173,7 +174,6 @@ def best_standard(standard, journey, best_criteria):
     return standard if best_criteria(standard, journey) > 0 else journey
 
 
-
 def choose_standard(journeys, best_criteria):
     standard = None
     for journey in journeys:
@@ -190,8 +190,18 @@ def compare_minus(field_1, field_2):
     else:
         return -1
 
+
+def compare_field(obj1, obj2, func):
+    return compare_minus(func(obj1), func(obj2))
+
+
+def reverse_compare_field(obj1, obj2, func):
+    return compare_minus(func(obj2), func(obj1))
+
+
 #criteria
-transfers_crit = lambda j_1, j_2: compare_minus(j_1.nb_transfers, j_2.nb_transfers)
+def transfers_crit(j_1, j_2):
+    return compare_minus(j_1.nb_transfers, j_2.nb_transfers)
 
 
 def arrival_crit(j_1, j_2):
@@ -293,7 +303,9 @@ def qualifier_one(journeys, request_type):
         ],
             [
                 best_crit,
-                transfers_crit
+                transfers_crit,
+                nonTC_crit,
+                duration_crit
             ]
         )),
         # less_fallback tends to limit the fallback while walking

@@ -36,11 +36,11 @@ This parameters can be used directly by jormungandr if the instance is not known
 import logging
 import sys
 
-max_walking_duration_to_pt = 15*60
+max_walking_duration_to_pt = 30*60
 
-max_bike_duration_to_pt = 15*60
+max_bike_duration_to_pt = 30*60
 
-max_bss_duration_to_pt = 15*60
+max_bss_duration_to_pt = 30*60
 
 max_car_duration_to_pt = 30*60
 
@@ -80,6 +80,28 @@ max_duration_criteria = 'time'
 #only journey with this mode (or slower mode) will be used for calculate the max_duration
 max_duration_fallback_mode = 'walking'
 
+# specify the latest time point of request, relative to datetime, in second
+max_duration = 60*60*24  # seconds
+
+# the penalty for each walking transfer
+walking_transfer_penalty = 120  # seconds
+
+# night bus filtering parameter
+night_bus_filter_max_factor = 3
+
+# night bus filtering parameter
+night_bus_filter_base_factor = 60*60  # seconds
+
+#priority value to be used to choose a kraken instance among valid instances. The greater it is, the more the instance
+# will be chosen.
+priority = 0
+
+# activate / desactivate call to bss provider
+bss_provider = True
+
+#Maximum number of connections allowed in journeys is calculated as
+#max_additional_connections + minimum connections among the journeys
+max_additional_connections = 2
 
 def get_value_or_default(attr, instance, instance_name):
     if not instance or getattr(instance, attr, None) == None:

@@ -37,6 +37,8 @@ www.navitia.io
 
 #include <boost/foreach.hpp>
 #include <boost/geometry.hpp>
+#include <boost/range/algorithm/sort.hpp>
+#include <boost/range/algorithm/lexicographical_compare.hpp>
 #include <boost/math/constants/constants.hpp>
 #include <array>
 #include <unordered_map>
@@ -53,12 +55,15 @@ namespace navitia{ namespace georef{
 
 void Way::add_house_number(const HouseNumber& house_number){
     if (house_number.number % 2 == 0){
-            this->house_number_right.push_back(house_number);
-            std::sort(this->house_number_right.begin(),this->house_number_right.end());
+        this->house_number_right.push_back(house_number);
     } else{
         this->house_number_left.push_back(house_number);
-        std::sort(this->house_number_left.begin(),this->house_number_left.end());
     }
+}
+
+void Way::sort_house_numbers(){
+    std::sort(this->house_number_right.begin(),this->house_number_right.end());
+    std::sort(this->house_number_left.begin(),this->house_number_left.end());
 }
 
 std::string Way::get_label() const {
@@ -165,7 +170,12 @@ nt::MultiLineString Way::make_multiline(const Graph& graph) const {
     nt::MultiLineString multiline;
     for (auto edge: this->edges) {
         multiline.push_back({graph[edge.first].coord, graph[edge.second].coord});
+        boost::range::sort(multiline.back());
     }
+    auto cmp = [](const nt::LineString& a, const nt::LineString& b) -> bool {
+        return boost::range::lexicographical_compare(a, b);
+    };
+    boost::range::sort(multiline, cmp);
     return multiline;
 }
 
@@ -247,7 +257,8 @@ PathItem::TransportCaracteristic GeoRef::get_caracteristic(edge_t edge) const {
     throw navitia::exception("unhandled path item caracteristic");
 }
 
-double PathItem::get_length() const {
+double PathItem::get_length(double speed_factor) const {
+    double def_speed = default_speed[type::Mode_e::Walking];
     switch (transportation) {
     case TransportCaracteristic::BssPutBack:
     case TransportCaracteristic::BssTake:
@@ -255,15 +266,15 @@ double PathItem::get_length() const {
     case TransportCaracteristic::CarLeaveParking:
         return 0;
     case TransportCaracteristic::Walk:
-        //milliseconds to reduce rounding
-        return duration.total_milliseconds() * (default_speed[type::Mode_e::Walking]) / 1000;
+        def_speed = default_speed[type::Mode_e::Walking]; break;
     case TransportCaracteristic::Bike:
-        return duration.total_milliseconds() * (default_speed[type::Mode_e::Bike]) / 1000;
+        def_speed = default_speed[type::Mode_e::Bike]; break;
     case TransportCaracteristic::Car:
-        return duration.total_milliseconds() * (default_speed[type::Mode_e::Car]) / 1000;
+        def_speed = default_speed[type::Mode_e::Car]; break;
     default:
         throw navitia::exception("unhandled transportation case");
     }
+    return duration.total_milliseconds() * def_speed * speed_factor / 1000;
 }
 
 void GeoRef::add_way(const Way& w){
@@ -317,6 +328,7 @@ void ProjectionData::init(const type::GeographicalCoord & coord, const GeoRef & 
     // On calcule la distance « initiale » déjà parcourue avant d'atteindre ces extrémité d'où on effectue le calcul d'itinéraire
     distances[Direction::Source] = projected.distance_to(vertex1_coord);
     distances[Direction::Target] = projected.distance_to(vertex2_coord);
+    this->real_coord = coord;
 }
 
 /**
@@ -413,19 +425,19 @@ void GeoRef::build_autocomplete_list(){
 }
 
 
-/** Chargement de la liste poitype_map : mappage entre codes externes et idx des POITypes*/
-void GeoRef::build_poitypes_map(){
+/** poitype_map load: mapping external codes -> POIType*/
+void GeoRef::build_poitypes_map() {
    this->poitype_map.clear();
-   for(const POIType* ptype : poitypes){
-       this->poitype_map[ptype->uri] = ptype->idx;
+   for (POIType* ptype : poitypes) {
+       this->poitype_map[ptype->uri] = ptype;
    }
 }
 
-/** Chargement de la liste poi_map : mappage entre codes externes et idx des POIs*/
-void GeoRef::build_pois_map(){
-    this->poi_map.clear();
-   for(const POI* poi : pois){
-       this->poi_map[poi->uri] = poi->idx;
+/** poi_map load: mapping external codes -> POI*/
+void GeoRef::build_pois_map() {
+   this->poi_map.clear();
+   for (POI* poi : pois) {
+       this->poi_map[poi->uri] = poi;
    }
 }
 
@@ -465,7 +477,7 @@ std::vector<nf::Autocomplete<nt::idx_t>::fl_quality> GeoRef::find_ways(const std
         int i = 0;
         for(auto token : tokens){
             if (i != 0){
-                search_str = search_str + " " + token;
+                search_str += token + " ";
             }
             ++i;
            }
@@ -473,7 +485,7 @@ std::vector<nf::Autocomplete<nt::idx_t>::fl_quality> GeoRef::find_ways(const std
         search_str = str;
     }
     if (search_type == 0){
-        to_return = fl_way.find_complete(search_str, nbmax, keep_element, ghostwords);
+        to_return = fl_way.find_complete_way(search_str, nbmax, keep_element, ghostwords, *this);
     }else{
         to_return = fl_way.find_partial_with_pattern(search_str, word_weight, nbmax, keep_element, ghostwords);
     }
@@ -557,42 +569,13 @@ void GeoRef::project_stop_points(const std::vector<type::StopPoint*> &stop_point
    }
 }
 
-const std::vector<Admin*> GeoRef::find_admins(const type::GeographicalCoord& coord) const {
-    // first, we collect each ways with its distance to the coord
-    std::map<const Way*, double> way_dist;
-    for (const auto& pair_coord: pl.find_within(coord)) {
-        BOOST_FOREACH (edge_t e, boost::out_edges(pair_coord.first, graph)) {
-            const Way* w = ways[graph[e].way_idx];
-            if (w->admin_list.empty()) { continue; }
-            if (way_dist.count(w) == 0) {
-                way_dist[w] = coord.distance_to(w->projected_centroid(graph));
-            }
-        }
+std::vector<Admin*> GeoRef::find_admins(const type::GeographicalCoord& coord) const {
+    try {
+        const auto& filter = [](const Way& w){return w.admin_list.empty();};
+        return nearest_addr(coord, filter).second->admin_list;
+    } catch (proximitylist::NotFound&) {
+        return {};
     }
-    if (way_dist.empty()) {
-        static const std::vector<Admin*> empty;
-        return empty;
-    }
-
-    // then, we search in each way the nearest number or way centroid
-    std::vector<Admin*> result = way_dist.begin()->first->admin_list;
-    float min_dist = way_dist.begin()->second;
-    for (const auto& w_d: way_dist) {
-        // way centroid
-        if (w_d.second < min_dist) {
-            result = w_d.first->admin_list;
-            min_dist = w_d.second;
-        }
-
-        // number
-        const auto &nb_dist = w_d.first->nearest_number(coord);
-        if (nb_dist.first <= 0) { continue; }
-        if (nb_dist.second <= min_dist) {
-            result = w_d.first->admin_list;
-            min_dist = nb_dist.second;
-        }
-    }
-    return result;
 }
 
 std::pair<GeoRef::ProjectionByMode, bool> GeoRef::project_stop_point(const type::StopPoint* stop_point) const {
@@ -647,15 +630,23 @@ edge_t GeoRef::nearest_edge(const type::GeographicalCoord & coordinates, const p
     }
     if (res) { return *res; }
     throw proximitylist::NotFound();
+
 }
 
 std::pair<int, const Way*> GeoRef::nearest_addr(const type::GeographicalCoord& coord) const {
+    const auto& filter = [](const Way& w){return w.name.empty();};
+    return nearest_addr(coord, filter);
+}
+
+
+std::pair<int, const Way*> GeoRef::nearest_addr(const type::GeographicalCoord& coord,
+    const std::function<bool(const Way&)>& filter) const {
     // first, we collect each ways with its distance to the coord
     std::map<const Way*, double> way_dist;
     for (const auto& pair_coord: pl.find_within(coord)) {
         BOOST_FOREACH (edge_t e, boost::out_edges(pair_coord.first, graph)) {
             const Way* w = ways[graph[e].way_idx];
-            if (w->name.empty()) { continue; }
+            if (filter(*w)) { continue; }
             if (way_dist.count(w) == 0) {
                 way_dist[w] = coord.distance_to(w->projected_centroid(graph));
             }
@@ -665,10 +656,13 @@ std::pair<int, const Way*> GeoRef::nearest_addr(const type::GeographicalCoord& c
 
     // then, we search in each way the nearest number or way centroid
     std::pair<int, const Way*> result = {0, way_dist.begin()->first};
-    float min_dist = way_dist.begin()->second;
+    double min_dist = way_dist.begin()->second;
     for (const auto& w_d: way_dist) {
         // way centroid
-        if (w_d.second < min_dist) {
+// we assume strict float comparison in that case
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+        if (w_d.second < min_dist || (w_d.second == min_dist && w_d.first->uri < result.second->uri)) {
             result = {0, w_d.first};
             min_dist = w_d.second;
         }
@@ -676,10 +670,11 @@ std::pair<int, const Way*> GeoRef::nearest_addr(const type::GeographicalCoord& c
         // number
         const auto &nb_dist = w_d.first->nearest_number(coord);
         if (nb_dist.first <= 0) { continue; }
-        if (nb_dist.second <= min_dist) {
+        if (nb_dist.second < min_dist || (nb_dist.second == min_dist && w_d.first->uri < result.second->uri)) {
             result = {nb_dist.first, w_d.first};
             min_dist = nb_dist.second;
         }
+#pragma GCC diagnostic pop
     }
     return result;
 }
@@ -794,20 +789,20 @@ GeoRef::~GeoRef() {
 }
 
 
-std::vector<type::idx_t> POI::get(type::Type_e type, const GeoRef &) const {
+type::Indexes POI::get(type::Type_e type, const GeoRef &) const {
     switch(type) {
-    case type::Type_e::POIType : return {poitype_idx};
-    default : return {};
+    case type::Type_e::POIType : return type::make_indexes({poitype_idx});
+    default : return type::Indexes{};
     }
 }
 
-std::vector<type::idx_t> POIType::get(type::Type_e type, const GeoRef & data) const {
-    std::vector<type::idx_t> result;
+type::Indexes POIType::get(type::Type_e type, const GeoRef & data) const {
+    type::Indexes result;
     switch(type) {
     case type::Type_e::POI:
         for(const POI* elem : data.pois) {
             if(elem->poitype_idx == idx) {
-                result.push_back(elem->idx);
+                result.insert(elem->idx);
             }
         }
         break;

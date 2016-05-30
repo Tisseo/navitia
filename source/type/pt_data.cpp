@@ -33,25 +33,34 @@ www.navitia.io
 
 #include <boost/range/algorithm/find_if.hpp>
 
-namespace navitia{namespace type {
+namespace navitia { namespace type {
 
+ValidityPattern* PT_Data::get_or_create_validity_pattern(const ValidityPattern& vp_ref) {
+    for (auto vp : validity_patterns) {
+        if (vp->days == vp_ref.days && vp->beginning_date == vp_ref.beginning_date) {
+            return vp;
+        }
+    }
+    auto vp = new nt::ValidityPattern();
+    vp->idx = validity_patterns.size();
+    vp->uri = make_adapted_uri(vp->uri);
+    vp->beginning_date = vp_ref.beginning_date;
+    vp->days = vp_ref.days;
+    validity_patterns.push_back(vp);
+    validity_patterns_map[vp->uri] = vp;
+    return vp;
+}
 
 void PT_Data::sort(){
 
 #define SORT_AND_INDEX(type_name, collection_name)\
     std::stable_sort(collection_name.begin(), collection_name.end(), Less());\
     std::for_each(collection_name.begin(), collection_name.end(), Indexer<nt::idx_t>());
-
     ITERATE_NAVITIA_PT_TYPES(SORT_AND_INDEX)
-
 #undef SORT_AND_INDEX
 
     std::stable_sort(stop_point_connections.begin(), stop_point_connections.end());
     std::for_each(stop_point_connections.begin(), stop_point_connections.end(), Indexer<idx_t>());
-
-    for(auto* vj: this->vehicle_journeys){
-        std::stable_sort(vj->stop_time_list.begin(), vj->stop_time_list.end());
-    }
 }
 
 
@@ -170,23 +179,9 @@ void PT_Data::build_admins_stop_areas(){
     }
 }
 
-template<typename T>
-void fill_ext_code_map(navitia::type::ext_codes_map_type& ext_codes_map, const T& range, const pbnavitia::PlaceCodeRequest::Type& type) {
-    for (auto atom: range)
-        for (auto type_code: atom->codes)
-            ext_codes_map[type][type_code.first][type_code.second] = atom->uri;
-}
-
 void PT_Data::build_uri() {
 #define NORMALIZE_EXT_CODE(type_name, collection_name) for(auto element : collection_name) collection_name##_map[element->uri] = element;
     ITERATE_NAVITIA_PT_TYPES(NORMALIZE_EXT_CODE)
-    fill_ext_code_map(ext_codes_map, stop_areas, pbnavitia::PlaceCodeRequest::StopArea);
-    fill_ext_code_map(ext_codes_map, networks, pbnavitia::PlaceCodeRequest::Network);
-    fill_ext_code_map(ext_codes_map, companies, pbnavitia::PlaceCodeRequest::Company);
-    fill_ext_code_map(ext_codes_map, lines, pbnavitia::PlaceCodeRequest::Line);
-    fill_ext_code_map(ext_codes_map, routes, pbnavitia::PlaceCodeRequest::Route);
-    fill_ext_code_map(ext_codes_map, vehicle_journeys, pbnavitia::PlaceCodeRequest::VehicleJourney);
-    fill_ext_code_map(ext_codes_map, stop_points, pbnavitia::PlaceCodeRequest::StopPoint);
 }
 
 /** Foncteur fixe le membre "idx" d'un objet en incrémentant toujours de 1
@@ -204,6 +199,22 @@ struct Indexer{
 void PT_Data::index(){
 #define INDEX(type_name, collection_name) std::for_each(collection_name.begin(), collection_name.end(), Indexer());
     ITERATE_NAVITIA_PT_TYPES(INDEX)
+}
+
+Indexes
+PT_Data::get_impacts_idx(const std::vector<boost::shared_ptr<disruption::Impact>>& impacts) const {
+    Indexes result;
+    idx_t i = 0;
+    const auto & impacts_pool = disruption_holder.get_weak_impacts();
+    for (const auto& impact: impacts_pool) {
+        auto impact_sptr = impact.lock();
+        assert(impact_sptr);
+        if (navitia::contains(impacts, impact_sptr)){
+            result.insert(i); //TODO use bulk insert ?
+        }
+        ++i;
+    }
+    return result;
 }
 
 const StopPointConnection*
@@ -233,9 +244,6 @@ PT_Data::~PT_Data() {
                 [](type_name* obj){delete obj;});
     ITERATE_NAVITIA_PT_TYPES(DELETE_PTDATA)
 
-    for (auto metavj: meta_vj) {
-        delete metavj.second;
-    }
     for (auto cal: associated_calendars) {
         delete cal;
     }

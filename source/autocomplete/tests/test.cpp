@@ -406,14 +406,13 @@ BOOST_AUTO_TEST_CASE(Faute_de_frappe_One){
 
         auto res1 = ac.find_partial_with_pattern("gare patea", word_weight, nbmax, [](int){return true;}, ghostwords);
         BOOST_REQUIRE_EQUAL(res1.size(), 3);
-        BOOST_CHECK_EQUAL(res1.at(0).idx, 4);
-        BOOST_CHECK_EQUAL(res1.at(1).idx, 1);
+        std::initializer_list<unsigned> best_res = {1, 4}; // they are equivalent
+        BOOST_CHECK(in(res1.at(0).idx, best_res));
+        BOOST_CHECK(in(res1.at(1).idx, best_res));
+        BOOST_CHECK_NE(res1.at(0).idx, res1.at(1).idx);
         BOOST_CHECK_EQUAL(res1.at(2).idx, 0);
         BOOST_CHECK_EQUAL(res1.at(0).quality, 94);
-
-
     }
-
 
 /*
     > Le fonctionnement normal :> On prends que les autocomplete si tous les mots dans la recherche existent
@@ -658,7 +657,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_functional_test_admin_and_SA_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 10);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
@@ -672,7 +672,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_functional_test_admin_and_SA_test) {
     BOOST_CHECK_EQUAL(resp.places(8).uri(), "Luther King");
     BOOST_CHECK_EQUAL(resp.places(9).uri(), "Marcel Paul");
 
-    resp = navitia::autocomplete::autocomplete("qui", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("qui", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     BOOST_REQUIRE_EQUAL(resp.places_size(), 10);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
     BOOST_CHECK_EQUAL(resp.places(0).uri(), "Quimper");
@@ -716,7 +717,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_functional_test_SA_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 5, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 5, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 5);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
@@ -773,11 +775,13 @@ BOOST_AUTO_TEST_CASE(autocomplete_functional_test_admin_SA_and_Address_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
     //Here we want only Admin and StopArea
     BOOST_REQUIRE_EQUAL(resp.places_size(), 7);
     type_filter.push_back(navitia::type::Type_e::Address);
-    resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("quimper", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 10);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
@@ -830,13 +834,15 @@ BOOST_AUTO_TEST_CASE(autocomplete_pt_object_Network_Mode_Line_Route_test) {
 
     type_filter = {navitia::type::Type_e::Network, navitia::type::Type_e::CommercialMode,
                   navitia::type::Type_e::Line, navitia::type::Type_e::Route};
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("base", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("base", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
     //The result contains only network
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::NETWORK);
 
     // Call with "Tram" and &type[]=network&type[]=mode&type[]=line&type[]=route
-    resp = navitia::autocomplete::autocomplete("Tram", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("Tram", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     //In the result the first line is Mode and the second is line
     BOOST_REQUIRE_EQUAL(resp.places_size(), 4);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::COMMERCIAL_MODE);
@@ -845,7 +851,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_pt_object_Network_Mode_Line_Route_test) {
     BOOST_CHECK_EQUAL(resp.places(3).embedded_type(), pbnavitia::ROUTE);
 
     // Call with "line" and &type[]=network&type[]=mode&type[]=line&type[]=route
-    resp = navitia::autocomplete::autocomplete("line", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("line", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     //In the result the first line is line and the others are the routes
     BOOST_REQUIRE_EQUAL(resp.places_size(), 3);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::LINE);
@@ -908,14 +915,16 @@ BOOST_AUTO_TEST_CASE(autocomplete_pt_object_Network_Mode_Line_Route_stop_area_te
                   navitia::type::Type_e::Line, navitia::type::Type_e::Route,
                   navitia::type::Type_e::StopArea};
     //Call with q=base
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("base", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("base", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
     //The result contains network and stop_area
     BOOST_REQUIRE_EQUAL(resp.places_size(), 2);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::NETWORK);
     BOOST_CHECK_EQUAL(resp.places(1).embedded_type(), pbnavitia::STOP_AREA);
 
     //Call with q=met
-    resp = navitia::autocomplete::autocomplete("met", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("met", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     //The result contains mode, stop_area, line
     BOOST_REQUIRE_EQUAL(resp.places_size(), 5);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::COMMERCIAL_MODE);
@@ -925,7 +934,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_pt_object_Network_Mode_Line_Route_stop_area_te
     BOOST_CHECK_EQUAL(resp.places(4).embedded_type(), pbnavitia::ROUTE);
 
     //Call with q=chat
-    resp = navitia::autocomplete::autocomplete("chat", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("chat", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     //The result contains 2 stop_areas, one line and 2 routes
     BOOST_REQUIRE_EQUAL(resp.places_size(), 5);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type(), pbnavitia::STOP_AREA);
@@ -1084,7 +1094,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_functional_test_SA_temp_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 12);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
@@ -1230,7 +1241,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_multi_postal_codes_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::STOP_AREA);
@@ -1264,7 +1276,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_multi_postal_codes_alphanumeric_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::STOP_AREA);
@@ -1295,7 +1308,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_without_postal_codes_test) {
 
     type_filter.push_back(navitia::type::Type_e::StopArea);
     type_filter.push_back(navitia::type::Type_e::Admin);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante", type_filter , 1, 15, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::STOP_AREA);
@@ -1348,7 +1362,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_multi_postal_codes_testAA) {
 
     b.build_autocomplete();
     type_filter.push_back(navitia::type::Type_e::Address);
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante 37000", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Sante 37000", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADDRESS);
@@ -1357,7 +1372,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_multi_postal_codes_testAA) {
     BOOST_REQUIRE_EQUAL(resp.places(0).address().administrative_regions(0).label(), "Tours (37000-37200)");
     BOOST_REQUIRE_EQUAL(resp.places(0).address().administrative_regions(0).zip_code(), "37000;37100;37200");
 
-    resp = navitia::autocomplete::autocomplete("Sante 44000", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("Sante 44000", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADDRESS);
@@ -1368,21 +1384,24 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_multi_postal_codes_testAA) {
 
     type_filter.clear();
     type_filter.push_back(navitia::type::Type_e::Admin);
-    resp = navitia::autocomplete::autocomplete("37000", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("37000", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
     BOOST_REQUIRE_EQUAL(resp.places(0).quality(), 70);
     BOOST_REQUIRE_EQUAL(resp.places(0).administrative_region().label(), "Tours (37000-37200)");
     BOOST_REQUIRE_EQUAL(resp.places(0).administrative_region().zip_code(), "37000;37100;37200");
 
-    resp = navitia::autocomplete::autocomplete("37100", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("37100", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
     BOOST_REQUIRE_EQUAL(resp.places(0).quality(), 70);
     BOOST_REQUIRE_EQUAL(resp.places(0).administrative_region().label(), "Tours (37000-37200)");
     BOOST_REQUIRE_EQUAL(resp.places(0).administrative_region().zip_code(), "37000;37100;37200");
 
-    resp = navitia::autocomplete::autocomplete("37200", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("37200", type_filter , 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
     BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::ADMINISTRATIVE_REGION);
     BOOST_REQUIRE_EQUAL(resp.places(0).quality(), 70);
@@ -1494,7 +1513,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_ghostword_test) {
     type_filter.push_back(navitia::type::Type_e::Admin);
     type_filter.push_back(navitia::type::Type_e::StopArea);
 
-    pbnavitia::Response resp = navitia::autocomplete::autocomplete("gare beaune", type_filter , 1, 10, admins, 0, *(b.data));
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("gare beaune", type_filter , 1, 10, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
 
     BOOST_REQUIRE_EQUAL(resp.places_size(), 3);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::STOP_AREA);
@@ -1502,7 +1522,8 @@ BOOST_AUTO_TEST_CASE(autocomplete_with_ghostword_test) {
     BOOST_REQUIRE_EQUAL(resp.places(0).stop_area().administrative_regions(0).label(), "Beaune (21200)");
     BOOST_REQUIRE_EQUAL(resp.places(0).stop_area().administrative_regions(0).zip_code(), "21200");
 
-    resp = navitia::autocomplete::autocomplete("gare de beaune", type_filter , 1, 10, admins, 0, *(b.data));
+    resp = navitia::autocomplete::autocomplete("gare de beaune", type_filter , 1, 10, admins, 0,
+                                               *(b.data), boost::gregorian::not_a_date_time);
     BOOST_REQUIRE_EQUAL(resp.places_size(), 3);
     BOOST_CHECK_EQUAL(resp.places(0).embedded_type() , pbnavitia::STOP_AREA);
     BOOST_REQUIRE_EQUAL(resp.places(0).stop_area().administrative_regions().size(), 1);
@@ -1576,3 +1597,305 @@ BOOST_AUTO_TEST_CASE(regex_toknize_with_synonyms_and_ghostwords_tests){
     BOOST_CHECK(vec.find("beaume") != vec.end());
 }
 
+
+BOOST_AUTO_TEST_CASE(synonyms_with_non_ascii){
+    int nbmax = 10;
+    std::set<std::string> ghostwords{};
+
+    autocomplete_map synonyms{
+        {"fac", "université"},
+        {"faculté", "université"},
+        {"embarcadère", "gare maritime"}
+    };
+
+    Autocomplete<unsigned int> ac;
+    ac.add_string("université de canaltp", 0, ghostwords, synonyms);
+    ac.add_string("gare maritime de canaltp", 1, ghostwords, synonyms);
+    ac.build();
+
+    auto res0 = ac.find_complete("fac", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res0.size(), 1);
+
+    auto res1 = ac.find_complete("faculté", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res1.size(), 1);
+
+    auto res2 = ac.find_complete("embarca", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res2.size(), 1);
+
+}
+
+BOOST_AUTO_TEST_CASE(synonyms_with_capital){
+    int nbmax = 10;
+    std::set<std::string> ghostwords{};
+    autocomplete_map synonyms{{"ANPE", "Pole Emploi"}};
+
+    Autocomplete<unsigned int> ac;
+    ac.add_string("Pole Emploi de paris", 0, ghostwords, synonyms);
+    ac.build();
+
+    auto res0 = ac.find_complete("ANPE", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res0.size(), 1);
+
+    auto res1 = ac.find_complete("anpe", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res1.size(), 1);
+
+    auto res2 = ac.find_complete("AnPe", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res2.size(), 1);
+
+}
+
+BOOST_AUTO_TEST_CASE(synonyms_with_capital_and_non_ascii){
+    int nbmax = 10;
+    std::set<std::string> ghostwords{};
+    autocomplete_map synonyms{
+        {"CPAM", "sécurité sociale"}
+    };
+
+    Autocomplete<unsigned int> ac;
+    ac.add_string("Sécurité Sociale de paris", 0, ghostwords, synonyms);
+    ac.build();
+
+    auto res0 = ac.find_complete("CPAM", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res0.size(), 1);
+
+    auto res1 = ac.find_complete("cpam", nbmax, [](int){return true;}, ghostwords);
+    BOOST_REQUIRE_EQUAL(res1.size(), 1);
+}
+
+/*
+ * Test the admin filtering
+ *
+ * We have 2 stops:
+ *   * bob in BobBille
+ *   * bobette' not in 'BobVille'
+ *
+ * If we autocomplete for "bob", we should have BobVille + bob + bobette
+ *
+ * If we autocomplete for "bob" but only for places in Bobville, we should have BobVille + bob
+ */
+BOOST_AUTO_TEST_CASE(autocomplete_admin_filtering_tests) {
+    ed::builder b("20140614");
+
+    Admin* bobville = new Admin;
+    bobville->name = "BobVille";
+    bobville->uri = "BobVille";
+    bobville->level = 8;
+    bobville->postal_codes.push_back("29000");
+    bobville->idx = 0;
+    b.data->geo_ref->admins.push_back(bobville);
+
+    auto* bob = b.sa("bob", 0, 0).sa;
+    bob->admin_list.push_back(bobville);
+    b.sa("bobette", 0, 0);
+
+    b.data->pt_data->index();
+    b.build_autocomplete();
+
+    std::vector<navitia::type::Type_e> type_filter {
+        navitia::type::Type_e::StopArea,
+        navitia::type::Type_e::Admin
+    };
+
+    std::vector<std::string> admins = {""}; // no filtering on the admin
+    auto resp = navitia::autocomplete::autocomplete("bob", type_filter, 1, 10, admins, 0, *(b.data),
+                                                    boost::gregorian::not_a_date_time);
+
+    BOOST_REQUIRE_EQUAL(resp.places_size(), 3);
+    BOOST_CHECK_EQUAL(resp.places(0).uri(), "BobVille");
+    BOOST_CHECK_EQUAL(resp.places(1).uri(), "bobette");
+    BOOST_CHECK_EQUAL(resp.places(2).uri(), "bob");
+
+    admins = {"BobVille"};
+    resp = navitia::autocomplete::autocomplete("bob", type_filter, 1, 10, admins, 0, *(b.data),
+                                               boost::gregorian::not_a_date_time);
+
+    BOOST_REQUIRE_EQUAL(resp.places_size(), 2);
+    // we should only find the admin and bob
+    BOOST_CHECK_EQUAL(resp.places(0).uri(), "BobVille");
+    BOOST_CHECK_EQUAL(resp.places(1).uri(), "bob");
+}
+
+BOOST_AUTO_TEST_CASE(test_ways){
+    int nbmax = 10;
+    std::set<std::string> ghostwords{"de", "la"};
+
+    Autocomplete<unsigned int> ac;
+    ac.add_string("rue CERNAVODA (Saint-Sébastien-sur-Loire)", 0, ghostwords, {});
+    ac.add_string("rue D'USSE (Saint-Sébastien-sur-Loire)", 1, ghostwords, {});
+    ac.add_string("rue DE LA LOIRE (Saint-Sébastien-sur-Loire)", 2, ghostwords, {});
+    ac.build();
+
+    navitia::georef::GeoRef geo_ref;
+    navitia::georef::Way way;
+    way.name = "rue CERNAVODA (Saint-Sébastien-sur-Loire)";
+    way.idx = 0;
+    way.uri = "0";
+    geo_ref.add_way(way);
+    way.name = "rue De LA BOURDAILLERIE (Saint-Sébastien-sur-Loire)";
+    way.idx = 1;
+    way.uri = "1";
+    geo_ref.add_way(way);
+    way.name = "rue DE LA LOIRE (Saint-Sébastien-sur-Loire)";
+    way.idx = 2;
+    way.uri = "2";
+    geo_ref.add_way(way);
+
+    auto res = ac.find_complete_way("rue de la loire saint seb", nbmax, [](int){return true;}, ghostwords, geo_ref);
+    BOOST_REQUIRE_EQUAL(res.size(), 3);
+
+    BOOST_REQUIRE_EQUAL(res[0].idx, 2); // The first one is "rue de la Loire"
+    BOOST_REQUIRE_EQUAL(res[0].score, 6);
+    BOOST_REQUIRE_EQUAL(res[1].idx, 1); // The second one is "rue De BOURDAILLERIE"
+    BOOST_REQUIRE_EQUAL(res[1].score, 5);
+    BOOST_REQUIRE_EQUAL(res[2].idx, 0); // The second one is "rue De BOURDAILLERIE"
+    BOOST_REQUIRE_EQUAL(res[2].score, 1);
+
+}
+
+
+BOOST_AUTO_TEST_CASE(test_toknizer_with_delimitor_synonyms_tests){
+
+    autocomplete_map synonyms;
+    synonyms["cc"]="centre commercial";
+    synonyms["ld"]="Lieu-Dit";
+    synonyms["st"]="saint";
+    synonyms["av"]="avenue";
+    synonyms["r"]="rue";
+    synonyms["bvd"]="boulevard";
+
+    std::set<std::string> ghostwords{"les", "de", "l"};
+
+    Autocomplete<unsigned int> ac;
+    std::set<std::string> vec;
+
+    //synonyme : "cc" = "centre commercial" / synonym : de = ""
+    //"cc Carré de Soie" -> "centre commercial carré de soie"
+    vec = ac.tokenize("cc Carré de Soie", ghostwords, synonyms);
+    BOOST_CHECK(vec.find("carre") != vec.end());
+    BOOST_CHECK(vec.find("centre") != vec.end());
+    BOOST_CHECK(vec.find("commercial") != vec.end());
+    BOOST_CHECK(vec.find("soie") != vec.end());
+
+    vec.clear();
+    // vec contient r rue jeanne d arc
+    vec = ac.tokenize("rue jeanne d'arc", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 5);
+
+    vec.clear();
+    // vec contient r rue jeanne d arc
+    vec = ac.tokenize("Garennes-sur-Eure", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 3);
+
+    vec.clear();
+    // vec contient r rue jeanne d arc
+    vec = ac.tokenize("Les Sorinières, Les Sorinières", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 1);
+
+    vec.clear();
+    // vec contient "r rue HOTEL DIEU vannes"
+    vec = ac.tokenize("rue DE L'HOTEL DIEU vannes", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 5);
+    BOOST_CHECK(vec.find("r") != vec.end());
+    BOOST_CHECK(vec.find("rue") != vec.end());
+    BOOST_CHECK(vec.find("hotel") != vec.end());
+    BOOST_CHECK(vec.find("dieu") != vec.end());
+    BOOST_CHECK(vec.find("vannes") != vec.end());
+
+    vec.clear();
+    // vec contient "r rue cernavoda st saint sebastien sur loire" -> 8 mots
+    vec = ac.tokenize("rue CERNAVODA (Saint-Sébastien-sur-Loire)", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 8);
+    BOOST_CHECK(vec.find("r") != vec.end());
+    BOOST_CHECK(vec.find("rue") != vec.end());
+    BOOST_CHECK(vec.find("sur") != vec.end());
+    BOOST_CHECK(vec.find("st") != vec.end());
+    BOOST_CHECK(vec.find("loire") != vec.end());
+
+    vec.clear();
+    // vec contient "porte d orleans " -> 3 mots
+    vec = ac.tokenize("Porte d’Orléans", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 3);
+    BOOST_CHECK(vec.find("porte") != vec.end());
+    BOOST_CHECK(vec.find("orleans") != vec.end());
+    BOOST_CHECK(vec.find("d") != vec.end());
+
+    vec.clear();
+    // vec contient "porte d'orleans " -> 3 mots
+    vec = ac.tokenize("Porte d'’'Orléans", ghostwords, synonyms);
+    BOOST_REQUIRE_EQUAL(vec.size(), 3);
+    BOOST_CHECK(vec.find("porte") != vec.end());
+    BOOST_CHECK(vec.find("orleans") != vec.end());
+    BOOST_CHECK(vec.find("d") != vec.end());
+
+}
+
+BOOST_AUTO_TEST_CASE(autocomplete_functional_test_piquet) {
+    std::vector<std::string> admins;
+    std::vector<navitia::type::Type_e> type_filter;
+    ed::builder b("20140614");
+    b.sa("IUT", 0, 0);
+    b.sa("Gare SNCF", 0, 0);
+    b.sa("gare la motte picquet", 0, 0);
+    b.sa("Becharles", 0, 0);
+    b.sa("Luther King", 0, 0);
+    b.sa("Napoleon III", 0, 0);
+    b.sa("MPT kerfeunteun", 0, 0);
+
+    b.data->pt_data->index();
+    Admin* ad = new Admin;
+    ad->name = "Quimper";
+    ad->uri = "Quimper";
+    ad->level = 8;
+    ad->postal_codes.push_back("29000");
+    ad->idx = 0;
+    b.data->geo_ref->admins.push_back(ad);
+    b.manage_admin();
+    b.build_autocomplete();
+
+    type_filter.push_back(navitia::type::Type_e::StopArea);
+    type_filter.push_back(navitia::type::Type_e::Admin);
+    //Appel avec search type 0 -> match total
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("la motte piquet", type_filter , 1, 5, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
+
+    BOOST_REQUIRE_EQUAL(resp.places_size(), 0);
+
+    //Appel avec search type 1 -> match n-gram
+    resp = navitia::autocomplete::autocomplete("la motte piquet", type_filter , 1, 5, admins, 1,
+                                                                       *(b.data), boost::gregorian::not_a_date_time);
+    BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
+    BOOST_CHECK_EQUAL(resp.places(0).uri(), "gare la motte picquet");
+}
+
+BOOST_AUTO_TEST_CASE(autocomplete_functional_test_orleans) {
+    std::vector<std::string> admins;
+    std::vector<navitia::type::Type_e> type_filter;
+    ed::builder b("20140614");
+    b.sa("IUT", 0, 0);
+    b.sa("Gare SNCF", 0, 0);
+    b.sa("Porte d'Orléans", 0, 0);
+    b.sa("Becharles", 0, 0);
+    b.sa("Luther King", 0, 0);
+    b.sa("Napoleon III", 0, 0);
+    b.sa("MPT kerfeunteun", 0, 0);
+
+    b.data->pt_data->index();
+    Admin* ad = new Admin;
+    ad->name = "Quimper";
+    ad->uri = "Quimper";
+    ad->level = 8;
+    ad->postal_codes.push_back("29000");
+    ad->idx = 0;
+    b.data->geo_ref->admins.push_back(ad);
+    b.manage_admin();
+    b.build_autocomplete();
+
+    type_filter.push_back(navitia::type::Type_e::StopArea);
+    type_filter.push_back(navitia::type::Type_e::Admin);
+    //Appel avec search type 0 -> match total
+    pbnavitia::Response resp = navitia::autocomplete::autocomplete("Porte d’Orléans", type_filter , 1, 5, admins, 0,
+                                                                   *(b.data), boost::gregorian::not_a_date_time);
+
+    BOOST_REQUIRE_EQUAL(resp.places_size(), 1);
+    BOOST_CHECK_EQUAL(resp.places(0).uri(), "Porte d'Orléans");
+}

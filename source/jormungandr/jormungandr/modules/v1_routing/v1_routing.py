@@ -28,9 +28,11 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 from jormungandr.interfaces.v1 import Uri
 from jormungandr.interfaces.v1 import Coverage
 from jormungandr.interfaces.v1 import Journeys
+from jormungandr.interfaces.v1 import GraphicalIsochron
 from jormungandr.interfaces.v1 import Schedules
 from jormungandr.interfaces.v1 import Places
 from jormungandr.interfaces.v1 import Ptobjects
@@ -41,8 +43,9 @@ from jormungandr.interfaces.v1 import converters_collection_type
 from jormungandr.interfaces.v1 import Status
 from werkzeug.routing import BaseConverter, FloatConverter, PathConverter
 from jormungandr.modules_loader import AModule
+from jormungandr import app
 
-from resources import Index
+from jormungandr.modules.v1_routing.resources import Index
 
 
 class RegionConverter(BaseConverter):
@@ -112,10 +115,10 @@ class V1Routing(AModule):
         self.add_resource(Index.TechnicalStatus,
                           '/status',
                           endpoint='technical_status')
-
+        lon_lat = '<lon:lon>;<lat:lat>/'
         coverage = '/coverage/'
         region = coverage + '<region:region>/'
-        coord = coverage + '<lon:lon>;<lat:lat>/'
+        coord = coverage + lon_lat
 
         self.add_resource(Coverage.Coverage,
                           coverage,
@@ -124,7 +127,8 @@ class V1Routing(AModule):
                           endpoint='coverage')
 
         self.add_resource(Coord.Coord,
-                          '/coord/<lon:lon>;<lat:lat>',
+                          '/coord/' + lon_lat,
+                          '/coords/' + lon_lat,
                           endpoint='coord')
 
         collecs = converters_collection_type.collections_to_resource_type.keys()
@@ -142,10 +146,6 @@ class V1Routing(AModule):
                               region + '<uri:uri>/' + collection + '/<id:id>',
                               coord + '<uri:uri>/' + collection + '/<id:id>',
                               endpoint=collection + '.id')
-            self.add_url_rule(
-                '/coverage/' + collection + '/<string:id>',
-                collection + '.redirect',
-                Uri.Redirect)
 
         collecs = ["routes", "lines", "line_groups", "networks", "stop_areas", "stop_points",
                    "vehicle_journeys"]
@@ -157,7 +157,7 @@ class V1Routing(AModule):
         self.add_resource(Places.Places,
                           region + 'places',
                           coord + 'places',
-                           '/places',
+                          '/places',
                           endpoint='places')
         self.add_resource(Ptobjects.Ptobjects,
                           region + 'pt_objects',
@@ -174,6 +174,8 @@ class V1Routing(AModule):
                           coord + 'places_nearby',
                           region + '<uri:uri>/places_nearby',
                           coord + '<uri:uri>/places_nearby',
+                          '/coord/' + lon_lat + 'places_nearby',
+                          '/coords/' + lon_lat + 'places_nearby',
                           endpoint='places_nearby')
 
         self.add_resource(Journeys.Journeys,
@@ -183,6 +185,11 @@ class V1Routing(AModule):
                           coord + 'journeys',
                           '/journeys',
                           endpoint='journeys')
+
+        if app.config['GRAPHICAL_ISOCHRON']:
+            self.add_resource(GraphicalIsochron.GraphicalIsochron,
+                            region + 'isochrons',
+                            endpoint='isochrons')
 
         self.add_resource(Schedules.RouteSchedules,
                           region + '<uri:uri>/route_schedules',

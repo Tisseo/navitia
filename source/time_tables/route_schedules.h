@@ -31,7 +31,7 @@ www.navitia.io
 #pragma once
 #include "type/type.h"
 #include "routing/routing.h"
-#include "get_stop_times.h"
+#include "routing/get_stop_times.h"
 #include "type/pb_converter.h"
 
 namespace navitia { namespace timetables {
@@ -39,11 +39,21 @@ namespace navitia { namespace timetables {
 typedef std::vector<std::string> vector_string;
 typedef std::pair<DateTime, const type::StopTime*> vector_date_time;
 
-pbnavitia::Response route_schedule(const std::string & line_externalcode,
-        const boost::optional<const std::string> calendar_id,
-        const std::vector<std::string>& forbidden_uris,
-        const boost::posix_time::ptime datetime, uint32_t duration, size_t max_stop_date_times,
-        const uint32_t max_depth, int count, int start_page, const type::Data &d, bool disruption_active,
-        const bool show_codes);
+std::vector<std::vector<routing::datetime_stop_time> >
+get_all_route_stop_times(const navitia::type::Route* route,
+                         const DateTime& dateTime,
+                         const DateTime& max_datetime,
+                         const size_t max_stop_date_times,
+                         const type::Data& d,
+                         const type::RTLevel rt_level,
+                         const boost::optional<const std::string> calendar_id);
+
+void route_schedule(PbCreator& pb_creator, const std::string & line_externalcode,
+                    const boost::optional<const std::string> calendar_id,
+                    const std::vector<std::string>& forbidden_uris,
+                    const boost::posix_time::ptime datetime,
+                    uint32_t duration, size_t max_stop_date_times,
+                    const uint32_t max_depth, int count, int start_page,
+                    const type::RTLevel rt_level);
 
 }}

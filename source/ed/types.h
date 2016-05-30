@@ -65,9 +65,21 @@ using nt::Header;
 using nt::hasProperties;
 using nt::hasVehicleProperties;
 
+using nt::ValidityPattern;
 
-#define FORWARD_CLASS_DECLARE(type_name, collection_name) struct type_name;
-ITERATE_NAVITIA_PT_TYPES(FORWARD_CLASS_DECLARE)
+struct Line;
+struct LineGroup;
+struct VehicleJourney;
+struct StopPoint;
+struct StopArea;
+struct Network;
+struct PhysicalMode;
+struct CommercialMode;
+struct Company;
+struct Route;
+struct Contributor;
+struct Calendar;
+
 struct StopTime;
 
 using nt::ConnectionType;
@@ -87,30 +99,6 @@ struct StopPointConnection: public Header, hasProperties {
 
    bool operator<(const StopPointConnection& other) const;
 
-};
-
-struct ValidityPattern: public Header {
-    const static nt::Type_e type = nt::Type_e::ValidityPattern;
-private:
-    bool is_valid(int duration);
-    int slide(boost::gregorian::date day) const;
-public:
-    using year_bitset = std::bitset<366>;
-    year_bitset days;
-    boost::gregorian::date beginning_date;
-    ValidityPattern(){}
-    ValidityPattern(boost::gregorian::date beginning_date, const std::string & vp = "") : days(vp), beginning_date(beginning_date){}
-    void add(boost::gregorian::date day);
-    void add(int day);
-    void add(boost::gregorian::date start, boost::gregorian::date end, std::bitset<7> active_days);
-    void remove(boost::gregorian::date day);
-    void remove(int day);
-
-    bool check(int day) const;
-    bool check(boost::gregorian::date day) const;
-
-    bool operator<(const ValidityPattern& other) const;
-    bool operator==(const ValidityPattern& other) const;
 };
 
 struct Calendar : public Nameable, public Header {
@@ -156,9 +144,22 @@ struct StopArea : public Header, Nameable, hasProperties{
 
 struct Contributor : public Header, Nameable{
     const static nt::Type_e type = nt::Type_e::Contributor;
+    std::string website;
+    std::string license;
     Contributor() {}
 
     bool operator<(const Contributor& other)const{ return this->name < other.name;}
+};
+
+struct Dataset : public Header{
+    const static nt::Type_e type = nt::Type_e::Dataset;
+    Contributor* contributor = nullptr;
+    boost::gregorian::date_period validation_period {boost::gregorian::date(), boost::gregorian::date()};
+    navitia::type::RTLevel realtime_level = navitia::type::RTLevel::Base;
+    std::string desc;
+    //Contributor data types in fusio example : Google, OBiTi, ChouetteV2 etc..
+    std::string system;
+    bool operator<(const Dataset& other)const{ return this->idx < other.idx;}
 };
 
 struct Network : public Header, Nameable{
@@ -211,6 +212,7 @@ struct Line : public Header, Nameable {
 
     std::string additional_data;
     std::string color;
+    std::string text_color;
     int sort = std::numeric_limits<int>::max();
 
     CommercialMode* commercial_mode = nullptr;
@@ -242,30 +244,17 @@ struct Route : public Header, Nameable{
     Line * line;
     nt::MultiLineString shape;
     StopArea* destination = nullptr;
+    std::string direction_type;
 
     bool operator<(const Route& other) const;
 };
 
-struct JourneyPattern : public Header, Nameable{
-    const static nt::Type_e type = nt::Type_e::JourneyPattern;
-    bool is_frequence;
-    Route* route;
-    PhysicalMode* physical_mode;
-    std::vector<JourneyPatternPoint*> journey_pattern_point_list;
-    nt::LineString shape;
-
-    JourneyPattern(): is_frequence(false), route(NULL), physical_mode(NULL){}
-
-    bool operator<(const JourneyPattern& other) const;
- };
-
 struct VehicleJourney: public Header, Nameable, hasVehicleProperties{
     const static nt::Type_e type = nt::Type_e::VehicleJourney;
-    JourneyPattern* journey_pattern = nullptr;
+    Route* route = nullptr;
     Company* company = nullptr;
-    PhysicalMode* physical_mode = nullptr; // Read in journey_pattern
-    Line * tmp_line = nullptr; // May be empty
-    Route* tmp_route = nullptr;
+    PhysicalMode* physical_mode = nullptr;
+    Dataset* dataset = nullptr;
     //Vehicle* vehicle;
     bool wheelchair_boarding = false;
     navitia::type::VehicleJourneyType vehicle_journey_type = navitia::type::VehicleJourneyType::regular;
@@ -276,7 +265,6 @@ struct VehicleJourney: public Header, Nameable, hasVehicleProperties{
     std::string odt_message;
     std::string meta_vj_name; //link to it's meta vj
     std::string shape_id;
-    int16_t utc_to_local_offset = 0; // shift used to convert the local time from the data to utc, in seconds
 
     int start_time = std::numeric_limits<int>::max(); /// First departure of vehicle
     int end_time = std::numeric_limits<int>::max(); /// Last departure of vehicle journey
@@ -290,23 +278,12 @@ struct VehicleJourney: public Header, Nameable, hasVehicleProperties{
     VehicleJourney* prev_vj = nullptr;
     VehicleJourney* next_vj = nullptr;
 
+    navitia::type::RTLevel realtime_level = navitia::type::RTLevel::Base;
+
     bool operator<(const VehicleJourney& other) const;
 };
 
 
-struct JourneyPatternPoint : public Header, Nameable{
-    const static nt::Type_e type = nt::Type_e::JourneyPatternPoint;
-    int order;
-    bool main_stop_point;
-    int fare_section;
-    JourneyPattern* journey_pattern;
-    StopPoint* stop_point;
-    nt::LineString shape_from_prev;
-
-    JourneyPatternPoint() : order(0), main_stop_point(false), fare_section(0), journey_pattern(NULL), stop_point(NULL){}
-
-    bool operator<(const JourneyPatternPoint& other) const;
-};
 
 struct StopPoint : public Header, Nameable, hasProperties{
     const static nt::Type_e type = nt::Type_e::StopPoint;
@@ -326,29 +303,27 @@ struct StopPoint : public Header, Nameable, hasProperties{
 };
 
 struct StopTime {
-    size_t idx;
-    int arrival_time; /// Number of seconds from midnight can be negative when
-    int departure_time; /// we shift in UTC conversion
-    VehicleJourney* vehicle_journey;
-    JourneyPatternPoint* journey_pattern_point;
-    StopPoint* tmp_stop_point;// not mandatory
-    unsigned int order;
-    bool ODT;
-    bool pick_up_allowed;
-    bool drop_off_allowed;
-    bool is_frequency;
-    bool wheelchair_boarding;
-    bool date_time_estimated;
+    size_t idx = 0;
+    int arrival_time = 0; /// Number of seconds from midnight can be negative when
+    int departure_time = 0; /// we shift in UTC conversion
+    VehicleJourney* vehicle_journey = nullptr;
+    StopPoint* stop_point = nullptr;
+    nt::LineString shape_from_prev;
+    unsigned int order = 0;
+    bool ODT = false;
+    bool pick_up_allowed = false;
+    bool drop_off_allowed = false;
+    bool is_frequency = false;
+    bool wheelchair_boarding = false;
+    bool date_time_estimated = false;
+    std::string headsign;
 
     uint16_t local_traffic_zone = std::numeric_limits<uint16_t>::max();
 
-    StopTime(): arrival_time(0), departure_time(0), vehicle_journey(NULL), journey_pattern_point(NULL), tmp_stop_point(NULL), order(0),
-        ODT(false), pick_up_allowed(false), drop_off_allowed(false), is_frequency(false), wheelchair_boarding(false),date_time_estimated(false) {}
-
     bool operator<(const StopTime& other) const;
     void shift_times(int n_days) {
-        arrival_time += n_days * navitia::DateTimeUtils::SECONDS_PER_DAY;
-        departure_time += n_days * navitia::DateTimeUtils::SECONDS_PER_DAY;
+        arrival_time += n_days * int(navitia::DateTimeUtils::SECONDS_PER_DAY);
+        departure_time += n_days * int(navitia::DateTimeUtils::SECONDS_PER_DAY);
         assert(arrival_time >= 0 && departure_time >= 0);
     }
 };
@@ -369,8 +344,7 @@ struct StopTime {
  *
  *
  */
-struct MetaVehicleJourney {
-    //store the name ?
+struct MetaVehicleJourney: public Header {
     //TODO if needed use a flat_enum_map
     std::vector<VehicleJourney*> theoric_vj;
     std::vector<VehicleJourney*> adapted_vj;

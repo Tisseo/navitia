@@ -26,16 +26,17 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 
 from jormungandr.interfaces.v1.Calendars import calendar
 from jormungandr.interfaces.v1 import fields
 from jormungandr.interfaces.v1.fields import NonNullList, NonNullNested, NonNullProtobufNested, PbField, FirstComment, \
-    comment
+    comment, DisruptionLinks
 
 vehicle_journey = {
     "id": fields.fields.String(attribute="uri"),
     "name": fields.fields.String(),
-    "disruptions": NonNullList(NonNullNested(fields.disruption_marshaller)),
+    "disruptions": DisruptionLinks(),
     "journey_pattern": PbField(fields.journey_pattern),
     "stop_times": NonNullList(NonNullNested(fields.stop_time)),
     "comment": FirstComment(),
@@ -44,4 +45,5 @@ vehicle_journey = {
     "codes": NonNullList(NonNullNested(fields.code)),
     "validity_pattern": NonNullProtobufNested(fields.validity_pattern),
     "calendars": NonNullList(NonNullNested(calendar)),
+    "trip": NonNullProtobufNested(fields.trip),
 }

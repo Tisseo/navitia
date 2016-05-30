@@ -42,6 +42,10 @@ class ReleaseManager:
         self.str_version = ""
         self.latest_tag = ""
 
+        # if API rate limit exceeded use, get 'personal access token' on github then provide:
+        # self.auth = ('user', 'pass')
+        self.auth = None
+
     def get_new_version_number(self):
         latest_version = None
         last_tag = self.git.describe('--tags', abbrev=0)
@@ -88,32 +92,66 @@ class ReleaseManager:
             parent = "release"
 
         self.git.checkout(parent)
+        self.git.submodule('update')
 
         print "current branch {}".format(self.repo.active_branch)
 
+    def closed_pr_generator(self):
+        # lazy get all closed PR ordered by last updated
+        closed_pr = []
+        page = 1
+        while True:
+            query = "https://api.github.com/repos/CanalTP/navitia/" \
+                    "pulls?state=closed&base=dev&sort=updated&direction=desc&page={page}"\
+                    .format(latest_tag=self.latest_tag, page=page)
+            print "query github api: " + query
+            github_response = requests.get(query, auth=self.auth)
+
+            if github_response.status_code != 200:
+                message = github_response.json()['message']
+                print u'  * Impossible to retrieve PR\n  * ' + message
+                return
+
+            closed_pr = github_response.json()
+            if not closed_pr:
+                print "Reached end of PR list"
+                return
+
+            for pr in closed_pr:
+                yield pr
+
+            page += 1
+
     def get_merged_pullrequest(self):
-
-        #we get all closed PR since latest tag
-        #WARNING: it is not the list of merged PR since github does not have that
-        query = "https://api.github.com/repos/CanalTP/navitia/" \
-                "pulls?state=closed&head={latest_tag}".format(latest_tag=self.latest_tag)
-
-        print "query github api: " + query
-
-        github_response = requests.get(query)
-
-        if github_response.status_code != 200:
-            message = github_response.json()['message']
-            return u'  * Impossible de récupérer les PR\n  * '+ message
-
-        closed_pr = github_response.json()
-
         lines = []
-        for pr in closed_pr:
+        nb_successive_merged_pr = 0
+        for pr in self.closed_pr_generator():
             title = pr['title']
             url = pr['html_url']
-            lines.append(u'  * {title}  <{url}>\n'.format(title=title, url=url))
+            pr_head_sha = pr['head']['sha']
+            # test if PR was merged (not simply closed)
+            # and if distant/release contains HEAD of PR
+            # (stops after 10 successive merged PR)
+            if pr['merged_at']:
+                branches = self.git.branch('-r', '--contains', pr_head_sha) + '\n'
+                # adding separators before and after to match only branch name
+                release_branch_name = '  ' + self.remote_name + '/release\n'
+                if release_branch_name in branches:
+                    nb_successive_merged_pr += 1
+                    if nb_successive_merged_pr >= 10:
+                        break
+                else:
+                    # doing the label search as late as possible to save api calls
+                    has_excluded_label = False
+                    label_query = pr['_links']['issue']['href'] + '/labels'
+                    labels = requests.get(label_query, auth=self.auth).json()
+                    if any(label['name'] in ("hotfix", "not_in_changelog") for label in labels):
+                        has_excluded_label = True
 
+                    if not has_excluded_label:
+                        lines.append(u'  * {title}  <{url}>\n'.format(title=title, url=url))
+                        print lines[-1]
+                        nb_successive_merged_pr = 0
         return lines
 
     def create_changelog(self):
@@ -199,6 +237,7 @@ class ReleaseManager:
 
     def publish_release(self, temp_branch):
         self.git.checkout("release")
+        self.git.submodule('update')
         #merge with the release branch
         self.git.merge(temp_branch, "release", '--no-ff')
 
@@ -219,8 +258,11 @@ class ReleaseManager:
 
         print "publishing the release"
 
-        print "check the release and when you're happy do:"
-        print "git push {} release dev --tags".format(self.remote_name)
+        print "Check the release, you will probably want to merge release in dev:"
+        print "  git checkout dev; git submodule update"
+        print "  git merge release"
+        print "And when you're happy do:"
+        print "  git push {} release dev --tags".format(self.remote_name)
         #TODO: when we'll be confident, we will do that automaticaly
 
     def release_the_kraken(self):
@@ -241,14 +283,15 @@ class ReleaseManager:
 
         if self.release_type == "hotfix":
             print "now time to do your actual hotfix!"
+            print "PLEASE check that \"release\" COMPILES and TESTS!"
             print "Note: you'll have to merge/tag/push manually after your fix:"
-            print "git checkout release"
-            print "git merge --no-ff {tmp_branch}".format(tmp_branch=tmp_name)
-            print "git tag -a {}".format(get_tag_name(self.version))
+            print "  git checkout release"
+            print "  git merge --no-ff {tmp_branch}".format(tmp_branch=tmp_name)
+            print "  git tag -a {} #then add message on Version and mention concerned PRs \n".format(get_tag_name(self.version))
 
-            print "git checkout dev"
-            print "git merge --no-ff release".format(tmp_branch=tmp_name)
-            print "git push {} release dev --tags".format(self.remote_name)
+            print "  git checkout dev"
+            print "  git merge release"
+            print "  git push {} release dev --tags".format(self.remote_name)
 
             #TODO2 try to script that (put 2 hotfix param, like hotfix init and hotfix publish ?)
             exit(0)

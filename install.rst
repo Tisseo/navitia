@@ -20,11 +20,11 @@ Dependencies
 
 #. Python
 
-   Each python module have a pip requirements.txt file that list it's dependendies.
+   Each python module have a pip requirements.txt file that list it's dependencies.
 
    To install the dependencies for a module use `pip` (you can also wrap that in a virtualenv):
 
-   ``pip install -r {path_to_navitia_source}/jormungandr/requirement.txt``
+   ``pip install -r {path_to_navitia_source}/jormungandr/requirements.txt``
 
 
 #. Other
@@ -52,7 +52,7 @@ We hope you got the source code from git.
 #. Run cmake
 
    ``cmake ../source``
-   Note: il will build in debug mode. If you want to compile it as a release run
+   Note: it will build in debug mode. If you want to compile it as a release run
    ``cmake -DCMAKE_BUILD_TYPE=Release ../source``
 
 #. Compile

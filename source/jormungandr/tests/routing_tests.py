@@ -26,16 +26,19 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+
+from __future__ import absolute_import, print_function, unicode_literals, division
 import logging
 
 from navitiacommon import models
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 from nose.tools import eq_
-from overlapping_routing_tests import  MockKraken
+from .overlapping_routing_tests import  MockKraken
 from jormungandr import instance_manager
 
-@dataset(["main_routing_test"])
+
+@dataset({"main_routing_test": {}})
 class TestJourneys(AbstractTestFixture):
     """
     Test the structure of the journeys response
@@ -46,7 +49,7 @@ class TestJourneys(AbstractTestFixture):
         #not to use the jormungandr database
         response = self.query_region(journey_basic_query, display=True)
 
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)
 
         feed_publishers = get_not_null(response, "feed_publishers")
         assert (len(feed_publishers) == 1)
@@ -88,7 +91,7 @@ class TestJourneys(AbstractTestFixture):
         query = "{query}&type=best".format(query=journey_basic_query)
         response = self.query_region(query)
 
-        is_valid_journey_response(response, self.tester, query)
+        self.is_valid_journey_response(response, query)
         assert len(response['journeys']) == 1
 
         assert response['journeys'][0]["type"] == "best"
@@ -143,7 +146,7 @@ class TestJourneys(AbstractTestFixture):
         query = journey_basic_query + "&first_section_mode=walking&first_section_mode=bss"
         response = self.query_region(query)
 
-        is_valid_journey_response(response, self.tester, query)
+        self.is_valid_journey_response(response, query)
         #Note: we need to mock the kraken instances to check that only one call has been made and not 2
         #(only one for bss because walking should not have been added since it duplicate bss)
 
@@ -155,6 +158,22 @@ class TestJourneys(AbstractTestFixture):
             url = links[l]['href']
             url_dict = query_from_str(url)
             assert url_dict['first_section_mode'] == ['walking', 'bss']
+
+    def test_min_nb_journeys(self):
+        """Checks if min_nb_journeys works.
+
+        _night_bus_filter_base_factor is used because we need to find
+        2 journeys, and we can only take the bus the day after.
+        datetime is modified because, as the bus begins at 8, we need
+        to check that we don't do the next on the direct path starting
+        datetime.
+        """
+        query = "journeys?from={from_coord}&to={to_coord}&datetime={datetime}&"\
+                "min_nb_journeys=3&_night_bus_filter_base_factor=86400"\
+                .format(from_coord=s_coord, to_coord=r_coord, datetime="20120614T075500")
+        response = self.query_region(query)
+        self.is_valid_journey_response(response, query)
+        assert len(response["journeys"]) >= 3
 
     """
     test on date format
@@ -183,7 +202,7 @@ class TestJourneys(AbstractTestFixture):
             .format(from_coord=s_coord, to_coord=r_coord, d="20120614T0800")
 
         response = self.query_region(query)
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)
 
         #and the second should be 0 initialized
         journeys = get_not_null(response, "journeys")
@@ -196,7 +215,7 @@ class TestJourneys(AbstractTestFixture):
             .format(from_coord=s_coord, to_coord=r_coord, d="20120614T08")
 
         response = self.query_region(query)
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)
 
         #and the second should be 0 initialized
         journeys = get_not_null(response, "journeys")
@@ -212,7 +231,7 @@ class TestJourneys(AbstractTestFixture):
 
         assert not 'journeys' in response
         assert 'message' in response
-        assert response['message'] == "Unable to parse datetime, unknown string format"
+        eq_(response['message'].lower(), "unable to parse datetime, unknown string format")
 
     def test_journeys_date_invalid(self):
         """giving the date with mmsshh (56 45 12) should be a problem"""
@@ -225,6 +244,34 @@ class TestJourneys(AbstractTestFixture):
         assert not 'journeys' in response
         assert 'message' in response
         assert response['message'] == "Unable to parse datetime, hour must be in 0..23"
+
+    def test_journeys_date_valid_invalid(self):
+        """some format of date are bizarrely interpreted, and can result in date in 800"""
+
+        query = "journeys?from={from_coord}&to={to_coord}&datetime={d}"\
+            .format(from_coord=s_coord, to_coord=r_coord, d="T0800")
+
+        response, status_code = self.query_no_assert("v1/coverage/main_routing_test/" + query)
+
+        assert not 'journeys' in response
+        assert 'message' in response
+        assert response['message'] == "Unable to parse datetime, date is too early!"
+
+    def test_journeys_bad_speed(self):
+        """speed <= 0 is invalid"""
+
+        for speed in ["0", "-1"]:
+            for sn in ["walking", "bike", "bss", "car"]:
+                query = "journeys?from={from_coord}&to={to_coord}&datetime={d}&{sn}_speed={speed}"\
+                    .format(from_coord=s_coord, to_coord=r_coord, d="20120614T133700", sn=sn, speed=speed)
+
+                response, status_code = self.query_no_assert("v1/coverage/main_routing_test/" + query)
+
+                assert not 'journeys' in response
+                assert 'message' in response
+                assert response['message'] == \
+                    "The {sn}_speed argument has to be > 0, you gave : {speed}"\
+                        .format(sn=sn, speed=speed)
 
     def test_journeys_date_valid_not_zeropadded(self):
         """giving the date with non zero padded month should be a problem"""
@@ -253,8 +300,53 @@ class TestJourneys(AbstractTestFixture):
             assert(j['sections'][-1]['to']['id'] == id)
             assert(j['sections'][-1]['to']['address']['id'] == id)
 
+    def test_journeys_wheelchair_profile(self):
+        """
+        Test a query with a wheelchair profile.
+        We want to go from S to R after 8h as usual, but between S and R, the first VJ is not accessible,
+        so we have to wait for the bus at 18h to leave
+        """
 
-@dataset([])
+        response = self.query_region(journey_basic_query + "&traveler_type=wheelchair")
+        assert(len(response['journeys']) == 2)
+        #Note: we do not test order, because that can change depending on the scenario
+        eq_(sorted(get_used_vj(response)), sorted([[], ['vjB']]))
+        eq_(sorted(get_arrivals(response)), sorted(['20120614T080612', '20120614T180250']))
+
+        # same response if we just give the wheelchair=True
+        response = self.query_region(journey_basic_query + "&traveler_type=wheelchair&wheelchair=True")
+        assert(len(response['journeys']) == 2)
+        eq_(sorted(get_used_vj(response)), sorted([[], ['vjB']]))
+        eq_(sorted(get_arrivals(response)), sorted(['20120614T080612', '20120614T180250']))
+
+        # but with the wheelchair profile, if we explicitly accept non accessible solutions (not very
+        # consistent, but anyway), we should take the non accessible bus that arrive at 08h
+        response = self.query_region(journey_basic_query + "&traveler_type=wheelchair&wheelchair=False")
+        assert(len(response['journeys']) == 2)
+        eq_(sorted(get_used_vj(response)), sorted([['vjA'], []]))
+        eq_(sorted(get_arrivals(response)), sorted(['20120614T080250', '20120614T080612']))
+
+    def test_journeys_float_night_bus_filter_max_factor(self):
+        """night_bus_filter_max_factor can be a float (and can be null)"""
+
+        query = "journeys?from={from_coord}&to={to_coord}&datetime={d}&" \
+                         "_night_bus_filter_max_factor={_night_bus_filter_max_factor}"\
+            .format(from_coord=s_coord, to_coord=r_coord, d="20120614T080000",
+                    _night_bus_filter_max_factor=2.8)
+
+        response = self.query_region(query)
+        self.is_valid_journey_response(response, query)
+
+        query = "journeys?from={from_coord}&to={to_coord}&datetime={d}&" \
+                         "_night_bus_filter_max_factor={_night_bus_filter_max_factor}"\
+            .format(from_coord=s_coord, to_coord=r_coord, d="20120614T080000",
+                    _night_bus_filter_max_factor=0)
+
+        response = self.query_region(query)
+        self.is_valid_journey_response(response, query)
+
+
+@dataset({})
 class TestJourneysNoRegion(AbstractTestFixture):
     """
     If no region loaded we must have a polite error while asking for a journey
@@ -279,7 +371,7 @@ class TestJourneysNoRegion(AbstractTestFixture):
         assert error_regexp.match(response['error']['message'])
 
 
-@dataset(["basic_routing_test"])
+@dataset({"basic_routing_test": {}})
 class TestLongWaitingDurationFilter(AbstractTestFixture):
     """
     Test if the filter on long waiting duration is working
@@ -300,6 +392,23 @@ class TestLongWaitingDurationFilter(AbstractTestFixture):
         eq_(response['journeys'][0]['arrival_date_time'],  "20120614T160000")
         eq_(response['journeys'][0]['type'], "best")
 
+        assert len(response["disruptions"]) == 0
+        feed_publishers = response["feed_publishers"]
+        for feed_publisher in feed_publishers:
+            is_valid_feed_publisher(feed_publisher)
+
+        feed_publisher = feed_publishers[0]
+        assert (feed_publisher["id"] == "builder")
+        assert (feed_publisher["name"] == "canal tp")
+        assert (feed_publisher["license"] == "ODBL")
+        assert (feed_publisher["url"] == "www.canaltp.fr")
+
+        feed_publisher = feed_publishers[1]
+        assert (feed_publisher["id"] == "base_contributor")
+        assert (feed_publisher["name"] == "base contributor")
+        assert (feed_publisher["license"] == "L-contributor")
+        assert (feed_publisher["url"] == "www.canaltp.fr")
+
     def test_novalidjourney_on_first_call_debug(self):
         """
         On this call the first call to kraken returns a journey
@@ -317,6 +426,54 @@ class TestLongWaitingDurationFilter(AbstractTestFixture):
         eq_(response['journeys'][1]['arrival_date_time'], "20120614T160000")
         eq_(response['journeys'][1]['type'], "best")
 
+    def test_datetime_error(self):
+        """
+        datetime invalid, we got an error
+        """
+        datetimes = ["20120614T080000Z", "2012-06-14T08:00:00.222Z"]
+        for datetime in datetimes:
+            query = "journeys?from={from_sa}&to={to_sa}&datetime={datetime}&debug=true"\
+                .format(from_sa="A", to_sa="D", datetime=datetime)
+
+            response, error_code = self.query_region(query, check=False)
+
+            assert error_code == 400
+
+            error = get_not_null(response, "error")
+
+            assert error["message"] == "Unable to parse datetime, Not naive datetime (tzinfo is already set)"
+            assert error["id"] == "unable_to_parse"
+
+
+    def test_journeys_without_show_codes(self):
+        '''
+        Test journeys api without show_codes.
+        The API's response contains the codes
+        '''
+        query = "journeys?from={from_sa}&to={to_sa}&datetime={datetime}"\
+            .format(from_sa="A", to_sa="D", datetime="20120614T080000")
+
+        response = self.query_region(query, display=False)
+        eq_(len(response['journeys']), 1)
+        eq_(len(response['journeys'][0]['sections']), 4)
+        first_section = response['journeys'][0]['sections'][0]
+        eq_(first_section['from']['stop_point']['codes'][0]['type'], 'external_code')
+        eq_(first_section['from']['stop_point']['codes'][0]['value'], 'stop_point:A')
+
+    def test_journeys_with_show_codes(self):
+        '''
+        Test journeys api with show_codes = false.
+        The API's response contains the codes
+        '''
+        query = "journeys?from={from_sa}&to={to_sa}&datetime={datetime}&show_codes=false"\
+            .format(from_sa="A", to_sa="D", datetime="20120614T080000")
+
+        response = self.query_region(query, display=False)
+        eq_(len(response['journeys']), 1)
+        eq_(len(response['journeys'][0]['sections']), 4)
+        first_section = response['journeys'][0]['sections'][0]
+        eq_(first_section['from']['stop_point']['codes'][0]['type'], 'external_code')
+        eq_(first_section['from']['stop_point']['codes'][0]['value'], 'stop_point:A')
 
     def test_remove_one_journey_from_batch(self):
         """
@@ -357,7 +514,8 @@ class TestLongWaitingDurationFilter(AbstractTestFixture):
         response = self.query_region(query, display=False)
         eq_(len(response['journeys']), 1)
 
-@dataset(["main_routing_test"])
+
+@dataset({"main_routing_test": {}})
 class TestShapeInGeoJson(AbstractTestFixture):
     """
     Test if the shape is used in the GeoJson
@@ -383,7 +541,8 @@ class TestShapeInGeoJson(AbstractTestFixture):
         eq_(response['journeys'][0]['sections'][1]['co2_emission']['value'], 0.58)
         eq_(response['journeys'][0]['sections'][1]['co2_emission']['unit'], 'gEC')
 
-@dataset(["main_routing_test", "basic_routing_test"])
+
+@dataset({"main_routing_test": {}, "basic_routing_test": {}})
 class TestOneDeadRegion(AbstractTestFixture):
     """
     Test if we still responds when one kraken is dead
@@ -402,14 +561,14 @@ class TestOneDeadRegion(AbstractTestFixture):
         eq_(response['debug']['regions_called'][0], "main_routing_test")
 
 
-@dataset(["basic_routing_test"])
+@dataset({"basic_routing_test": {}})
 class TestIsochrone(AbstractTestFixture):
     def test_isochrone(self):
-        response = self.query_region("journeys?from=I1&datetime=20120615T070000")
+        response = self.query_region("journeys?from=I1&datetime=20120615T070000&max_duration=36000")
         assert(len(response['journeys']) == 2)
 
 
-@dataset(["main_routing_without_pt_test", "main_routing_test"])
+@dataset({"main_routing_without_pt_test": {}, "main_routing_test": {}})
 class TestWithoutPt(AbstractTestFixture):
     """
     Test if we still responds when one kraken is dead
@@ -418,21 +577,9 @@ class TestWithoutPt(AbstractTestFixture):
     def setup(self):
         from jormungandr import i_manager
         self.instance_map = {
-            'main_routing_without_pt_test': MockKraken(i_manager.instances['main_routing_without_pt_test'], True),
-            'main_routing_test': MockKraken(i_manager.instances['main_routing_test'], True),
+            'main_routing_without_pt_test': MockKraken(i_manager.instances['main_routing_without_pt_test'], True, 5),
+            'main_routing_test': MockKraken(i_manager.instances['main_routing_test'], True, 10),
         }
-        self.real_method = models.Instance.get_by_name
-        self.real_comparator = instance_manager.instances_comparator
-
-        models.Instance.get_by_name = self.mock_get_by_name
-        instance_manager.instances_comparator = lambda a, b: a.name == "main_routing_without_pt_test"
-
-    def mock_get_by_name(self, name):
-        return self.instance_map[name]
-
-    def teardown(self):
-        models.Instance.get_by_name = self.real_method
-        instance_manager.instances_comparator = self.real_comparator
 
     def test_one_region_wihout_pt(self):
         response = self.query("v1/"+journey_basic_query+"&debug=true",

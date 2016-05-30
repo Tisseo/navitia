@@ -71,7 +71,7 @@ struct data_set {
         //add lines
         b.sa("stop_area:stop1", 9, 9, false, true)("stop_area:stop1", 9, 9);
         b.sa("stop_area:stop2", 10, 10, false, true)("stop_area:stop2", 10, 10);
-        b.vj("line:A", "", "", true, "vj1", "", "", "physical_mode:Car")
+        b.vj("line:A", "", "", true, "vj1", "", "physical_mode:Car")
                 ("stop_area:stop1", 10 * 3600 + 15 * 60, 10 * 3600 + 15 * 60)
                 ("stop_area:stop2", 11 * 3600 + 10 * 60, 11 * 3600 + 10 * 60);
         b.lines["line:A"]->calendar_list.push_back(wednesday_cal);
@@ -79,14 +79,26 @@ struct data_set {
 
         // we add a stop area with a strange name (with space and special char)
         b.sa("stop_with name bob \" , é", 20, 20);
-        b.vj("line:B", "", "", true, "vj_b", "", "", "physical_mode:Car")
+        b.vj("line:B", "", "", true, "vj_b", "", "physical_mode:Car")
                 ("stop_point:stop_with name bob \" , é", "8:00"_t)("stop_area:stop1", "9:00"_t);
+
+        // add a line with a unicode name
+        b.vj("line:Ça roule", "11111111", "", true, "vj_b")
+                ("stop_area:stop2", 10 * 3600 + 15 * 60, 10 * 3600 + 15 * 60)
+                ("stop_area:stop1", 11 * 3600 + 10 * 60, 11 * 3600 + 10 * 60);
 
         //add a mock shape
         b.lines["line:A"]->shape = {
                                     {{1,2}, {2,2}, {4,5}},
                                     {{10,20}, {20,20}, {40,50}}
                                    };
+
+        // Commercial modes
+        navitia::type::CommercialMode* cm = new navitia::type::CommercialMode();
+        cm->uri = "Commercial_mode:Car";
+        cm->name = "Car";
+        b.data->pt_data->commercial_modes.push_back(cm);
+        b.lines["line:A"]->commercial_mode = cm;
 
         for (auto r: b.lines["line:A"]->route_list) {
             r->shape = {
@@ -98,14 +110,18 @@ struct data_set {
         for (auto r: b.lines["line:B"]->route_list) {
             r->destination = b.sas.find("stop_area:stop1")->second;
         }
-        b.lines["line:A"]->codes["external_code"] = "A";
-        b.lines["line:A"]->codes["codeB"] = "B";
-        b.lines["line:A"]->codes["codeC"] = "C";
+        for (auto r: b.lines["line:Ça roule"]->route_list) {
+            r->destination = b.sas.find("stop_area:stop1")->second;
+        }
+        b.data->pt_data->codes.add(b.lines["line:A"], "external_code", "A");
+        b.data->pt_data->codes.add(b.lines["line:A"], "codeB", "B");
+        b.data->pt_data->codes.add(b.lines["line:A"], "codeC", "C");
+        b.data->pt_data->codes.add(b.sps.at("stop_area:stop1"), "code_uic", "bobette");
 
         b.data->build_uri();
 
         navitia::type::VehicleJourney* vj = b.data->pt_data->vehicle_journeys_map["vj1"];
-        vj->validity_pattern->add(boost::gregorian::from_undelimited_string("20140101"),
+        vj->base_validity_pattern()->add(boost::gregorian::from_undelimited_string("20140101"),
                                   boost::gregorian::from_undelimited_string("20140111"), monday_cal->week_pattern);
 
         //we add some comments
@@ -118,6 +134,14 @@ struct data_set {
         comments.add(b.data->pt_data->vehicle_journeys[0], "hello");
         comments.add(b.data->pt_data->vehicle_journeys[0]->stop_time_list.front(),
                                       "stop time is blocked");
+        // Disruption on stoparea
+        using btp = boost::posix_time::time_period;
+        b.impact(nt::RTLevel::RealTime, "Disruption 1")
+                .severity(nt::disruption::Effect::UNKNOWN_EFFECT)
+                .msg("Disruption on StopArea stop_area:stop1", nt::disruption::ChannelType::email)
+                .on(nt::Type_e::StopArea, "stop_area:stop1")
+                .application_periods(btp("20140101T000000"_dt, "20140120T235959"_dt))
+                .publish(btp("20140101T000000"_dt, "20140120T235959"_dt));
        // Company added
         navitia::type::Company* cmp = new navitia::type::Company();
         cmp->line_list.push_back(b.lines["line:A"]);
@@ -128,6 +152,7 @@ struct data_set {
         cmp->uri = "CMP1";
         b.lines["line:A"]->company_list.push_back(cmp);
 
+        b.lines["line:A"]->text_color = "FFD700";
         // LineGroup added
         navitia::type::LineGroup* lg = new navitia::type::LineGroup();
         lg->name = "A group";
@@ -137,6 +162,39 @@ struct data_set {
         b.lines["line:A"]->line_group_list.push_back(lg);
         comments.add(lg, "I'm a happy comment");
         b.data->pt_data->line_groups.push_back(lg);
+
+        b.impact(nt::RTLevel::RealTime, "Disruption On line:A")
+                .severity(nt::disruption::Effect::UNKNOWN_EFFECT)
+                .msg("Disruption on Line line:A", nt::disruption::ChannelType::email)
+                .on(nt::Type_e::Line, "line:A")
+                .application_periods(btp("20140101T000000"_dt, "20140120T235959"_dt))
+                .publish(btp("20140101T000000"_dt, "20140120T235959"_dt));
+
+        //contributor "c1" contains dataset "d1"
+        navitia::type::Contributor* contributor = new navitia::type::Contributor();
+        contributor->idx = b.data->pt_data->contributors.size();
+        contributor->uri = "c1";
+        contributor->name = "name-c1";
+        contributor->website = "ws-c1";
+        contributor->license = "ls-c1";
+        b.data->pt_data->contributors.push_back(contributor);
+
+        navitia::type::Dataset* dataset = new navitia::type::Dataset();
+        dataset->idx = b.data->pt_data->datasets.size();
+        dataset->uri = "d1";
+        dataset->name = "name-d1";
+        dataset->desc = "desc-d1";
+        dataset->system = "sys-d1";
+        dataset->validation_period = period("20160101", "20161230");
+
+        dataset->contributor = contributor;
+        contributor->dataset_list.push_back(dataset);
+        b.data->pt_data->datasets.push_back(dataset);
+
+        //Link between dataset and vehicle_journey
+        vj = b.data->pt_data->vehicle_journeys.back();
+        vj->dataset = dataset;
+        dataset->vehiclejourney_list.push_back(vj);
 
         b.data->complete();
         b.data->build_raptor();

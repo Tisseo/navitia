@@ -26,8 +26,9 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from __future__ import absolute_import, print_function, unicode_literals, division
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 from jormungandr import stat_manager
 from jormungandr.stat_manager import StatManager
 
@@ -40,7 +41,7 @@ def always_in_error(self, start_time, func_call):
     raise StatError()
 
 
-@dataset(["main_routing_test"])
+@dataset({'main_routing_test': {}})
 class TestNoStats(AbstractTestFixture):
 
     def setup(self):
@@ -66,11 +67,11 @@ class TestNoStats(AbstractTestFixture):
         stat_manager.save_stat = False # we disable the stats
         response = self.query_region(journey_basic_query)
 
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)
 
     def test_simple_journey_query_stats(self):
         """
         Even if the stat manager is failing we want the journey result.
         """
         response = self.query_region(journey_basic_query)
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, journey_basic_query)

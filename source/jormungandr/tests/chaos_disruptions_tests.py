@@ -26,84 +26,31 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
-from collections import defaultdict
-from kombu.connection import BrokerConnection
-from kombu.entity import Exchange
-from kombu.pools import producers
-from retrying import Retrying
-from tests import gtfs_realtime_pb2
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
-import chaos_pb2
-from time import sleep
-import uuid
+from __future__ import absolute_import, print_function, unicode_literals, division
+from . import gtfs_realtime_pb2
+from .tests_mechanism import dataset
+from .check_utils import *
+from . import chaos_pb2
 from jormungandr import utils
+from .rabbitmq_utils import RabbitMQCnxFixture, rt_topic
 
 
-#we need to generate a unique topic not to have conflict between tests
-chaos_rt_topic = 'bob_{}'.format(uuid.uuid1())
-
-
-class ChaosDisruptionsFixture(AbstractTestFixture):
+class ChaosDisruptionsFixture(RabbitMQCnxFixture):
     """
     Mock a chaos disruption message, in order to check the api
     """
-    def _get_producer(self):
-        producer = producers[self.mock_chaos_connection].acquire(block=True, timeout=2)
-        self._connections.add(producer.connection)
-        return producer
-
-    def setup(self):
-        self.mock_chaos_connection = BrokerConnection("pyamqp://guest:guest@localhost:5672")
-        self._connections = {self.mock_chaos_connection}
-        self._exchange = Exchange('navitia', durable=True, delivry_mode=2, type='topic')
-        self.mock_chaos_connection.connect()
-
-    def teardown(self):
-        #we need to release the amqp connection
-        self.mock_chaos_connection.release()
-
-    def send_chaos_disruption(self, disruption_name, impacted_obj, impacted_obj_type, start=None, end=None,
+    def _make_mock_item(self, disruption_name, impacted_obj, impacted_obj_type, start=None, end=None,
                               message='default_message', is_deleted=False, blocking=False,
                          start_period="20100412T165200", end_period="20200412T165200"):
-        item = make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start, end, message, is_deleted,
+        return make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start, end, message, is_deleted,
                                     blocking, start_period, end_period)
-        with self._get_producer() as producer:
-            producer.publish(item, exchange=self._exchange, routing_key=chaos_rt_topic, declare=[self._exchange])
 
 
-    def send_chaos_disruption_and_sleep(self, disruption_name, impacted_obj, impacted_obj_type, start=None, end=None,
-                              message='default_message', is_deleted=False, blocking=False,
-                         start_period="20100412T165200", end_period="20200412T165200"):
-        status = self.query_region('status')
-        last_loaded_data = get_not_null(status['status'], 'last_rt_data_loaded')
-        self.send_chaos_disruption(disruption_name, impacted_obj, impacted_obj_type,
-                start, end, message, is_deleted, blocking, start_period, end_period)
-        #we sleep a bit to let kraken reload the data
-        self.poll_until_reload(last_loaded_data)
+MAIN_ROUTING_TEST_SETTING = {"main_routing_test": {'kraken_args': ['--BROKER.sleeptime=0',
+                                                                   '--BROKER.rt_topics='+rt_topic,
+                                                                   'spawn_maintenance_worker']}}
 
-    def poll_until_reload(self, previous_val):
-        """
-        poll until the kraken have reloaded its data
-
-        check that the last_rt_data_loaded field is different from the first call
-        """
-        Retrying(stop_max_delay=10 * 1000, wait_fixed=100,
-                 retry_on_result=lambda status: get_not_null(status['status'], 'last_rt_data_loaded') == previous_val) \
-            .call(lambda: self.query_region('status'))
-
-    def wait_for_rabbitmq_cnx(self):
-        """
-        poll until the kraken is connected to rabbitmq
-
-        small timeout because it must not be long (otherwise it way be a server configuration problem)
-        """
-        Retrying(stop_max_delay=1 * 1000, wait_fixed=50,
-                 retry_on_result=lambda status: get_not_null(status['status'], 'is_connected_to_rabbitmq') is False) \
-            .call(lambda: self.query_region('status'))
-
-
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptions(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
@@ -115,7 +62,6 @@ class TestChaosDisruptions(ChaosDisruptionsFixture):
         then we mock a disruption sent from chaos, and we call again the pt object stopB
         we then must have a disruption
         """
-        self.wait_for_rabbitmq_cnx()
         response = self.query_region('stop_areas/stopB')
 
         stops = get_not_null(response, 'stop_areas')
@@ -124,11 +70,10 @@ class TestChaosDisruptions(ChaosDisruptionsFixture):
         #at first no disruption
         assert 'disruptions' not in stop
 
-        self.send_chaos_disruption_and_sleep("bob_the_disruption", "stopB",
-                "stop_area")
+        self.send_mock("bob_the_disruption", "stopB", "stop_area")
 
         #and we call again, we must have the disruption now
-        response = self.query_region('stop_areas/stopB')
+        response = self.query_region('stop_areas/stopB?_current_datetime=20160314T104600')
         stops = get_not_null(response, 'stop_areas')
         assert len(stops) == 1
         stop = stops[0]
@@ -140,8 +85,66 @@ class TestChaosDisruptions(ChaosDisruptionsFixture):
 
         assert any(d['disruption_id'] == 'bob_the_disruption' for d in disruptions)
 
+        #here we test messages in disruption: message, channel and types
+        messages = get_not_null(disruptions[0], 'messages')
+        assert len(messages) == 2
+        eq_(messages[0]['text'], 'default_message')
+        channel = get_not_null(messages[0], 'channel')
+        eq_(channel['id'], 'sms')
+        eq_(channel['name'], 'sms')
+        eq_(channel['content_type'], 'text')
+        assert len(channel['types']) == 1
+        eq_(channel['types'][0], 'sms')
 
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+        eq_(messages[1]['text'], 'default_message')
+        channel = get_not_null(messages[1], 'channel')
+        eq_(channel['id'], 'email')
+        eq_(channel['name'], 'email')
+        eq_(channel['content_type'], 'html')
+        assert len(channel['types']) == 2
+        eq_(channel['types'][0], 'web')
+        eq_(channel['types'][1], 'email')
+
+    def test_current_datetime_out_of_bounds(self):
+        """
+        current_datetime out of bounds
+        publication date of disruption          20100412T165200                        20200412T165200
+        current_datetime    20080412T165200
+        """
+        response = self.query_region('stop_areas/stopB')
+
+        stops = get_not_null(response, 'stop_areas')
+        assert len(stops) == 1
+        stop = stops[0]
+        #at first no disruption
+        assert 'disruptions' not in stop
+
+        self.send_mock("bob_the_disruption", "stopB", "stop_area")
+
+        response = self.query_region('stop_areas/stopB?_current_datetime=20080412T165200')
+        assert len(response['disruptions']) == 0
+
+
+@dataset(MAIN_ROUTING_TEST_SETTING)
+class TestPlacesWithDisruptions(ChaosDisruptionsFixture):
+    def test_places_with_disruptions(self):
+        """
+        /places?q=stopB
+        """
+        response = self.query_region('places?q=stopB')
+        assert len(response['disruptions']) == 0
+
+        self.send_mock("bob_the_disruption", "stopB", "stop_area")
+
+        response = self.query_region('places?q=stopB')
+        assert len(response['places']) == 1
+        assert response['places'][0]['id'] == 'stopB'
+
+        assert len(response['disruptions']) == 1
+        assert response['disruptions'][0]['updated_at'] == u'20160405T150623'
+
+
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptionsLineSection(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
@@ -153,7 +156,6 @@ class TestChaosDisruptionsLineSection(ChaosDisruptionsFixture):
         then we mock a disruption sent from chaos, and we call again the pt object line:A
         we then must have one disruption
         """
-        self.wait_for_rabbitmq_cnx()
         response = self.query_region('lines/A')
 
         lines = get_not_null(response, 'lines')
@@ -162,8 +164,8 @@ class TestChaosDisruptionsLineSection(ChaosDisruptionsFixture):
         #at first no disruption
         assert 'disruptions' not in line
 
-        self.send_chaos_disruption_and_sleep("bobette_the_disruption", "A",
-                "line_section", start="stopA", end="stopB", blocking=True)
+        self.send_mock("bobette_the_disruption", "A",
+                       "line_section", start="stopA", end="stopB", blocking=True)
 
         #and we call again, we must have the disruption now
         response = self.query_region('lines/A')
@@ -174,11 +176,12 @@ class TestChaosDisruptionsLineSection(ChaosDisruptionsFixture):
         disruptions = get_disruptions(line, response)
 
         #at first we got only one disruption
+        print(disruptions)
         assert len(disruptions) == 1
         assert any(d['disruption_id'] == 'bobette_the_disruption' for d in disruptions)
 
 
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptions2(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
@@ -189,7 +192,6 @@ class TestChaosDisruptions2(ChaosDisruptionsFixture):
 
         at first no disruptions, we add one and we should get it
         """
-        self.wait_for_rabbitmq_cnx()
         response = self.query_region(journey_basic_query)
 
         stops_b_to = [s['to']['stop_point'] for j in response['journeys'] for s in j['sections']
@@ -201,12 +203,12 @@ class TestChaosDisruptions2(ChaosDisruptionsFixture):
             assert not get_disruptions(b['stop_area'], response)
 
         #we create a list with every 'to' section to the stop B (the one we added the disruption on)
-        self.send_chaos_disruption_and_sleep("bob_the_disruption", "stopB", "stop_area")
-
-        response = self.query_region(journey_basic_query)
+        self.send_mock("bob_the_disruption", "stopB", "stop_area")
+        query = journey_basic_query+'&_current_datetime=20160314T144100'
+        response = self.query_region(query)
 
         #the response must be still valid (this test the kraken data reloading)
-        is_valid_journey_response(response, self.tester, journey_basic_query)
+        self.is_valid_journey_response(response, query)
 
         stops_b_to = [s['to']['stop_point'] for j in response['journeys'] for s in j['sections']
                       if s['to']['embedded_type'] == 'stop_point' and s['to']['id'] == 'stop_point:stopB']
@@ -221,16 +223,31 @@ class TestChaosDisruptions2(ChaosDisruptionsFixture):
 
             assert any(d['disruption_id'] == 'bob_the_disruption' for d in disruptions)
 
+    def test_journey_with_current_datetime_out_of_bounds(self):
+        """
+        current_datetime out of bounds
+        publication date of disruption          20100412T165200                        20200412T165200
+        current_datetime    20090314T144100
+        """
+        query = journey_basic_query+'&_current_datetime=20090314T144100'
+        response = self.query_region(query)
 
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+        #the response must be still valid (this test the kraken data reloading)
+        self.is_valid_journey_response(response, query)
+
+        stops_b_to = [s['to']['stop_point'] for j in response['journeys'] for s in j['sections']
+                      if s['to']['embedded_type'] == 'stop_point' and s['to']['id'] == 'stop_point:stopB']
+
+        assert stops_b_to
+
+        assert len(response['disruptions']) == 0
+
+
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptionsBlocking(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
     """
-
-    def __init__(self):
-        ChaosDisruptionsFixture.__init__(self)
-
     def get_nb_disruptions(self):
         nb_disruptions_map = defaultdict(int)
 
@@ -246,6 +263,8 @@ class TestChaosDisruptionsBlocking(ChaosDisruptionsFixture):
         set_nb_disruptions(response['networks'])
         response = self.query_region('stop_areas')
         set_nb_disruptions(response['stop_areas'])
+        response = self.query_region('stop_points')
+        set_nb_disruptions(response['stop_points'])
         return nb_disruptions_map
 
     def run_check(self, object_id, type_):
@@ -276,10 +295,11 @@ class TestChaosDisruptionsBlocking(ChaosDisruptionsFixture):
         nb_disruptions_map = self.get_nb_disruptions()
         nb_disruptions = nb_disruptions_map[object_id]
         # We send a blocking disruption on the object
-        self.send_chaos_disruption_and_sleep(disruption_uri, object_id, type_, blocking=True,
-                                             start_period=start_period)
+        self.send_mock(disruption_uri, object_id, type_, blocking=True,
+                       start_period=start_period)
         nb_disruptions_map = self.get_nb_disruptions()
         assert (nb_disruptions_map[object_id] - nb_disruptions) == 1
+
         check_links_("20120616T080000", False)
         #We test out of the period
         check_links_("20120614T080000", True)
@@ -287,48 +307,58 @@ class TestChaosDisruptionsBlocking(ChaosDisruptionsFixture):
         #We delete the disruption
         nb_disruptions_map = self.get_nb_disruptions()
         nb_disruptions = nb_disruptions_map[object_id]
-        self.send_chaos_disruption_and_sleep(disruption_uri, object_id, type_,
-                blocking=True, is_deleted=True, start_period=start_period)
+        self.send_mock(disruption_uri, object_id, type_,
+                       blocking=True, is_deleted=True, start_period=start_period)
         nb_disruptions_map = self.get_nb_disruptions()
         assert (nb_disruptions - nb_disruptions_map[object_id]) == 1
         check_links_("20120616T080000", True)
 
         #We try to send first the disruption, and then the impacts
         nb_disruptions = nb_disruptions_map[object_id]
-        self.send_chaos_disruption_and_sleep(disruption_uri, None, None, blocking=True,
-                                             start_period=start_period)
-        self.send_chaos_disruption_and_sleep(disruption_uri, object_id, type_, blocking=True,
-                                             start_period=start_period)
+        self.send_mock(disruption_uri, None, None, blocking=True,
+                       start_period=start_period)
+        self.send_mock(disruption_uri, object_id, type_, blocking=True,
+                       start_period=start_period)
         nb_disruptions_map = self.get_nb_disruptions()
         assert (nb_disruptions_map[object_id] - nb_disruptions) == 1
+
         check_links_("20120616T080000", False)
         #We test out of the period
         check_links_("20120614T080000", True)
 
         #We clean
-        self.send_chaos_disruption_and_sleep(disruption_uri, object_id, type_,
-                blocking=True, is_deleted=True, start_period=start_period)
+        self.send_mock(disruption_uri, object_id, type_,
+                       blocking=True, is_deleted=True, start_period=start_period)
 
-    def test_disruption_on_journey(self):
+    def test_blocking_disruption_of_line_route_network_on_journey(self):
         """
         We send blocking disruptions and test if the blocked object is not used
         by the journey.
         Then we delete it and test if use the blocked object
         """
-        self.wait_for_rabbitmq_cnx()
-        response = self.query_region(journey_basic_query, display=True)
+        response = self.query_region(journey_basic_query)
 
         assert "journeys" in response
 
         self.run_check('A', 'line')
         self.run_check('A:0', 'route')
         self.run_check('base_network', 'network')
+
+    def test_blocking_disruption_of_stop_area_and_stop_point_on_journey(self):
+        """
+        We send blocking disruptions on stop area and stop point.
+
+        Then we delete it and test if use the blocked object
+        """
+        response = self.query_region(journey_basic_query)
+
+        assert "journeys" in response
+
         self.run_check('stopA', 'stop_area')
+        self.run_check('stop_point:stopA', 'stop_point')
 
 
-
-
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptionsBlockingOverlapping(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
@@ -340,18 +370,30 @@ class TestChaosDisruptionsBlockingOverlapping(ChaosDisruptionsFixture):
         We delete the network disruption and test if there's a journey using
         the line B.
         """
-        self.wait_for_rabbitmq_cnx()
         response = self.query_region(journey_basic_query)
 
         assert "journeys" in response
         disruptions = self.get_disruptions(response)
-        #no disruptions for the moment
+        #no disruptions on the journey for the moment
         assert not disruptions
 
-        self.send_chaos_disruption_and_sleep("blocking_line_disruption", "A",
-                "line", blocking=True)
-        self.send_chaos_disruption_and_sleep("blocking_network_disruption",
-                "base_network", "network", blocking=True)
+        # some disruption are loaded on the dataset though
+        nb_pre_loaded_disruption = len(get_not_null(self.query_region('disruptions'), 'disruptions'))
+        assert nb_pre_loaded_disruption == 9
+
+        self.send_mock("blocking_line_disruption", "A",
+                       "line", blocking=True)
+        self.send_mock("blocking_network_disruption",
+                       "base_network", "network", blocking=True)
+
+        # Test disruption API
+        response = self.query_region('disruptions')
+        disruptions = get_not_null(response, 'disruptions')
+        assert len(disruptions) - nb_pre_loaded_disruption == 2
+        for d in disruptions:
+            is_valid_disruption(d)
+        assert {"blocking_line_disruption", "blocking_network_disruption"}.\
+            issubset(set([d['disruption_uri'] for d in disruptions]))
 
         response = self.query_region(journey_basic_query + "&disruption_active=true")
 
@@ -371,7 +413,7 @@ class TestChaosDisruptionsBlockingOverlapping(ChaosDisruptionsFixture):
         assert 'blocking_line_disruption' in disruptions
         assert 'blocking_network_disruption' in disruptions
 
-        self.send_chaos_disruption_and_sleep("blocking_network_disruption", "base_network", "network", blocking=True, is_deleted=True)
+        self.send_mock("blocking_network_disruption", "base_network", "network", blocking=True, is_deleted=True)
         response = self.query_region(journey_basic_query+ "&disruption_active=true")
         links = []
         def get_line_id(k, v):
@@ -416,8 +458,7 @@ class TestChaosDisruptionsBlockingOverlapping(ChaosDisruptionsFixture):
         return disruption_by_obj
 
 
-
-@dataset([("main_routing_test", ['--BROKER.rt_topics='+chaos_rt_topic, 'spawn_maintenance_worker'])])
+@dataset(MAIN_ROUTING_TEST_SETTING)
 class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
     """
     Note: it is done as a new fixture, to spawn a new kraken, in order not the get previous disruptions
@@ -426,8 +467,7 @@ class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
         """
         test /disruptions and check that an update of a disruption is correctly done
         """
-        self.wait_for_rabbitmq_cnx()
-        query = 'traffic_reports?_current_datetime=20140101T000000'
+        query = 'traffic_reports?_current_datetime=20120801T000000'
         response = self.query_region(query)
 
         disrupt = get_disruptions(response['traffic_reports'][0]['network'], response)
@@ -438,10 +478,7 @@ class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
         last_loaded_data = get_not_null(status['status'], 'last_rt_data_loaded')
 
         #we create a disruption on the network
-        self.send_chaos_disruption("test_disruption", "base_network", "network", message='message')
-
-        #we sleep a bit to let kraken reload the data
-        self.poll_until_reload(last_loaded_data)
+        self.send_mock("test_disruption", "base_network", "network", message='message')
 
         response = self.query_region(query)
 
@@ -457,8 +494,7 @@ class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
         last_loaded_data = get_not_null(status['status'], 'last_rt_data_loaded')
 
         #we update the previous disruption
-        self.send_chaos_disruption("test_disruption", "base_network", "network", message='update')
-        self.poll_until_reload(last_loaded_data)
+        self.send_mock("test_disruption", "base_network", "network", message='update')
 
         response = self.query_region(query)
 
@@ -473,8 +509,7 @@ class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
         last_loaded_data = get_not_null(status['status'], 'last_rt_data_loaded')
 
         #we delete the disruption
-        self.send_chaos_disruption("test_disruption", "base_network", "network", is_deleted=True)
-        self.poll_until_reload(last_loaded_data)
+        self.send_mock("test_disruption", "base_network", "network", is_deleted=True)
 
         response = self.query_region(query)
 
@@ -483,6 +518,122 @@ class TestChaosDisruptionsUpdate(ChaosDisruptionsFixture):
         eq_(len(disrupt), 2)
         for disruption in disrupt:
             assert disruption['uri'] != 'test_disruption', 'this disruption must have been deleted'
+
+
+@dataset(MAIN_ROUTING_TEST_SETTING)
+class TestChaosDisruptionsStopPoint(ChaosDisruptionsFixture):
+    """
+    Add disruption on stop point:
+        test if the information is raised in response
+        test if stop point is blocked
+    Then delete disruption:
+        test if there is no more disruptions in response
+    """
+    def test_disruption_on_stop_point(self):
+        disruption_id = 'test_disruption_on_stop_pointA'
+        disruption_msg = 'stop_point_disruption'
+        disruption_target = 'stop_point:stopA'
+        disruption_target_type = 'stop_point'
+        query = 'stop_points/stop_point:stopA'
+
+        # add disruption on stop point
+        self.send_mock(disruption_id,
+                       disruption_target,
+                       disruption_target_type,
+                       blocking=True,
+                       message=disruption_msg)
+        response = self.query_region(query)
+        disruptions = response.get('disruptions')
+        assert disruptions
+        assert len(disruptions) == 1
+        assert disruptions[0]['disruption_id'] == disruption_id
+
+        journey_query_adapted = journey_basic_query + "&data_freshness=adapted_schedule"
+
+        response_adapted = self.query_region(journey_query_adapted)
+
+        # As the public transport is blocked by the disruption, we should find only 1 journey here
+        assert len(response_adapted['journeys']) == 1
+        assert response_adapted['journeys'][0]['type'] == 'non_pt_walk'
+
+        # delete disruption on stop point
+        self.send_mock(disruption_id,
+                       disruption_target,
+                       disruption_target_type,
+                       is_deleted=True)
+
+        response = self.query_region(query)
+        disruptions = response.get('disruptions')
+        assert not disruptions
+
+        journey_query = journey_basic_query + "&data_freshness=base_schedule"
+        response = self.query_region(journey_query)
+        self.is_valid_journey_response(response, journey_query)
+        assert len(response['journeys']) == 2
+
+        journey_query = journey_basic_query + "&data_freshness=adapted_schedule"
+        response = self.query_region(journey_query)
+        self.is_valid_journey_response(response, journey_query)
+        assert len(response['journeys']) == 2
+
+
+@dataset(MAIN_ROUTING_TEST_SETTING)
+class TestChaosDisruptionsStopArea(ChaosDisruptionsFixture):
+    """
+    Add disruption on stop area:
+        test if the information is raised in response
+        test if stop area is blocked
+    Then delete disruption:
+        test if there is no more disruptions in response
+    """
+    def test_disruption_on_stop_point(self):
+        disruption_id = 'test_disruption_on_stop_areaA'
+        disruption_msg = 'stop_area_disruption'
+        disruption_target = 'stopA'
+        disruption_target_type = 'stop_area'
+        query = 'stop_areas/stopA'
+
+        # add disruption on stop point
+        self.send_mock(disruption_id,
+                       disruption_target,
+                       disruption_target_type,
+                       blocking=True,
+                       message=disruption_msg)
+        response = self.query_region(query)
+        disruptions = response.get('disruptions')
+        assert disruptions
+        assert len(disruptions) == 1
+        assert disruptions[0]['disruption_id'] == disruption_id
+
+        journey_query_adapted = journey_basic_query + "&data_freshness=adapted_schedule"
+
+        response_adapted = self.query_region(journey_query_adapted)
+
+        # No public transport journey is found, the only way it by foot
+        assert len(response_adapted['journeys']) == 1
+        assert response_adapted['journeys'][0]['type'] == 'non_pt_walk'
+
+        # delete disruption on stop point
+        self.send_mock(disruption_id,
+                       disruption_target,
+                       disruption_target_type,
+                       is_deleted=True)
+
+        response = self.query_region(query)
+        disruptions = response.get('disruptions')
+        assert not disruptions
+
+        journey_query = journey_basic_query + "&data_freshness=base_schedule"
+        response = self.query_region(journey_query)
+        self.is_valid_journey_response(response, journey_query)
+        assert len(response['journeys']) == 2
+
+        journey_query = journey_basic_query + "&data_freshness=adapted_schedule"
+        response = self.query_region(journey_query)
+        self.is_valid_journey_response(response, journey_query)
+        assert len(response['journeys']) == 2
+
+
 
 
 def make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start, end,
@@ -521,6 +672,7 @@ def make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start
     impact = disruption.impacts.add()
     impact.id = "impact_" + disruption_name + "_1"
     enums_impact = gtfs_realtime_pb2.Alert.DESCRIPTOR.enum_values_by_name
+    impact.created_at = 1459868783 # u'20160405T150623' 
     if blocking:
         impact.severity.effect = enums_impact["NO_SERVICE"].number
         impact.severity.id = 'blocking'
@@ -545,7 +697,8 @@ def make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start
         "stop_area": chaos_pb2.PtObject.stop_area,
         "line": chaos_pb2.PtObject.line,
         "line_section": chaos_pb2.PtObject.line_section,
-        "route": chaos_pb2.PtObject.route
+        "route": chaos_pb2.PtObject.route,
+        "stop_point": chaos_pb2.PtObject.stop_point
     }
 
     ptobject = impact.informed_entities.add()
@@ -562,19 +715,23 @@ def make_mock_chaos_item(disruption_name, impacted_obj, impacted_obj_type, start
         pb_end.uri = end
         pb_end.pt_object_type = chaos_pb2.PtObject.stop_area
 
-    # Messages
+    # Message with one channel and one channel type: sms
     message = impact.messages.add()
     message.text = message_text
     message.channel.id = "sms"
     message.channel.name = "sms"
     message.channel.max_size = 60
     message.channel.content_type = "text"
+    message.channel.types.append(chaos_pb2.Channel.sms)
 
+    # Message with one channel and two channel types: web and email
     message = impact.messages.add()
     message.text = message_text
     message.channel.name = "email"
     message.channel.id = "email"
     message.channel.max_size = 250
     message.channel.content_type = "html"
+    message.channel.types.append(chaos_pb2.Channel.web)
+    message.channel.types.append(chaos_pb2.Channel.email)
 
     return feed_message.SerializeToString()

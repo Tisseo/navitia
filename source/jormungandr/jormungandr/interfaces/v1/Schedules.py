@@ -29,49 +29,41 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 from flask.ext.restful import fields, marshal_with, reqparse
-from flask.globals import g
-from flask import request
+from flask import request, g
 from jormungandr import i_manager, utils
 from jormungandr import timezone
-from fields import stop_point, route, pagination, PbField, stop_date_time, \
+from jormungandr.interfaces.v1.fields import stop_point, route, pagination, PbField, stop_date_time, \
     additional_informations, stop_time_properties_links, display_informations_vj, \
     display_informations_route, UrisToLinks, error, \
     enum_type, SplitDateTime, MultiLineString, NonNullList, PbEnum, feed_publisher
-from ResourceUri import ResourceUri, complete_links
+from jormungandr.interfaces.v1.ResourceUri import ResourceUri, complete_links
 import datetime
 from jormungandr.interfaces.argument import ArgumentDoc
-from jormungandr.interfaces.parsers import option_value, date_time_format
-from errors import ManageError
-from flask.ext.restful.types import natural, boolean
-from jormungandr.interfaces.v1.fields import DisruptionsField
-from jormungandr.utils import ResourceUtc
-from make_links import create_external_link
+from jormungandr.interfaces.parsers import option_value, date_time_format, default_count_arg_type
+from jormungandr.interfaces.v1.errors import ManageError
+from flask.ext.restful.inputs import natural, boolean
+from jormungandr.interfaces.v1.fields import disruption_marshaller, NonNullList, NonNullNested
+from jormungandr.resources_utc import ResourceUtc
+from jormungandr.interfaces.v1.make_links import create_external_link
 from functools import wraps
 from copy import deepcopy
 from navitiacommon import response_pb2
+from jormungandr.exceptions import InvalidArguments
 
-
-class RouteSchedulesLinkField(fields.Raw):
-
-    def output(self, key, obj):
-        response = []
-        if obj.HasField('pt_display_informations'):
-            for value in obj.pt_display_informations.notes:
-                response.append({"type": 'notes', "id": value.uri, 'value': value.note})
-        return response
 
 class Schedules(ResourceUri, ResourceUtc):
-    parsers = {}
 
     def __init__(self, endpoint):
         ResourceUri.__init__(self)
         ResourceUtc.__init__(self)
         self.endpoint = endpoint
+        self.parsers = {}
         self.parsers["get"] = reqparse.RequestParser(
             argument_class=ArgumentDoc)
         parser_get = self.parsers["get"]
-        parser_get.add_argument("filter", type=str)
+        parser_get.add_argument("filter", type=unicode)
         parser_get.add_argument("from_datetime", type=date_time_format,
                                 description="The datetime from which you want\
                                 the schedules", default=None)
@@ -82,35 +74,61 @@ class Schedules(ResourceUri, ResourceUtc):
                                 description="Maximum duration between datetime\
                                 and the retrieved stop time")
         parser_get.add_argument("depth", type=int, default=2)
-        parser_get.add_argument("count", type=int, default=10,
+        parser_get.add_argument("count", type=default_count_arg_type, default=10,
                                 description="Number of schedules per page")
         parser_get.add_argument("start_page", type=int, default=0,
                                 description="The current page")
-        parser_get.add_argument("max_date_times", type=natural, default=10000,
-                                description="Maximum number of schedule per\
-                                stop_point/route")
+        parser_get.add_argument("max_date_times", type=natural,
+                                description="DEPRECATED, use items_per_schedule")
         parser_get.add_argument("forbidden_id[]", type=unicode,
-                                description="forbidden ids",
+                                description="DEPRECATED, replaced by forbidden_uris[]",
+                                dest="__temporary_forbidden_id[]",
+                                default=[],
+                                action='append')
+        parser_get.add_argument("forbidden_uris[]", type=unicode,
+                                description="forbidden uris",
                                 dest="forbidden_uris[]",
-                                action="append")
-        parser_get.add_argument("calendar", type=str,
+                                default=[],
+                                action='append')
+
+        parser_get.add_argument("calendar", type=unicode,
                                 description="Id of the calendar")
         parser_get.add_argument("distance", type=int, default=200,
                                 description="Distance range of the query. Used only if a coord is in the query")
         parser_get.add_argument("show_codes", type=boolean, default=False,
                             description="show more identification codes")
+        #Note: no default param for data freshness, the default depends on the API
+        parser_get.add_argument("data_freshness",
+                                description='freshness of the data. '
+                                            'base_schedule is the long term planned schedule. '
+                                            'adapted_schedule is for planned ahead disruptions (strikes, '
+                                            'maintenances, ...). '
+                                            'realtime is to have the freshest possible data',
+                                type=option_value(['base_schedule', 'adapted_schedule', 'realtime']))
         parser_get.add_argument("_current_datetime", type=date_time_format, default=datetime.datetime.utcnow(),
                                 description="The datetime we want to publish the disruptions from."
                                             " Default is the current date and it is mainly used for debug.")
+        parser_get.add_argument("items_per_schedule", type=natural, default=10000,
+                                description="maximum number of date_times per schedule")
 
         self.method_decorators.append(complete_links(self))
 
     def get(self, uri=None, region=None, lon=None, lat=None):
         args = self.parsers["get"].parse_args()
+
+        # for retrocompatibility purpose
+        for forbid_id in args['__temporary_forbidden_id[]']:
+            args['forbidden_uris[]'].append(forbid_id)
+
         args["nb_stoptimes"] = args["count"]
-        args["interface_version"] = 1
+
+        # retrocompatibility
+        if args['max_date_times'] is not None:
+            args['items_per_schedule'] = args['max_date_times']
 
         if uri is None:
+            if not args['filter']:
+                raise InvalidArguments('filter')
             first_filter = args["filter"].lower().split("and")[0].strip()
             parts = first_filter.lower().split("=")
             if len(parts) != 2:
@@ -125,22 +143,35 @@ class Schedules(ResourceUri, ResourceUtc):
         timezone.set_request_timezone(self.region)
 
         if not args["from_datetime"] and not args["until_datetime"]:
-            args['from_datetime'] = datetime.datetime.now()
-            args['from_datetime'] = args['from_datetime'].replace(hour=13, minute=37)
+            # no datetime given, default is the current time, and we activate the realtime
+            args['from_datetime'] = args['_current_datetime']
+            if args["calendar"]:  # if we have a calendar, the dt is only used for sorting, so 00:00 is fine
+                args['from_datetime'] = args['from_datetime'].replace(hour=0, minute=0)
+
+            if not args['data_freshness']:
+                args['data_freshness'] = 'realtime'
+        elif not args.get('calendar'):
+            #if a calendar is given all times will be given in local (because the calendar might span over dst)
+            if args['from_datetime']:
+                args['from_datetime'] = self.convert_to_utc(args['from_datetime'])
+            if args['until_datetime']:
+                args['until_datetime'] = self.convert_to_utc(args['until_datetime'])
 
         # we save the original datetime for debuging purpose
         args['original_datetime'] = args['from_datetime']
-
-        if not args.get('calendar'):
-            #if a calendar is given all times will be given in local (because it might span over dst)
-            if args['from_datetime']:
-                new_datetime = self.convert_to_utc(args['from_datetime'])
-                args['from_datetime'] = utils.date_to_timestamp(new_datetime)
-            if args['until_datetime']:
-                new_datetime = self.convert_to_utc(args['until_datetime'])
-                args['until_datetime'] = utils.date_to_timestamp(new_datetime)
-        else:
+        if args['from_datetime']:
             args['from_datetime'] = utils.date_to_timestamp(args['from_datetime'])
+        if args['until_datetime']:
+            args['until_datetime'] = utils.date_to_timestamp(args['until_datetime'])
+
+        if not args['data_freshness']:
+            # The data freshness depends on the API
+            # for route_schedule, by default we want the base schedule
+            if self.endpoint == 'route_schedules':
+                args['data_freshness'] = 'base_schedule'
+            # for stop_schedule and previous/next departure/arrival, we want the freshest data by default
+            else:
+                args['data_freshness'] = 'realtime'
 
         if not args["from_datetime"] and args["until_datetime"]\
                 and self.endpoint[:4] == "next":
@@ -154,7 +185,8 @@ class Schedules(ResourceUri, ResourceUtc):
 date_time = {
     "date_time": SplitDateTime(date='date', time='time'),
     "additional_informations": additional_informations(),
-    "links": stop_time_properties_links()
+    "links": stop_time_properties_links(),
+    'data_freshness': enum_type(attribute='realtime_level'),
 }
 
 row = {
@@ -177,15 +209,16 @@ route_schedule_fields = {
     "table": PbField(table_field),
     "display_informations": PbField(display_informations_route,
                                     attribute='pt_display_informations'),
-    "links": RouteSchedulesLinkField(attribute='pt_display_informations'),
-    "geojson": MultiLineString()
+    "links": UrisToLinks(),
+    "geojson": MultiLineString(),
+    "additional_informations": enum_type(attribute="response_status")
 }
 
 route_schedules = {
     "error": PbField(error, attribute='error'),
     "route_schedules": fields.List(fields.Nested(route_schedule_fields)),
     "pagination": fields.Nested(pagination),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(fields.Nested(feed_publisher))
 }
 
@@ -215,7 +248,7 @@ stop_schedules = {
     "stop_schedules": fields.List(fields.Nested(stop_schedule)),
     "pagination": fields.Nested(pagination),
     "error": PbField(error, attribute='error'),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(fields.Nested(feed_publisher))
 }
 
@@ -224,8 +257,6 @@ class StopSchedules(Schedules):
 
     def __init__(self):
         super(StopSchedules, self).__init__("departure_boards")
-        self.parsers["get"].add_argument("interface_version", type=int,
-                                         default=1, hidden=True)
 
     @marshal_with(stop_schedules)
     @ManageError()
@@ -235,7 +266,7 @@ class StopSchedules(Schedules):
 
 
 passage = {
-    "route": PbField(route, attribute="vehicle_journey.route"),
+    "route": PbField(route),
     "stop_point": PbField(stop_point),
     "stop_date_time": PbField(stop_date_time),
     "display_informations": PbField(display_informations_vj,
@@ -247,7 +278,7 @@ departures = {
                               attribute="next_departures"),
     "pagination": fields.Nested(pagination),
     "error": PbField(error, attribute='error'),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(fields.Nested(feed_publisher))
 }
 
@@ -255,7 +286,7 @@ arrivals = {
     "arrivals": fields.List(fields.Nested(passage), attribute="next_arrivals"),
     "pagination": fields.Nested(pagination),
     "error": PbField(error, attribute='error'),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(fields.Nested(feed_publisher))
 }
 
@@ -294,11 +325,12 @@ class add_passages_links:
                 kwargs_links.pop('from_datetime')
             delta = datetime.timedelta(seconds=1)
             dt = datetime.datetime.strptime(min_dt, "%Y%m%dT%H%M%S")
-            kwargs_links['until_datetime'] = (dt - delta).strftime("%Y%m%dT%H%M%S")
-            response["links"].append(create_external_link("v1."+api, rel="prev", _type=api, **kwargs_links))
-            kwargs_links.pop('until_datetime')
-            kwargs_links['from_datetime'] = (datetime.datetime.strptime(max_dt, "%Y%m%dT%H%M%S") + delta).strftime("%Y%m%dT%H%M%S")
-            response["links"].append(create_external_link("v1."+api, rel="next", _type=api, **kwargs_links))
+            if g.stat_interpreted_parameters.get('data_freshness') != 'realtime':
+                kwargs_links['until_datetime'] = (dt - delta).strftime("%Y%m%dT%H%M%S")
+                response["links"].append(create_external_link("v1."+api, rel="prev", _type=api, **kwargs_links))
+                kwargs_links.pop('until_datetime')
+                kwargs_links['from_datetime'] = (datetime.datetime.strptime(max_dt, "%Y%m%dT%H%M%S") + delta).strftime("%Y%m%dT%H%M%S")
+                response["links"].append(create_external_link("v1."+api, rel="next", _type=api, **kwargs_links))
             return response, status, other
         return wrapper
 

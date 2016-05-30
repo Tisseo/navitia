@@ -27,10 +27,11 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 
+from __future__ import absolute_import, print_function, unicode_literals, division
 import navitiacommon.type_pb2 as type_pb2
 import navitiacommon.request_pb2 as request_pb2
 import navitiacommon.response_pb2 as response_pb2
-import itertools
+from future.moves.itertools import zip_longest
 
 pb_type = {
     'stop_area': type_pb2.STOP_AREA,
@@ -51,6 +52,8 @@ pt_object_type = {
     'line_group': type_pb2.LINE_GROUP
 }
 
+PSEUDO_DURATION_FACTORS = ((1, -1, 'departure_date_time'), (-1, 1, 'arrival_date_time'))
+
 
 def compare(obj1, obj2, compare_generator):
     """
@@ -62,7 +65,7 @@ def compare(obj1, obj2, compare_generator):
     by setting it to object(), we ensure that it will be !=
     from any values returned by the other generator
     """
-    return all(a == b for a, b in itertools.izip_longest(compare_generator(obj1),
+    return all(a == b for a, b in zip_longest(compare_generator(obj1),
                                                          compare_generator(obj2),
                                                          fillvalue=object()))
 
@@ -120,7 +123,7 @@ class JourneySorter(object):
         the departure for clockwise, and the arrival for not clockwise
         """
         if j1.duration != j2.duration:
-            return j2.duration - j1.duration
+            return j1.duration - j2.duration
 
         if j1.nb_transfers != j2.nb_transfers:
             return j1.nb_transfers - j2.nb_transfers
@@ -188,7 +191,7 @@ def build_pagination(request, resp):
     pagination = resp.pagination
     if pagination.totalResult > 0:
         query_args = ""
-        for key, value in request.iteritems():
+        for key, value in request.items():
             if key != "startPage":
                 if isinstance(value, type([])):
                     for v in value:
@@ -221,7 +224,7 @@ def get_or_default(request, val, default):
         return val
     return default
 
-def updated_request_with_default(request, instance):
+def updated_common_journey_request_with_default(request, instance):
     if request['max_walking_duration_to_pt'] is None:
         request['max_walking_duration_to_pt'] = instance.max_walking_duration_to_pt
 
@@ -249,6 +252,16 @@ def updated_request_with_default(request, instance):
     if request['car_speed'] is None:
         request['car_speed'] = instance.car_speed
 
+
+def updated_request_with_default(request, instance):
+    updated_common_journey_request_with_default(request, instance)
+
+    if request['_min_car'] is None:
+        request['_min_car'] = instance.min_car
+
+    if request['_min_bike'] is None:
+        request['_min_bike'] = instance.min_bike
+
 def change_ids(new_journeys, journey_count):
     """
     we have to change some id's on the response not to have id's collision between response
@@ -257,17 +270,17 @@ def change_ids(new_journeys, journey_count):
     """
     #we need to change the fare id, the section id and the fare ref in the journey
     for ticket in new_journeys.tickets:
-        ticket.id = ticket.id + '_' + str(journey_count)
+        ticket.id = ticket.id + '_' + unicode(journey_count)
         for i in range(len(ticket.section_id)):
-            ticket.section_id[i] = ticket.section_id[i] + '_' + str(journey_count)
+            ticket.section_id[i] = ticket.section_id[i] + '_' + unicode(journey_count)
 
     for new_journey in new_journeys.journeys:
         for i in range(len(new_journey.fare.ticket_id)):
             new_journey.fare.ticket_id[i] = new_journey.fare.ticket_id[i] \
-                                            + '_' + str(journey_count)
+                                            + '_' + unicode(journey_count)
 
         for section in new_journey.sections:
-            section.id = section.id + '_' + str(journey_count)
+            section.id = section.id + '_' + unicode(journey_count)
 
 
 def fill_uris(resp):
@@ -277,7 +290,7 @@ def fill_uris(resp):
         for section in journey.sections:
             if section.type != response_pb2.PUBLIC_TRANSPORT:
                 continue
-            if section.HasField("pt_display_informations"):
+            if section.HasField(b"pt_display_informations"):
                 uris = section.uris
                 pt_infos = section.pt_display_informations
                 uris.vehicle_journey = pt_infos.uris.vehicle_journey
@@ -286,3 +299,59 @@ def fill_uris(resp):
                 uris.commercial_mode = pt_infos.uris.commercial_mode
                 uris.physical_mode = pt_infos.uris.physical_mode
                 uris.network = pt_infos.uris.network
+
+
+def get_pseudo_duration(journey, requested_dt, is_clockwise):
+    f1, f2, attr = PSEUDO_DURATION_FACTORS[is_clockwise]
+    return f1 * requested_dt + f2 * getattr(journey, attr)
+
+
+def gen_all_combin(n, t):
+    """
+
+    :param n: number of elements in the whole set
+    :param t: number of choices
+    :return: iterator
+
+    This function is used to generate all possible unordered combinations
+    Combination = {c_1, c_2, ..., c_t |  all c_t belongs to S }
+    where S is a set whose card(S) = n, c_t are indexes of elements in S (c as choice)
+
+    The function is a implementation of the algorithm L from the book of DONALD E.KNUTH's
+    <The art of computer programming> Section7.2.1.3
+
+    Example:
+    Given 4 elements, list all possible unordered combinations when choosing 3 elements
+    >>> list(gen_all_combin(4, 3))
+    [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
+
+    """
+    import numpy as np
+    # c is an array of choices
+    c = np.ones(t+2, dtype=int).tolist()
+    # init
+    for i in range(1, t+1):
+        c[i-1] = i - 1
+    c[t] = n
+    c[t+1] = 0
+    j = 0
+    while j < t:
+        yield c[0:-2]
+        j = 0
+        while (c[j] + 1) == c[j+1]:
+            c[j] = j
+            j += 1
+        c[j] += 1
+
+
+def add_link(resp, rel, **kwargs):
+    """ create and add a protobuf link to a protobuff response"""
+    link = resp.links.add(rel=rel, is_templated=False, ressource_name='journeys')
+    for k, v in kwargs.items():
+        if k is None or v is None:
+            continue
+        args = link.kwargs.add(key=k)
+        if type(v) is list:
+            args.values.extend(v)
+        else:
+            args.values.extend([v])

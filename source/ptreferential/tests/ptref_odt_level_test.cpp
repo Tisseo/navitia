@@ -36,14 +36,16 @@ www.navitia.io
 #include "ptreferential/reflexion.h"
 #include "ptreferential/ptref_graph.h"
 #include "ed/build_helper.h"
+#include "tests/utils_test.h"
 
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/connected_components.hpp>
 #include "type/pt_data.h"
 
 namespace navitia{namespace ptref {
-template<typename T> std::vector<type::idx_t> get_indexes(Filter filter,  Type_e requested_type, const type::Data & d);
+template<typename T> type::Indexes get_indexes(Filter filter,  Type_e requested_type, const type::Data & d);
 }}
+
 
 using namespace navitia::ptref;
 
@@ -54,22 +56,21 @@ BOOST_GLOBAL_FIXTURE( logger_initialized )
 
 class Params{
 public:
-    navitia::type::Data data;
+    nt::Data data;
     std::vector<std::string> forbidden;
-    std::vector<navitia::type::idx_t> final_idx;
-    navitia::type::Network* current_ntw;
-    navitia::type::Line* current_ln;
-    navitia::type::Route* current_rt;
-    navitia::type::JourneyPattern* current_jp;
+    nt::Indexes final_idx;
+    nt::Network* current_ntw;
+    nt::Line* current_ln;
+    nt::Route* current_rt;
     void add_network(const std::string& ntw_name){
-        navitia::type::Network* nt = new navitia::type::Network();
+        nt::Network* nt = new nt::Network();
         nt->uri = ntw_name;
         nt->name = ntw_name;
         data.pt_data->networks.push_back(nt);
         current_ntw = nt;
     }
     void add_line(const std::string& ln_name){
-        navitia::type::Line* ln = new navitia::type::Line();
+        nt::Line* ln = new nt::Line();
         ln->uri = ln_name;
         ln->name = ln_name;
         data.pt_data->lines.push_back(ln);
@@ -77,61 +78,90 @@ public:
         current_ntw->line_list.push_back(ln);
     }
     void add_route(const std::string& rt_name){
-        navitia::type::Route* rt = new navitia::type::Route();
+        nt::Route* rt = new nt::Route();
         rt->uri = rt_name;
         rt->name = rt_name;
         data.pt_data->routes.push_back(rt);
         current_rt = rt;
         current_ln->route_list.push_back(rt);
     }
-    void add_journey_pattern(const std::string& jp_name){
-        navitia::type::JourneyPattern* jp = new navitia::type::JourneyPattern();
-        jp->uri = jp_name;
-        jp->name = jp_name;
-
-        data.pt_data->journey_patterns.push_back(jp);
-        current_jp = jp;
-        current_rt->journey_pattern_list.push_back(jp);
+    void add_vj(const std::string& vj_name) {
+        auto mvj = data.pt_data->meta_vjs.get_or_create(vj_name);
+        std::vector<nt::StopTime> sts;
+        sts.emplace_back();
+        sts.back().stop_point = data.pt_data->stop_points.at(0);
+        auto vj = mvj->create_discrete_vj(vj_name,
+                                          nt::RTLevel::Base,
+                                          nt::ValidityPattern(),
+                                          current_rt,
+                                          std::move(sts),
+                                          *data.pt_data);
+        vj->name = vj_name;
     }
-    void set_odt_journey_patterns(){
-        for (navitia::type::JourneyPattern* jp : data.pt_data->journey_patterns){
-            jp->odt_properties.reset();
+    void set_estimated(const std::string& vj_name) {
+        data.pt_data->vehicle_journeys_map.at(vj_name)->stop_time_list.front().set_date_time_estimated(true);
+    }
+    void set_zonal(const std::string& vj_name) {
+        data.pt_data->vehicle_journeys_map.at(vj_name)->stop_time_list.front().stop_point =
+            data.pt_data->stop_points.at(1);
+    }
+    void reset_vj() {
+        for (auto* vj: data.pt_data->vehicle_journeys) {
+            vj->stop_time_list.front().set_date_time_estimated(false);
+            vj->stop_time_list.front().stop_point = data.pt_data->stop_points.at(0);
         }
     }
 
     Params(){
+        auto* normal_sp = new nt::StopPoint();
+        normal_sp->uri = "normal";
+        normal_sp->name = "normal";
+        data.pt_data->stop_points.push_back(normal_sp);
+
+        auto* zonal_sp = new nt::StopPoint();
+        zonal_sp->is_zonal = true;
+        zonal_sp->uri = "zonal";
+        zonal_sp->name = "zonal";
+        data.pt_data->stop_points.push_back(zonal_sp);
         /*
         Line1 :
             Route11 :
-                JP111 :   SP1     SP2     SP3
-                JP112 :   SP1     SP2     SP3     SP4
+                VJ111
+                VJ112
            Route12 :
-                JP121 :   SP3     SP2     SP1
-                JP122 :   SP4     SP3     SP2     SP1
+                VJ121
+                VJ122
 
         Line2 :
             Route21 :
-                JP211 :   SP1     SP2     SP3
-                JP212 :   SP1     SP2     SP3     SP4
+                VJ211
+                VJ212
 
         */
         add_network("R1");
         add_line("Line1");
         add_route("Route11");
-        add_journey_pattern("JP111");
-        add_journey_pattern("JP112");
+        add_vj("VJ111");
+        add_vj("VJ112");
 
         add_route("Route12");
-        add_journey_pattern("JP121");
-        add_journey_pattern("JP122");
+        add_vj("VJ121");
+        add_vj("VJ122");
 
         add_network("R2");
         add_line("Line2");
         add_route("Route21");
-        add_journey_pattern("JP211");
-        add_journey_pattern("JP212");
+        add_vj("VJ211");
+        add_vj("VJ212");
         data.build_uri();
-        }
+    }
+
+
+    //helper for the tests
+    nt::Indexes make_query(nt::Type_e requested_type,
+                                        const nt::OdtLevel_e odt_level) {
+        return navitia::ptref::make_query(requested_type, "", forbidden, odt_level, boost::none, boost::none, data);
+    }
 };
 BOOST_FIXTURE_TEST_SUITE(odt_level, Params)
 
@@ -146,28 +176,24 @@ Test 1 :
 */
 
 BOOST_AUTO_TEST_CASE(test1) {
-    set_odt_journey_patterns();
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::scheduled, data);
+    reset_vj();
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::with_stops, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::zonal,
-                                 data), ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal),
+                      ptref_error);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 2 :
     line 2 :
-        JP111 is virtual and JP112 is none odt
+        VJ111 is virtual and VJ112 is none odt
     line 2 :
         all journeypattern odt_level = none
 
@@ -175,28 +201,23 @@ Test 2 :
 */
 
 BOOST_AUTO_TEST_CASE(test2) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* JP111 = data.pt_data->journey_patterns_map["JP111"];
-    JP111->odt_properties.set_estimated();
+    reset_vj();
+    set_estimated("VJ111");
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::scheduled, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::zonal,
-                                 data), ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal),
+                      ptref_error);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 3 :
     line 1 :
-        JP111 and JP112 are zonal
+        VJ111 and VJ112 are zonal
     line 2 :
         all journeypattern odt_level = none
 
@@ -204,274 +225,206 @@ Test 3 :
 */
 
 BOOST_AUTO_TEST_CASE(test3) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_estimated("VJ111");
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ112");
+    set_zonal("VJ112");
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::scheduled, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::with_stops, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line1");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line1"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 4 :
     line 2 :
-        JP111 is zonal and JP112 is zonal
+        VJ111 is zonal and VJ112 is zonal
     line 2 :
-        JP211 is zonal and JP212 is none odt
+        VJ211 is zonal and VJ212 is none odt
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test4) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_estimated("VJ111");
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ112");
+    set_zonal("VJ112");
 
-    jp = data.pt_data->journey_patterns_map["JP211"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ211");
+    set_zonal("VJ211");
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::scheduled,
-                                 data),
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled),
                       ptref_error);
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::with_stops, data),
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops),
                       ptref_error);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 5 :
     line 2 :
-        JP111 and JP112 are zonal
+        VJ111 and VJ112 are zonal
     line 2 :
-        JP211 and JP212 are zonal
+        VJ211 and VJ212 are zonal
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test5) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_estimated("VJ111");
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ112");
+    set_zonal("VJ112");
 
-    jp = data.pt_data->journey_patterns_map["JP211"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ211");
+    set_zonal("VJ211");
 
-    jp = data.pt_data->journey_patterns_map["JP212"];
-    jp->odt_properties.set_estimated();
-    jp->odt_properties.set_zonal();
+    set_estimated("VJ212");
+    set_zonal("VJ212");
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::scheduled,
-                                 data),
-                      ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled), ptref_error);
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::with_stops, data),
-                      ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops), ptref_error);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 6 :
     line 1 :
-        JP111 is zonal and JP112 is none
+        VJ111 is zonal and VJ112 is none
     line 2 :
-        JP211 is none and JP212 is none
+        VJ211 is none and VJ212 is none
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test6) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_zonal("VJ111");
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::scheduled, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                           forbidden, navitia::type::OdtLevel_e::with_stops,
-                           data);
-    BOOST_CHECK_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                           forbidden, navitia::type::OdtLevel_e::zonal, data);
-    BOOST_CHECK_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line1");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line1"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 7 :
     line 2 :
-        JP111 is zonal and JP112 is zonal odt
+        VJ111 is zonal and VJ112 is zonal odt
     line 2 :
-        JP211 is none and JP212 is none odt
+        VJ211 is none and VJ212 is none odt
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test7) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ112");
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::scheduled, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                           forbidden, navitia::type::OdtLevel_e::with_stops,
-                           data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line2");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line2"}));
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
-    BOOST_REQUIRE_EQUAL(final_idx.size(), 1);
-    BOOST_REQUIRE_EQUAL(data.pt_data->lines[final_idx.front()]->uri, "Line1");
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
+    BOOST_CHECK_EQUAL_RANGE(get_uris<nt::Line>(final_idx, data), std::set<std::string>({"Line1"}));
 
-
-
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 8 :
     line 2 :
-        JP111 is zonal and JP112 is zonal odt
+        VJ111 is zonal and VJ112 is zonal odt
     line 2 :
-        JP211 is zonal and JP212 is none odt
+        VJ211 is zonal and VJ212 is none odt
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test8) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ112");
 
-    jp = data.pt_data->journey_patterns_map["JP211"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ211");
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::scheduled,
-                                 data), ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled), ptref_error);
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::with_stops,
-                                 data), ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops), ptref_error);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 
 /*
 Test 9 :
     line 2 :
-        JP111 is zonal and JP112 is zonal odt
+        VJ111 is zonal and VJ112 is zonal odt
     line 2 :
-        JP211 is zonal and JP212 is zonal odt
+        VJ211 is zonal and VJ212 is zonal odt
 
     Call make_query function with OdtLevel : none, mixt, zonal and all
 */
 
 BOOST_AUTO_TEST_CASE(test9) {
-    set_odt_journey_patterns();
-    navitia::type::JourneyPattern* jp = data.pt_data->journey_patterns_map["JP111"];
-    jp->odt_properties.set_zonal();
+    reset_vj();
+    set_zonal("VJ111");
 
-    jp = data.pt_data->journey_patterns_map["JP112"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ112");
 
-    jp = data.pt_data->journey_patterns_map["JP211"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ211");
 
-    jp = data.pt_data->journey_patterns_map["JP212"];
-    jp->odt_properties.set_zonal();
+    set_zonal("VJ212");
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::scheduled,
-                                 data), ptref_error);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::scheduled), ptref_error);
 
-    BOOST_CHECK_THROW(make_query(navitia::type::Type_e::Line, "",
-                                 forbidden, navitia::type::OdtLevel_e::with_stops,
-                                 data), ptref_error);
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                                        forbidden, navitia::type::OdtLevel_e::zonal, data);
+    BOOST_CHECK_THROW(make_query(nt::Type_e::Line, nt::OdtLevel_e::with_stops), ptref_error);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::zonal);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
-    final_idx = make_query(navitia::type::Type_e::Line, "",
-                     forbidden, navitia::type::OdtLevel_e::all, data);
+    final_idx = make_query(nt::Type_e::Line, nt::OdtLevel_e::all);
     BOOST_REQUIRE_EQUAL(final_idx.size(), 2);
 }
 

@@ -26,11 +26,12 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
 import logging
 from navitiacommon import models
 
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 from contextlib import contextmanager
 from flask import appcontext_pushed, g
 from jormungandr import app
@@ -63,6 +64,16 @@ authorizations = {
         "departure_board_test": {'ALL': False},
         "empty_routing_test": {'ALL': False}
     },
+    'test_user_blocked': {
+        "main_routing_test": {'ALL': True},
+        "departure_board_test": {'ALL': True},
+        "empty_routing_test": {'ALL': True}
+    },
+    'test_user_not_blocked': {
+        "main_routing_test": {'ALL': True},
+        "departure_board_test": {'ALL': True},
+        "empty_routing_test": {'ALL': True}
+    },
 }
 
 
@@ -70,7 +81,7 @@ class FakeUser:
     """
     We create a user independent from a database
     """
-    def __init__(self, name, id, have_access_to_free_instances=True, is_super_user=False):
+    def __init__(self, name, id, have_access_to_free_instances=True, is_super_user=False, is_blocked=False):
         """
         We just need a fake user, we don't really care about its identity
         """
@@ -78,6 +89,8 @@ class FakeUser:
         self.login = name
         self.have_access_to_free_instances = have_access_to_free_instances
         self.is_super_user = is_super_user
+        self.end_point_id = None
+        self._is_blocked = is_blocked
 
     @classmethod
     def get_from_token(cls, token):
@@ -91,6 +104,12 @@ class FakeUser:
         This is made to avoid using of database
         """
         return authorizations[self.login][instance_name][api_name]
+
+    def is_blocked(self, datetime_utc):
+        """
+        Return True if user is blocked else False
+        """
+        return self._is_blocked
 
 
 class FakeInstance(models.Instance):
@@ -109,6 +128,8 @@ user_in_db = {
     'bobette': FakeUser('bobette', 2),
     'bobitto': FakeUser('bobitto', 3),
     'tgv': FakeUser('tgv', 4, have_access_to_free_instances=False),
+    'test_user_blocked': FakeUser('test_user_blocked', 5, True, False, True),
+    'test_user_not_blocked': FakeUser('test_user_not_blocked', 6, True, False, False)
 }
 
 mock_instances = {
@@ -145,7 +166,7 @@ class AbstractTestAuthentication(AbstractTestFixture):
         models.Instance.get_by_name = self.old_instance_getter
 
 
-@dataset(["main_routing_test", "departure_board_test"])
+@dataset({"main_routing_test": {}, "departure_board_test": {}})
 class TestBasicAuthentication(AbstractTestAuthentication):
 
     def test_coverage(self):
@@ -158,6 +179,14 @@ class TestBasicAuthentication(AbstractTestAuthentication):
             assert('regions' in response)
             assert(len(response['regions']) == 1)
             assert(response['regions'][0]['id'] == "main_routing_test")
+
+    def test_auth_required(self):
+        """
+        if no token is given we are asked to log in (code 401) and a chalenge is sent (header WWW-Authenticate)
+        """
+        response_obj = self.app.get('/v1/coverage')
+        assert response_obj.status_code == 401
+        assert 'WWW-Authenticate' in response_obj.headers
 
     def test_status_code(self):
         """
@@ -190,7 +219,39 @@ class TestBasicAuthentication(AbstractTestAuthentication):
             assert get_not_null(r, 'error')['message'] \
                    == "The region the_marvelous_unknown_region doesn't exists"
 
-@dataset(["main_routing_test", "departure_board_test", "empty_routing_test"])
+
+@dataset({"main_routing_test": {}})
+class TestIfUserIsBlocked(AbstractTestAuthentication):
+
+    def test_status_code(self):
+        """
+        We query the api with user 5 who must be blocked
+        """
+        requests_status_codes = [
+            ('/v1/coverage/main_routing_test', 429),
+            ('/v1/coverage/departure_board_test', 429)
+        ]
+
+        with user_set(app, 'test_user_blocked'):
+            for request, status_code in requests_status_codes:
+                assert(self.app.get(request).status_code == status_code)
+
+
+@dataset({"main_routing_test": {}})
+class TestIfUserIsNotBlocked(AbstractTestAuthentication):
+
+    def test_status_code(self):
+        """
+        We query the api with user 6 who must not be blocked
+        """
+        requests_status_codes = [('/v1/coverage/main_routing_test', 200)]
+
+        with user_set(app, 'test_user_not_blocked'):
+            for request, status_code in requests_status_codes:
+                assert(self.app.get(request).status_code == status_code)
+                
+
+@dataset({"main_routing_test": {}, "departure_board_test": {}, "empty_routing_test": {}})
 class TestOverlappingAuthentication(AbstractTestAuthentication):
 
     def test_coverage(self):
@@ -323,7 +384,8 @@ class TestOverlappingAuthentication(AbstractTestAuthentication):
 
             response, status = self.query_no_assert('/v1/journeys?from={from_coord}&to={to_coord}&datetime={d}'
                                                     .format(from_coord=s_coord, to_coord=r_coord, d='20120614T08'))
-            assert 'error' in response and response['error']['id'] == "no_origin_nor_destination"
+            assert 'error' in response
+            eq_(response['error']['id'], "no_origin_nor_destination")
             assert status == 404
 
     def test_places_for_bobitto(self):

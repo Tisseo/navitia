@@ -247,7 +247,7 @@ struct Autocomplete
     }
 
     /** On passe une chaîne de charactère contenant des mots et on trouve toutes les positions contenant tous ces mots*/
-    std::vector<T> find(std::set<std::string> vecStr) const {
+    std::vector<T> find(const std::set<std::string>& vecStr) const {
         std::vector<T> result;
         auto vec = vecStr.begin();
         if(vec != vecStr.end()){
@@ -304,18 +304,17 @@ struct Autocomplete
         }
     };
 
-    std::vector<fl_quality> sort_and_truncate_by_score(std::vector<fl_quality> input, size_t nbmax) const {
-        sort_and_truncate(input, nbmax, [](fl_quality a, fl_quality b){return a.score > b.score;});
-        return input;
+    void sort_and_truncate_by_score(std::vector<fl_quality>& input, size_t nbmax) const {
+        sort_and_truncate(input, nbmax, [](const fl_quality& a, const fl_quality& b){return a.score > b.score;});
     }
 
     std::vector<fl_quality> sort_and_truncate_by_quality(std::vector<fl_quality> input, size_t nbmax) const {
-        sort_and_truncate(input, nbmax, [](fl_quality a, fl_quality b){return a.quality > b.quality;});
+        sort_and_truncate(input, nbmax, [](const fl_quality& a, const fl_quality& b){return a.quality > b.quality;});
         return input;
     }
 
     /** On passe une chaîne de charactère contenant des mots et on trouve toutes les positions contenant au moins un des mots*/
-    std::vector<fl_quality> find_complete(const std::string & str,
+    std::vector<fl_quality> find_complete(const std::string& str,
                                           size_t nbmax,
                                           std::function<bool(T)> keep_element,
                                           const std::set<std::string>& ghostwords)
@@ -341,12 +340,25 @@ struct Autocomplete
                 vec_quality.push_back(quality);
             }
         }
-        return sort_and_truncate_by_score(vec_quality, nbmax);
+        sort_and_truncate_by_score(vec_quality, nbmax);
+        return vec_quality;
     }
 
 
+    std::vector<fl_quality> compute_vec_quality(const std::string& str,
+                                                const std::vector<T>& index_result,
+                                                const navitia::georef::GeoRef& geo_ref,
+                                                std::function<bool(T)> keep_element,
+                                                int word_length) const;
+
+    std::vector<fl_quality> find_complete_way(const std::string& str,
+                                              size_t nbmax,
+                                              std::function<bool(T)> keep_element,
+                                              const std::set<std::string>& ghostwords,
+                                              const navitia::georef::GeoRef& geo_ref) const;
+
     /** Recherche des patterns les plus proche : faute de frappe */
-    std::vector<fl_quality> find_partial_with_pattern(const std::string &str,
+    std::vector<fl_quality> find_partial_with_pattern(const std::string & str,
                                                       const int word_weight,
                                                       size_t nbmax,
                                                       std::function<bool(T)> keep_element,
@@ -441,46 +453,24 @@ struct Autocomplete
     }
 
     std::string strip_accents(std::string str) const {
-        std::vector< std::pair<std::string, std::string> > vec_str;
-        vec_str.push_back(std::make_pair("à","a"));
-        vec_str.push_back(std::make_pair("À","a"));
-        vec_str.push_back(std::make_pair("â","a"));
-        vec_str.push_back(std::make_pair("Â","a"));
-        vec_str.push_back(std::make_pair("ä","a"));
-        vec_str.push_back(std::make_pair("Ä","a"));
-        vec_str.push_back(std::make_pair("æ","ae"));
-        vec_str.push_back(std::make_pair("é","e"));
-        vec_str.push_back(std::make_pair("É","e"));
-        vec_str.push_back(std::make_pair("è","e"));
-        vec_str.push_back(std::make_pair("È","e"));
-        vec_str.push_back(std::make_pair("ê","e"));
-        vec_str.push_back(std::make_pair("Ê","e"));
-        vec_str.push_back(std::make_pair("ë","e"));
-        vec_str.push_back(std::make_pair("Ë","e"));
-        vec_str.push_back(std::make_pair("ô","o"));
-        vec_str.push_back(std::make_pair("Ô","o"));
-        vec_str.push_back(std::make_pair("ö","o"));
-        vec_str.push_back(std::make_pair("Ö","o"));
-        vec_str.push_back(std::make_pair("û","u"));
-        vec_str.push_back(std::make_pair("Û","u"));
-        vec_str.push_back(std::make_pair("ù","u"));
-        vec_str.push_back(std::make_pair("Ù","u"));
-        vec_str.push_back(std::make_pair("ü","u"));
-        vec_str.push_back(std::make_pair("Ü","u"));
-        vec_str.push_back(std::make_pair("ç","c"));
-        vec_str.push_back(std::make_pair("Ç","c"));
-        vec_str.push_back(std::make_pair("ï","i"));
-        vec_str.push_back(std::make_pair("Ï","i"));
-        vec_str.push_back(std::make_pair("î","i"));
-        vec_str.push_back(std::make_pair("Î","i"));
-        vec_str.push_back(std::make_pair("œ","oe"));
+        const static std::vector< std::pair<std::string, std::string> > vec_str{
+            {"à","a"}, {"À","a"}, {"â","a"}, {"Â","a"}, {"ä","a"}, {"Ä","a"},
+            {"é","e"}, {"É","e"}, {"è","e"}, {"È","e"}, {"ê","e"}, {"Ê","e"}, {"ë","e"}, {"Ë","e"},
+            {"ô","o"}, {"Ô","o"}, {"ö","o"}, {"Ö","o"},
+            {"û","u"}, {"Û","u"}, {"ù","u"}, {"Ù","u"}, {"ü","u"}, {"Ü","u"},
+            {"ç","c"}, {"Ç","c"},
+            {"ï","i"}, {"Ï","i"}, {"î","i"}, {"Î","i"},
+            {"œ","oe"},{"æ","ae"}, {"’","'"}
+        };
 
-        auto vec = vec_str.begin();
-        while(vec != vec_str.end()){
-            boost::algorithm::replace_all(str, vec->first, vec->second);
-            ++vec;
+        for (const auto& vec : vec_str) {
+            boost::algorithm::replace_all(str, vec.first, vec.second);
         }
         return str;
+    }
+
+    std::string strip_accents_and_lower(const std::string& str) const{
+        return boost::to_lower_copy(strip_accents(str));
     }
 
     std::set<std::string> tokenize(std::string strFind, const std::set<std::string>& ghostwords,
@@ -493,18 +483,18 @@ struct Autocomplete
         strFind = strip_accents(strFind);
         std::string strTemp = strFind;
 
-        //if synonyms contains something, add all synonyms if found while serching on ket et value.
+        //if synonyms contains something, add all synonyms if found while serching on key and value.
         //For each synonyms.key found in strFind add synonyms.value
         for(const auto& it : synonyms){
-            if  (boost::regex_search(strFind,boost::regex("\\<" + it.first + "\\>"))){
-                strTemp += " " + it.second;
+            if  (boost::regex_search(strFind,boost::regex("\\<" + strip_accents_and_lower(it.first) + "\\>"))){
+                strTemp += " " + strip_accents_and_lower(it.second);
             }
         }
 
         //For each synonyms.value found in strFind add synonyms.key
         for(const auto& it : synonyms){
-            if  (boost::regex_search(strFind,boost::regex("\\<" + it.second + "\\>"))){
-                strTemp += " " + it.first;
+            if  (boost::regex_search(strFind,boost::regex("\\<" + strip_accents_and_lower(it.second) + "\\>"))){
+                strTemp += " " + strip_accents_and_lower(it.first);
             }
         }
 
@@ -547,5 +537,7 @@ struct Autocomplete
         return result;
     }
 };
+
+extern template struct Autocomplete<navitia::type::idx_t>;
 
 }} // namespace navitia::autocomplete

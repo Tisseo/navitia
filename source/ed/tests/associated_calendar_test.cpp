@@ -159,35 +159,30 @@ BOOST_AUTO_TEST_CASE(get_differences_test_full_cal) {
 */
 
 struct associated_cal_fixture {
-    associated_cal_fixture() : b("20140101"), data(),
+    associated_cal_fixture() {
+        data.meta.production_date = {"20140101"_d, "20150101"_d};
+        data.tz_wrapper.tz_handler = navitia::type::TimeZoneHandler{"utc", "20140101"_d, {{0, {data.meta.production_date}}}};
+
         // Same vehicleJourney.validity_pattern : Associated vehicle_journey
-        always_on_cal(new ed::types::Calendar(b.data->meta->production_date.begin())),
+        always_on_cal = new ed::types::Calendar(data.meta.production_date.begin());
+        always_on_cal->uri="always_on";
+        always_on_cal->period_list.push_back(period("20140101", "20140111"));
+        always_on_cal->week_pattern = std::bitset<7>{"0111100"};
+        data.calendars.push_back(always_on_cal);
+
         // 2 days of period 01/04/2014 - 11/04/2014 : Associated vehicle_journey
-        wednesday_cal(new ed::types::Calendar(b.data->meta->production_date.begin())),
+        wednesday_cal = new ed::types::Calendar(data.meta.production_date.begin());
+        wednesday_cal->uri="wednesday";
+        wednesday_cal->period_list.push_back(period("20140101", "20140111"));
+        wednesday_cal->week_pattern = std::bitset<7>{"0010000"};
+        data.calendars.push_back(wednesday_cal);
+
         // monday where vehiclejourney.validity_pattern not valide for this day : Not Associated vehicle_journey
-        monday_cal(new ed::types::Calendar(b.data->meta->production_date.begin())) {
-        {
-            always_on_cal->uri="always_on";
-            always_on_cal->period_list.push_back(period("20140101", "20140111"));
-            always_on_cal->week_pattern = std::bitset<7>{"0111100"};
-            data.calendars.push_back(always_on_cal);
-        }
-
-        {
-            wednesday_cal->uri="wednesday";
-            wednesday_cal->period_list.push_back(period("20140101", "20140111"));
-            wednesday_cal->week_pattern = std::bitset<7>{"0010000"};
-            data.calendars.push_back(wednesday_cal);
-        }
-
-        {
-            monday_cal->uri="monday";
-            monday_cal->period_list.push_back(period("20140105", "20140111"));
-            monday_cal->week_pattern = std::bitset<7>{"1000000"};
-            data.calendars.push_back(monday_cal);
-        }
-
-        data.meta.production_date = {boost::gregorian::date(2014, 1, 1), boost::gregorian::date(2015, 1, 1)};
+        monday_cal = new ed::types::Calendar(data.meta.production_date.begin());
+        monday_cal->uri="monday";
+        monday_cal->period_list.push_back(period("20140105", "20140111"));
+        monday_cal->week_pattern = std::bitset<7>{"1000000"};
+        data.calendars.push_back(monday_cal);
 
         ed::types::Network* network = new ed::types::Network();
         network->idx = data.networks.size();
@@ -206,12 +201,6 @@ struct associated_cal_fixture {
         route->line = line;
         data.routes.push_back(route);
 
-        auto* journey_pattern = new ed::types::JourneyPattern();
-        journey_pattern->idx = data.journey_patterns.size();
-        journey_pattern->uri ="jp";
-        journey_pattern->route = route;
-        data.journey_patterns.push_back(journey_pattern);
-
         auto st1 = new ed::types::StopTime();
         st1->arrival_time = 10 * 3600 + 15 * 60;
         st1->departure_time = 10 * 3600 + 15 * 60;
@@ -222,10 +211,10 @@ struct associated_cal_fixture {
         st2->departure_time = 11 * 3600 + 10 * 60;
         data.stops.push_back(st2);
 
-        st1->tmp_stop_point = new ed::types::StopPoint();
-        data.stop_points.push_back(st1->tmp_stop_point);
-        st2->tmp_stop_point = new ed::types::StopPoint();
-        data.stop_points.push_back(st2->tmp_stop_point);
+        st1->stop_point = new ed::types::StopPoint();
+        data.stop_points.push_back(st1->stop_point);
+        st2->stop_point = new ed::types::StopPoint();
+        data.stop_points.push_back(st2->stop_point);
 
 
         //b.vj("network:R", "line:A", "", "", true, "vj1")
@@ -236,7 +225,7 @@ struct associated_cal_fixture {
         vj1->idx = data.vehicle_journeys.size();
         vj1->name = "vj1";
         vj1->uri = "vj1";
-        vj1->journey_pattern = journey_pattern;
+        vj1->route = route;
         vj1->stop_time_list.push_back(st1);
         vj1->stop_time_list.push_back(st2);
         data.vehicle_journeys.push_back(vj1);
@@ -249,7 +238,7 @@ struct associated_cal_fixture {
         vj2->idx = data.vehicle_journeys.size();
         vj2->name = "vj2";
         vj2->uri = "vj2";
-        vj2->journey_pattern = journey_pattern;
+        vj2->route = route;
         vj2->stop_time_list.push_back(st1);
         vj2->stop_time_list.push_back(st2);
         data.vehicle_journeys.push_back(vj2);
@@ -262,7 +251,7 @@ struct associated_cal_fixture {
         vj2_b->idx = data.vehicle_journeys.size();
         vj2_b->name = "vj2_bis";
         vj2_b->uri = "vj2_bis";
-        vj2_b->journey_pattern = journey_pattern;
+        vj2_b->route = route;
         vj2_b->stop_time_list.push_back(st1);
         vj2_b->stop_time_list.push_back(st2);
         data.vehicle_journeys.push_back(vj2_b);
@@ -270,13 +259,14 @@ struct associated_cal_fixture {
         // meta_vj
 
         ed::types::MetaVehicleJourney mvj;
+        mvj.uri = "meta_vj";
         mvj.theoric_vj.push_back(vj1);
         mvj.theoric_vj.push_back(vj2);
         mvj.theoric_vj.push_back(vj2_b);
-        vj1->meta_vj_name = "meta_vj";
-        vj2->meta_vj_name = "meta_vj";
-        vj2_b->meta_vj_name = "meta_vj";
-        data.meta_vj_map.insert({"meta_vj", mvj});
+        vj1->meta_vj_name = mvj.uri;
+        vj2->meta_vj_name = mvj.uri;
+        vj2_b->meta_vj_name = mvj.uri;
+        data.meta_vj_map.insert({mvj.uri, mvj});
 
         always_on_cal->line_list.push_back(line);
         wednesday_cal->line_list.push_back(line);
@@ -285,7 +275,7 @@ struct associated_cal_fixture {
         // The whole week but saturday and sunday
         vj1->validity_pattern = new ed::types::ValidityPattern();
         vj1->validity_pattern->idx = data.validity_patterns.size();
-        vj1->validity_pattern->beginning_date = b.data->meta->production_date.begin();
+        vj1->validity_pattern->beginning_date = data.meta.production_date.begin();
 
         vj1->validity_pattern->add(date("20140101"), date("20140111"), always_on_cal->week_pattern);
 
@@ -294,13 +284,13 @@ struct associated_cal_fixture {
         //for the meta vj we use the same, but split
         vj2->validity_pattern = new ed::types::ValidityPattern();
         vj2->idx = data.validity_patterns.size();
-        vj2->validity_pattern->beginning_date = b.data->meta->production_date.begin();
+        vj2->validity_pattern->beginning_date = data.meta.production_date.begin();
         vj2->validity_pattern->add(date("20140101"), date("20140105"), always_on_cal->week_pattern);
         data.validity_patterns.push_back(vj2->validity_pattern);
 
         vj2_b->validity_pattern = new ed::types::ValidityPattern();
         vj2_b->idx = data.validity_patterns.size();
-        vj2_b->validity_pattern->beginning_date = b.data->meta->production_date.begin();
+        vj2_b->validity_pattern->beginning_date = data.meta.production_date.begin();
         vj2_b->validity_pattern->add(date("20140106"), date("20140111"), always_on_cal->week_pattern);
         data.validity_patterns.push_back(vj2_b->validity_pattern);
 
@@ -334,7 +324,6 @@ struct associated_cal_fixture {
         auto it_associated_monday_cal = meta_vj->associated_calendars.find(monday_cal->uri);
         BOOST_REQUIRE(it_associated_monday_cal == meta_vj->associated_calendars.end());
     }
-    ed::builder b;
     ed::Data data;
     ed::types::Calendar* always_on_cal;
     ed::types::Calendar* wednesday_cal;

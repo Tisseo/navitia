@@ -32,66 +32,6 @@ www.navitia.io
 
 using namespace ed::types;
 
-bool ValidityPattern::is_valid(int duration){
-    if(duration < 0){
-        return false;
-    }
-    else if(duration > 366){
-        return false;
-    }
-    return true;
-}
-
-bool ValidityPattern::operator==(const ValidityPattern& other)const{
-    return ((this->beginning_date == other.beginning_date) && (this->days == other.days));
-}
-
-void ValidityPattern::add(boost::gregorian::date day){
-    long duration = (day - beginning_date).days();
-    if(is_valid(duration))
-        add(duration);
-}
-
-void ValidityPattern::add(int duration){
-    if(is_valid(duration))
-        days[duration] = true;
-}
-
-void ValidityPattern::add(boost::gregorian::date start, boost::gregorian::date end, std::bitset<7> active_days){
-    for(long i=0; i < (end - start).days(); ++i){
-        boost::gregorian::date current_date = start + boost::gregorian::days(i);
-        if(active_days[(6 + current_date.day_of_week()) % 7]){
-            add(current_date);
-        }else{
-            remove(current_date);
-        }
-    };
-}
-
-void ValidityPattern::remove(boost::gregorian::date date){
-    long duration = (date - beginning_date).days();
-    remove(duration);
-}
-
-void ValidityPattern::remove(int day){
-    if(is_valid(day))
-        days[day] = false;
-}
-
-bool ValidityPattern::check(int day) const {
-    assert(day >= 0);
-    return days[day];
-}
-
-int ValidityPattern::slide(boost::gregorian::date day) const {
-    return (day - beginning_date).days();
-}
-
-bool ValidityPattern::check(boost::gregorian::date day) const {
-    long duration = slide(day);
-    return check(duration);
-}
-
 bool CommercialMode::operator<(const CommercialMode& other) const {
     return this->name < other.name || (this->name == other.name && this < &other);
 }
@@ -130,24 +70,6 @@ bool Route::operator<(const Route& other) const {
     }
 }
 
-bool JourneyPattern::operator<(const JourneyPattern& other) const {
-    if(this->route == other.route){
-        BOOST_ASSERT(this->uri != other.uri);
-        return this->uri <  other.uri;
-    }else{
-        return *(this->route) < *(other.route);
-    }
-}
-
-bool JourneyPatternPoint::operator<(const JourneyPatternPoint& other) const {
-    if(this->journey_pattern == other.journey_pattern){
-        BOOST_ASSERT(this->order != other.order);
-        return this->order < other.order;
-    }else{
-        return *(this->journey_pattern) < *(other.journey_pattern);
-    }
-}
-
 Calendar::Calendar(boost::gregorian::date beginning_date) : validity_pattern(beginning_date) {}
 
 void Calendar::build_validity_pattern(boost::gregorian::date_period production_period) {
@@ -178,8 +100,6 @@ bool StopArea::operator<(const StopArea& other) const {
     return this->uri < other.uri;
 }
 
-
-
 bool StopPoint::operator<(const StopPoint& other) const {
     if(!this->stop_area)
         return false;
@@ -193,21 +113,8 @@ bool StopPoint::operator<(const StopPoint& other) const {
     }
 }
 
-
 bool VehicleJourney::operator<(const VehicleJourney& other) const {
-    if(this->journey_pattern == other.journey_pattern){
-        // On compare les pointeurs pour avoir un ordre total (fonctionnellement osef du tri, mais techniquement c'est important)
-        return this->stop_time_list.front() < other.stop_time_list.front();
-    }else{
-        return *(this->journey_pattern) < *(other.journey_pattern);
-    }
-}
-
-bool ValidityPattern::operator <(const ValidityPattern &other) const {
-    //Il faut retablir l'insertion unique des pointeurs dans les connecteurs
-    //BOOST_ASSERT(this->days.to_string() != other.days.to_string());
-    //return this->days.to_string() < other.days.to_string();
-    return this < &other;
+    return this->uri < other.uri;
 }
 
 bool StopPointConnection::operator<(const StopPointConnection& other) const{
@@ -223,10 +130,8 @@ bool StopPointConnection::operator<(const StopPointConnection& other) const{
 }
 
 bool StopTime::operator<(const StopTime& other) const {
-    if(this->vehicle_journey == other.vehicle_journey){
-        BOOST_ASSERT(this->journey_pattern_point->order != other.journey_pattern_point->order);
-        return this->journey_pattern_point->order < other.journey_pattern_point->order;
-    } else {
+    if(this->vehicle_journey != other.vehicle_journey){
         return *(this->vehicle_journey) < *(other.vehicle_journey);
     }
+    return this->order < other.order;
 }

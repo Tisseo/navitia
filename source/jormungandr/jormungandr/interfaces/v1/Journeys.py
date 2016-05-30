@@ -28,46 +28,41 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
+from __future__ import absolute_import, print_function, unicode_literals, division
+from functools import cmp_to_key
 import logging
-from flask import Flask, request, g
+from flask import request, g
 from flask.ext.restful import fields, reqparse, marshal_with, abort
-from flask.ext.restful.types import boolean
-from jormungandr import i_manager
+from flask.ext.restful.inputs import boolean
+from jormungandr import i_manager, app
 from jormungandr.exceptions import RegionNotFound
 from jormungandr.instance_manager import instances_comparator
-from jormungandr import authentication
-from jormungandr.interfaces.v1.fields import DisruptionsField
-from jormungandr.protobuf_to_dict import protobuf_to_dict
-from fields import stop_point, stop_area, line, physical_mode, \
-    commercial_mode, company, network, pagination, place,\
+from jormungandr.interfaces.v1.fields import disruption_marshaller, Links
+from jormungandr.interfaces.v1.fields import display_informations_vj, error, place,\
     PbField, stop_date_time, enum_type, NonNullList, NonNullNested,\
-    display_informations_vj, error,\
     SectionGeoJson, Co2Emission, PbEnum, feed_publisher
 
-from jormungandr.interfaces.parsers import option_value, date_time_format
-#from exceptions import RegionNotFound
-from ResourceUri import ResourceUri, complete_links
-import datetime
+from jormungandr.interfaces.parsers import option_value, date_time_format, default_count_arg_type, date_time_format
+from jormungandr.interfaces.v1.ResourceUri import ResourceUri, complete_links
 from functools import wraps
-from fields import DateTime
+from jormungandr.interfaces.v1.fields import DateTime
 from jormungandr.timezone import set_request_timezone
-from make_links import add_id_links, clean_links, create_external_link, create_internal_link
-from errors import ManageError
+from jormungandr.interfaces.v1.make_links import create_external_link, create_internal_link
+from jormungandr.interfaces.v1.errors import ManageError
 from jormungandr.interfaces.argument import ArgumentDoc
-from jormungandr.interfaces.parsers import depth_argument
+from jormungandr.interfaces.parsers import depth_argument, float_gt_0
 from operator import itemgetter
 from datetime import datetime, timedelta
-import sys
-from copy import copy
-from datetime import datetime
 from collections import defaultdict
 from navitiacommon import type_pb2, response_pb2
-from jormungandr.utils import date_to_timestamp, ResourceUtc
+from jormungandr.utils import date_to_timestamp
+from jormungandr.resources_utc import ResourceUtc
 from copy import deepcopy
-from jormungandr.travelers_profile import travelers_profile
+from jormungandr.travelers_profile import TravelerProfile
 from jormungandr.interfaces.v1.transform_id import transform_id
 from jormungandr.interfaces.v1.Calendars import calendar
-
+from navitiacommon.default_traveler_profile_params import acceptable_traveler_types
+from navitiacommon import default_values
 
 f_datetime = "%Y%m%dT%H%M%S"
 class SectionLinks(fields.Raw):
@@ -75,7 +70,7 @@ class SectionLinks(fields.Raw):
     def output(self, key, obj):
         links = None
         try:
-            if obj.HasField("uris"):
+            if obj.HasField(b"uris"):
                 links = obj.uris.ListFields()
         except ValueError:
             return None
@@ -84,7 +79,7 @@ class SectionLinks(fields.Raw):
             for type_, value in links:
                 response.append({"type": type_.name, "id": value})
 
-        if obj.HasField('pt_display_informations'):
+        if obj.HasField(b'pt_display_informations'):
             for value in obj.pt_display_informations.notes:
                 response.append({"type": 'notes', "id": value.uri, 'value': value.note})
         return response
@@ -159,6 +154,24 @@ class section_place(PbField):
             return super(PbField, self).output(key, obj)
 
 
+class JourneyDebugInfo(fields.Raw):
+    def output(self, key, obj):
+        if not hasattr(g, 'debug') or not g.debug:
+            return None
+
+        debug = {
+            'streetnetwork_duration': obj.sn_dur,
+            'transfer_duration': obj.transfer_dur,
+            'min_waiting_duration': obj.min_waiting_dur,
+            'nb_vj_extentions': obj.nb_vj_extentions,
+            'nb_sections': obj.nb_sections,
+        }
+        if hasattr(obj, 'internal_id'):
+            debug['internal_id'] = obj.internal_id
+
+        return debug
+
+
 section = {
     "type": section_type(),
     "id": fields.String(),
@@ -179,12 +192,14 @@ section = {
     "transfer_type": enum_type(),
     "stop_date_times": NonNullList(NonNullNested(stop_date_time)),
     "departure_date_time": DateTime(attribute="begin_date_time"),
+    "base_departure_date_time": DateTime(attribute="base_begin_date_time"),
     "arrival_date_time": DateTime(attribute="end_date_time"),
+    "base_arrival_date_time": DateTime(attribute="base_end_date_time"),
     "co2_emission": Co2Emission(),
 }
 
 cost = {
-    'value': fields.Float(),
+    'value': fields.String(),
     'currency': fields.String(),
 }
 
@@ -209,6 +224,7 @@ journey = {
     "status": fields.String(attribute="most_serious_disruption_effect"),
     "calendars": NonNullList(NonNullNested(calendar)),
     "co2_emission": Co2Emission(),
+    "debug": JourneyDebugInfo()
 }
 
 ticket = {
@@ -220,12 +236,14 @@ ticket = {
     "links": TicketLinks(attribute="section_id")
 }
 
+
 journeys = {
     "journeys": NonNullList(NonNullNested(journey)),
     "error": PbField(error, attribute='error'),
     "tickets": fields.List(NonNullNested(ticket)),
-    "disruptions": DisruptionsField,
+    "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(NonNullNested(feed_publisher)),
+    "links": fields.List(Links()),
 }
 
 
@@ -259,7 +277,7 @@ class add_debug_info(object):
 
             if hasattr(g, 'errors_by_region'):
                 get_debug()['errors_by_region'] = {}
-                for region, er in g.errors_by_region.iteritems():
+                for region, er in g.errors_by_region.items():
                     get_debug()['errors_by_region'][region] = er.message
 
             if hasattr(g, 'regions_called'):
@@ -275,137 +293,20 @@ class add_journey_href(object):
         @wraps(f)
         def wrapper(*args, **kwargs):
             objects = f(*args, **kwargs)
-            if objects[1] != 200:
+            if objects[1] != 200 or 'journeys' not in objects[0]:
                 return objects
-            if not "journeys" in objects[0].keys():
-                return objects
-            if "region" in kwargs.keys():
-                del kwargs["region"]
-            if "uri" in kwargs.keys():
-                kwargs["from"] = kwargs["uri"].split("/")[-1]
-                del kwargs["uri"]
-            if "lon" in kwargs.keys() and "lat" in kwargs.keys():
-                if not "from" in kwargs.keys():
-                    kwargs["from"] = kwargs["lon"] + ';' + kwargs["lat"]
-                del kwargs["lon"]
-                del kwargs["lat"]
             for journey in objects[0]['journeys']:
-                if not "sections" in journey.keys():
-                    kwargs["datetime"] = journey["requested_date_time"]
-                    kwargs["to"] = journey["to"]["id"]
-                    journey['links'] = [create_external_link("v1.journeys", rel="journeys", **kwargs)]
+                if "sections" not in journey:#this mean it's an isochrone...
+                    args = dict(request.args)
+                    if 'to' not in args:
+                        args['to'] = journey['to']['id']
+                    if 'from' not in args:
+                        args['from'] = journey['from']['id']
+                    if 'region' in kwargs:
+                        args['region'] = kwargs['region']
+                    journey['links'] = [create_external_link('v1.journeys', rel='journeys', **args)]
             return objects
         return wrapper
-
-
-class add_journey_pagination(object):
-    def __call__(self, f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            objects = f(*args, **kwargs)
-            if objects[1] != 200:
-                return objects
-            #self is the first parameter, so the resources
-            scenario = g.scenario
-            if scenario and hasattr(scenario, 'extremes') and callable(scenario.extremes):
-                datetime_before, datetime_after = scenario.extremes(objects[0])
-            else:
-                datetime_before, datetime_after = self.extremes(objects[0])
-            if datetime_before and datetime_after:
-                if not "links" in objects[0]:
-                    objects[0]["links"] = []
-
-                args = dict(deepcopy(request.args))
-                args["datetime"] = datetime_before.strftime(f_datetime)
-                args["datetime_represents"] = "arrival"
-                if "region" in kwargs:
-                    args["region"] = kwargs["region"]
-                # Note, it's not the right thing to do, the rel should be 'next' and
-                # the type 'journey' but for compatibility reason we cannot change before the v2
-                objects[0]["links"].append(create_external_link("v1.journeys",
-                                                       rel='prev',
-                                                       _type='prev',
-                                                       **args))
-                args["datetime"] = datetime_after.strftime(f_datetime)
-                args["datetime_represents"] = "departure"
-                objects[0]["links"].append(create_external_link("v1.journeys",
-                                                       rel='next',
-                                                       _type='next',
-                                                       **args))
-
-            datetime_first, datetime_last = self.first_and_last(objects[0])
-            if datetime_first and datetime_last:
-                if not "links" in objects[0]:
-                    objects[0]["links"] = []
-
-                args = dict(deepcopy(request.args))
-                args["datetime"] = datetime_first.strftime(f_datetime)
-                args["datetime_represents"] = "departure"
-                if "region" in kwargs:
-                    args["region"] = kwargs["region"]
-                objects[0]["links"].append(create_external_link("v1.journeys",
-                                                                rel='first',
-                                                                _type='first',
-                                                                **args))
-                args["datetime"] = datetime_last.strftime(f_datetime)
-                args["datetime_represents"] = "arrival"
-                objects[0]["links"].append(create_external_link("v1.journeys",
-                                                                rel='last',
-                                                                _type='last',
-                                                                **args))
-            return objects
-        return wrapper
-
-    def extremes(self, resp):
-        datetime_before = None
-        datetime_after = None
-        if 'journeys' not in resp:
-            return (None, None)
-        section_is_pt = lambda section: section['type'] == "public_transport"\
-                           or section['type'] == "on_demand_transport"
-        filter_journey = lambda journey: 'arrival_date_time' in journey and\
-                             journey['arrival_date_time'] != '' and\
-                             "sections" in journey and\
-                             any(section_is_pt(section) for section in journey['sections'])
-        list_journeys = filter(filter_journey, resp['journeys'])
-        if not list_journeys:
-            return (None, None)
-        prev_journey = min(list_journeys, key=itemgetter('arrival_date_time'))
-        next_journey = max(list_journeys, key=itemgetter('departure_date_time'))
-        f_datetime = "%Y%m%dT%H%M%S"
-        f_departure = datetime.strptime(next_journey['departure_date_time'], f_datetime)
-        f_arrival = datetime.strptime(prev_journey['arrival_date_time'], f_datetime)
-        datetime_after = f_departure + timedelta(minutes=1)
-        datetime_before = f_arrival - timedelta(minutes=1)
-
-        return (datetime_before, datetime_after)
-
-    def first_and_last(self, resp):
-        datetime_first = None
-        datetime_last = None
-        try:
-            list_journeys = [journey for journey in resp['journeys']
-                             if 'arrival_date_time' in journey.keys() and
-                             journey['arrival_date_time'] != '' and
-                             'departure_date_time' in journey.keys() and
-                             journey['departure_date_time'] != '']
-            asap_min = min(list_journeys,
-                           key=itemgetter('departure_date_time'))
-            asap_max = max(list_journeys,
-                           key=itemgetter('arrival_date_time'))
-        except:
-            return (None, None)
-        if asap_min['departure_date_time'] and asap_max['arrival_date_time']:
-            departure = asap_min['departure_date_time']
-            departure_date = datetime.strptime(departure, f_datetime)
-            midnight = datetime.strptime('0000', '%H%M').time()
-            datetime_first = datetime.combine(departure_date, midnight)
-            arrival = asap_max['arrival_date_time']
-            arrival_date = datetime.strptime(arrival, f_datetime)
-            almost_midnight = datetime.strptime('2359', '%H%M').time()
-            datetime_last = datetime.combine(arrival_date, almost_midnight)
-
-        return (datetime_first, datetime_last)
 
 
 #add the link between a section and the ticket needed for that section
@@ -417,19 +318,19 @@ class add_fare_links(object):
             objects = f(*args, **kwargs)
             if objects[1] != 200:
                 return objects
-            if not "journeys" in objects[0].keys():
+            if "journeys" not in objects[0]:
                 return objects
             ticket_by_section = defaultdict(list)
-            if not 'tickets' in objects[0].keys():
+            if 'tickets' not in objects[0]:
                 return objects
 
             for t in objects[0]['tickets']:
-                if "links" in t.keys():
+                if "links" in t:
                     for s in t['links']:
                         ticket_by_section[s['id']].append(t['id'])
 
             for j in objects[0]['journeys']:
-                if not "sections" in j.keys():
+                if "sections" not in j:
                     continue
                 for s in j['sections']:
 
@@ -459,11 +360,11 @@ def compute_regions(args):
     from_regions = set()
     to_regions = set()
     if args['origin']:
-        from_regions = set(i_manager.get_regions(object_id=args['origin']))
+        from_regions = set(i_manager.get_instances(object_id=args['origin']))
         #Note: if get_regions does not find any region, it raises a RegionNotFoundException
 
     if args['destination']:
-        to_regions = set(i_manager.get_regions(object_id=args['destination']))
+        to_regions = set(i_manager.get_instances(object_id=args['destination']))
 
     if not from_regions:
         #we didn't get any origin, the region is in the destination's list
@@ -483,9 +384,9 @@ def compute_regions(args):
 
     sorted_regions = list(possible_regions)
 
-    regions = sorted(sorted_regions, cmp=instances_comparator)
+    regions = sorted(sorted_regions, key=cmp_to_key(instances_comparator))
 
-    return regions
+    return [r.name for r in regions]
 
 class Journeys(ResourceUri, ResourceUtc):
 
@@ -522,11 +423,9 @@ class Journeys(ResourceUri, ResourceUtc):
         parser_get.add_argument("max_nb_transfers", type=int, dest="max_transfers")
         parser_get.add_argument("first_section_mode[]",
                                 type=option_value(modes),
-                                default=["walking"],
                                 dest="origin_mode", action="append")
         parser_get.add_argument("last_section_mode[]",
                                 type=option_value(modes),
-                                default=["walking"],
                                 dest="destination_mode", action="append")
         parser_get.add_argument("max_duration_to_pt", type=int,
                                 description="maximal duration of non public transport in second")
@@ -540,21 +439,26 @@ class Journeys(ResourceUri, ResourceUtc):
         parser_get.add_argument("max_car_duration_to_pt", type=int,
                                 description="maximal duration of car on public transport in second")
 
-        parser_get.add_argument("walking_speed", type=float)
-        parser_get.add_argument("bike_speed", type=float)
-        parser_get.add_argument("bss_speed", type=float)
-        parser_get.add_argument("car_speed", type=float)
-        parser_get.add_argument("forbidden_uris[]", type=str, action="append")
-        parser_get.add_argument("count", type=int)
+        parser_get.add_argument("walking_speed", type=float_gt_0)
+        parser_get.add_argument("bike_speed", type=float_gt_0)
+        parser_get.add_argument("bss_speed", type=float_gt_0)
+        parser_get.add_argument("car_speed", type=float_gt_0)
+        parser_get.add_argument("forbidden_uris[]", type=unicode, action="append")
+        parser_get.add_argument("count", type=default_count_arg_type)
+        parser_get.add_argument("_min_journeys_calls", type=int)
+        parser_get.add_argument("_final_line_filter", type=boolean)
         parser_get.add_argument("min_nb_journeys", type=int)
         parser_get.add_argument("max_nb_journeys", type=int)
+        parser_get.add_argument("_max_extra_second_pass", type=int, dest="max_extra_second_pass")
         parser_get.add_argument("type", type=option_value(types),
                                 default="all")
-        parser_get.add_argument("disruption_active",
-                                type=boolean, default=False)
-# a supprimer
-        parser_get.add_argument("max_duration", type=int, default=3600*24)
-        parser_get.add_argument("wheelchair", type=boolean, default=False)
+        parser_get.add_argument("disruption_active", type=boolean, default=False)  # for retrocomp
+        # no default value for data_freshness because we need to maintain retrocomp with disruption_active
+        parser_get.add_argument("data_freshness",
+                                type=option_value(['base_schedule', 'adapted_schedule', 'realtime']))
+
+        parser_get.add_argument("max_duration", type=int)
+        parser_get.add_argument("wheelchair", type=boolean, default=None)
         parser_get.add_argument("debug", type=boolean, default=False,
                                 hidden=True)
         # for retrocompatibility purpose, we duplicate (without []):
@@ -564,33 +468,46 @@ class Journeys(ResourceUri, ResourceUtc):
                                 type=option_value(modes), action="append")
         parser_get.add_argument("show_codes", type=boolean, default=False,
                             description="show more identification codes")
-        parser_get.add_argument("traveler_type", type=option_value(travelers_profile.keys()))
-        parser_get.add_argument("_override_scenario", type=str, description="debug param to specify a custom scenario")
+        parser_get.add_argument("traveler_type", type=option_value(acceptable_traveler_types))
+        parser_get.add_argument("_override_scenario", type=unicode, description="debug param to specify a custom scenario")
+
+        parser_get.add_argument("_walking_transfer_penalty", type=int)
+        parser_get.add_argument("_max_successive_buses", type=int)
+        parser_get.add_argument("_max_additional_connections", type=int)
+        parser_get.add_argument("_night_bus_filter_base_factor", type=int)
+        parser_get.add_argument("_night_bus_filter_max_factor", type=float)
+        parser_get.add_argument("_min_car", type=int)
+        parser_get.add_argument("_min_bike", type=int)
+        parser_get.add_argument("_current_datetime", type=date_time_format, default=datetime.utcnow(),
+                                description="The datetime used to consider the state of the pt object"
+                                            " Default is the current date and it is used for debug."
+                                            " Note: it will mainly change the disruptions that concern "
+                                            "the object The timezone should be specified in the format,"
+                                            " else we consider it as UTC")
+
 
         self.method_decorators.append(complete_links(self))
 
-        # manage post protocol (n-m calculation)
-        self.parsers["post"] = deepcopy(parser_get)
-        parser_post = self.parsers["post"]
-        parser_post.add_argument("details", type=boolean, default=False, location="json")
-        for index, elem in enumerate(parser_post.args):
-            if elem.name in ["from", "to"]:
-                parser_post.args[index].type = list
-                parser_post.args[index].dest = elem.name
-            parser_post.args[index].location = "json"
 
     @add_debug_info()
     @add_fare_links()
-    @add_journey_pagination()
     @add_journey_href()
     @marshal_with(journeys)
     @ManageError()
     def get(self, region=None, lon=None, lat=None, uri=None):
         args = self.parsers['get'].parse_args()
 
-        if args['traveler_type']:
-            profile = travelers_profile[args['traveler_type']]
-            profile.override_params(args)
+        if args.get('traveler_type') is not None:
+            traveler_profile = TravelerProfile.make_traveler_profile(region, args['traveler_type'])
+            traveler_profile.override_params(args)
+
+        # We set default modes for fallback modes.
+        # The reason why we cannot put default values in parser_get.add_argument() is that, if we do so,
+        # fallback modes will always have a value, and traveler_type will never override fallback modes.
+        if args.get('origin_mode') is None:
+            args['origin_mode'] = ['walking']
+        if args.get('destination_mode') is None:
+            args['destination_mode'] = ['walking']
 
         if args['max_duration_to_pt'] is not None:
             #retrocompatibility: max_duration_to_pt override all individual value by mode
@@ -598,6 +515,11 @@ class Journeys(ResourceUri, ResourceUtc):
             args['max_bike_duration_to_pt'] = args['max_duration_to_pt']
             args['max_bss_duration_to_pt'] = args['max_duration_to_pt']
             args['max_car_duration_to_pt'] = args['max_duration_to_pt']
+
+        if args['data_freshness'] is None:
+            # retrocompatibilty handling
+            args['data_freshness'] = \
+                'adapted_schedule' if args['disruption_active'] is True else 'base_schedule'
 
         # TODO : Changer le protobuff pour que ce soit propre
         if args['destination_mode'] == 'vls':
@@ -626,8 +548,38 @@ class Journeys(ResourceUri, ResourceUtc):
                     abort(503, message="Unable to compute journeys "
                                        "from this object")
 
+        if args['destination'] and args['origin']:
+            api = 'journeys'
+        else:
+            api = 'isochrone'
+
+        if api == 'isochrone':
+            # we have custom default values for isochrone because they are very resource expensive
+            if args.get('max_duration') is None:
+                args['max_duration'] = app.config['ISOCHRONE_DEFAULT_VALUE']
+
+        def _set_specific_params(mod):
+            if args.get('max_duration') is None:
+                args['max_duration'] = mod.max_duration
+            if args.get('_walking_transfer_penalty') is None:
+                args['_walking_transfer_penalty'] = mod.walking_transfer_penalty
+            if args.get('_night_bus_filter_base_factor') is None:
+                args['_night_bus_filter_base_factor'] = mod.night_bus_filter_base_factor
+            if args.get('_night_bus_filter_max_factor') is None:
+                args['_night_bus_filter_max_factor'] = mod.night_bus_filter_max_factor
+            if args.get('_max_additional_connections') is None:
+                args['_max_additional_connections'] = mod.max_additional_connections
+
+        if region:
+            _set_specific_params(i_manager.instances[region])
+        else:
+            _set_specific_params(default_values)
+
         if not (args['destination'] or args['origin']):
             abort(400, message="you should at least provide either a 'from' or a 'to' argument")
+
+        if args['debug']:
+            g.debug = True
 
         #we transform the origin/destination url to add information
         if args['origin']:
@@ -644,11 +596,6 @@ class Journeys(ResourceUri, ResourceUtc):
             possible_regions = compute_regions(args)
         else:
             possible_regions = [region]
-
-        if args['destination'] and args['origin']:
-            api = 'journeys'
-        else:
-            api = 'isochrone'
 
         # we save the original datetime for debuging purpose
         args['original_datetime'] = args['datetime']
@@ -676,7 +623,7 @@ class Journeys(ResourceUri, ResourceUtc):
 
             response = i_manager.dispatch(args, api, instance_name=self.region)
 
-            if response.HasField('error') \
+            if response.HasField(b'error') \
                     and len(possible_regions) != 1:
                 logging.getLogger(__name__).debug("impossible to find journeys for the region {},"
                                                  " we'll try the next possible region ".format(r))
@@ -696,14 +643,14 @@ class Journeys(ResourceUri, ResourceUtc):
 
             return response
 
-        for response in responses.itervalues():
-            if not response.HasField("error"):
+        for response in responses.values():
+            if not response.HasField(b"error"):
                 return response
 
 
         # if no response have been found for all the possible regions, we have a problem
         # if all response had the same error we give it, else we give a generic 'no solution' error
-        first_response = responses.itervalues().next()
+        first_response = responses.values()[0]
         if all(r.error.id == first_response.error.id for r in responses.values()):
             return first_response
 
@@ -713,80 +660,3 @@ class Journeys(ResourceUri, ResourceUtc):
         er.message = "No journey found"
 
         return resp
-
-    @add_journey_pagination()
-    @add_journey_href()
-    @marshal_with(journeys)
-    @ManageError()
-    def post(self, region=None, lon=None, lat=None, uri=None):
-        args = self.parsers['post'].parse_args()
-        if args['traveler_type']:
-            profile = travelers_profile[args['traveler_type']]
-            profile.override_params(args)
-
-        #check that we have at least one departure and one arrival
-        if len(args['from']) == 0:
-            abort(400, message="from argument must contain at least one item")
-        if len(args['to']) == 0:
-            abort(400, message="to argument must contain at least one item")
-
-        # TODO : Changer le protobuff pour que ce soit propre
-        if args['destination_mode'] == 'vls':
-            args['destination_mode'] = 'bss'
-        if args['origin_mode'] == 'vls':
-            args['origin_mode'] = 'bss'
-
-        if args['max_duration_to_pt']:
-            #retrocompatibility: max_duration_to_pt override all individual value by mode
-            args['max_walking_duration_to_pt'] = args['max_duration_to_pt']
-            args['max_bike_duration_to_pt'] = args['max_duration_to_pt']
-            args['max_bss_duration_to_pt'] = args['max_duration_to_pt']
-            args['max_car_duration_to_pt'] = args['max_duration_to_pt']
-
-        #count override min_nb_journey or max_nb_journey
-        if 'count' in args and args['count']:
-            args['min_nb_journeys'] = args['count']
-            args['max_nb_journeys'] = args['count']
-
-        if region:
-            self.region = i_manager.get_region(region)
-            set_request_timezone(self.region)
-
-        if not region:
-            #TODO how to handle lon/lat ? don't we have to override args['origin'] ?
-            self.region = compute_regions(args)
-
-        #store json data into 4 arrays
-        args['origin'] = []
-        args['origin_access_duration'] = []
-        args['destination'] = []
-        args['destination_access_duration'] = []
-        for loop in [('from', 'origin', True), ('to', 'destination', False)]:
-            for location in args[loop[0]]:
-                if "access_duration" in location:
-                    args[loop[1]+'_access_duration'].append(location["access_duration"])
-                else:
-                    args[loop[1]+'_access_duration'].append(0)
-                stop_uri = location["uri"]
-                stop_uri = transform_id(stop_uri)
-                args[loop[1]].append(stop_uri)
-
-        #default Date
-        if not "datetime" in args or not args['datetime']:
-            args['datetime'] = datetime.now()
-            args['datetime'] = args['datetime'].replace(hour=13, minute=37)
-
-        # we save the original datetime for debuging purpose
-        args['original_datetime'] = args['datetime']
-        original_datetime = args['original_datetime']
-
-        #we add the interpreted parameters to the stats
-        self._register_interpreted_parameters(args)
-
-        new_datetime = self.convert_to_utc(original_datetime)
-        args['datetime'] = date_to_timestamp(new_datetime)
-
-        api = 'nm_journeys'
-
-        response = i_manager.dispatch(args, api, instance_name=self.region)
-        return response

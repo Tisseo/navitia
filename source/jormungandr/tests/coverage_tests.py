@@ -26,11 +26,13 @@
 # IRC #navitia on freenode
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
-from tests_mechanism import AbstractTestFixture, dataset
-from check_utils import *
+from __future__ import absolute_import, print_function, unicode_literals, division
+from .tests_mechanism import AbstractTestFixture, dataset
+from .check_utils import *
 import logging
 
-@dataset(["main_routing_test", "null_status_test"])
+
+@dataset({"main_routing_test":{}, "null_status_test":{}})
 class TestNullStatus(AbstractTestFixture):
     """
     Test with an empty coverage

@@ -59,6 +59,7 @@ struct FindAdminWithCities {
     boost::shared_ptr<pqxx::connection> conn;
     georef::GeoRef& georef;
     AdminMap added_admins;
+    AdminMap insee_admins_map;
     size_t nb_call = 0;
     size_t nb_uninitialized = 0;
     size_t nb_georef = 0;
@@ -87,7 +88,18 @@ struct FindAdminWithCities {
         }
     }
 
+    void init(){
+        for(auto* admin: georef.admins){
+            if(!admin->insee.empty()){
+                insee_admins_map[admin->insee] = admin;
+            }
+        }
+    }
+
     result_type operator()(const navitia::type::GeographicalCoord& c) {
+        if(nb_call == 0){
+            init();
+        }
         ++nb_call;
 
         if (!c.is_initialized()) {++nb_uninitialized; return {};}
@@ -106,14 +118,18 @@ struct FindAdminWithCities {
         result_type res;
         for (auto it = result.begin(); it != result.end(); ++it) {
             const std::string uri = it["uri"].as<std::string>() + "extern";
-            navitia::georef::Admin*& admin = added_admins[uri];
+            const std::string insee = it["insee"].as<std::string>();
+            //we try to find the admin in georef by using it's insee code (only work in France)
+            navitia::georef::Admin* admin = nullptr;
+            if (!insee.empty()) { admin = find_or_default(insee, insee_admins_map);}
+            if (!admin) { admin = find_or_default(uri, added_admins);}
             if (!admin) {
                 georef.admins.push_back(new navitia::georef::Admin());
                 admin = georef.admins.back();
                 admin->comment = "from cities";
                 admin->uri = uri;
                 it["name"].to(admin->name);
-                it["insee"].to(admin->insee);
+                admin->insee = insee;
                 it["level"].to(admin->level);
                 admin->coord.set_lon(it["lon"].as<double>());
                 admin->coord.set_lat(it["lat"].as<double>());
@@ -125,6 +141,7 @@ struct FindAdminWithCities {
                 if(!postal_code.empty()){
                     boost::split(admin->postal_codes, postal_code, boost::is_any_of("-"));
                 }
+                added_admins[uri] = admin;
             }
             res.push_back(admin);
         }
@@ -214,13 +231,11 @@ int main(int argc, char * argv[])
     LOG4CPLUS_INFO(logger, "line: " << data.pt_data->lines.size());
     LOG4CPLUS_INFO(logger, "line_groups: " << data.pt_data->line_groups.size());
     LOG4CPLUS_INFO(logger, "route: " << data.pt_data->routes.size());
-    LOG4CPLUS_INFO(logger, "journey_pattern: " << data.pt_data->journey_patterns.size());
     LOG4CPLUS_INFO(logger, "stoparea: " << data.pt_data->stop_areas.size());
     LOG4CPLUS_INFO(logger, "stoppoint: " << data.pt_data->stop_points.size());
     LOG4CPLUS_INFO(logger, "vehiclejourney: " << data.pt_data->vehicle_journeys.size());
     LOG4CPLUS_INFO(logger, "stop: " << data.pt_data->nb_stop_times());
     LOG4CPLUS_INFO(logger, "connection: " << data.pt_data->stop_point_connections.size());
-    LOG4CPLUS_INFO(logger, "journey_pattern points: " << data.pt_data->journey_pattern_points.size());
     LOG4CPLUS_INFO(logger, "modes: " << data.pt_data->physical_modes.size());
     LOG4CPLUS_INFO(logger, "validity pattern : " << data.pt_data->validity_patterns.size());
     LOG4CPLUS_INFO(logger, "calendars: " << data.pt_data->calendars.size());
