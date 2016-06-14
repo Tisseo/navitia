@@ -180,7 +180,7 @@ void EdPersistor::insert_house_numbers(const ed::Georef& data){
     this->lotus.prepare_bulk_insert("georef.house_number", {"coord", "number", "left_side","way_id"});
 
     for(const auto& itm : data.house_numbers) {
-        std::string way_id("NULL");
+        std::string way_id(lotus.null_value);
         if(itm.second.way != nullptr){
             way_id = std::to_string(itm.second.way->id);
         }
@@ -246,7 +246,7 @@ void EdPersistor::insert_pois(const Georef &data) {
     this->lotus.prepare_bulk_insert("georef.poi",
     {"id", "weight", "coord", "name", "uri", "poi_type_id", "visible", "address_number", "address_name"});
     for(const auto& itm : data.pois) {
-        std::string poi_type("NULL");
+        std::string poi_type(lotus.null_value);
         if(itm.second.poi_type != nullptr){
             poi_type = std::to_string(itm.second.poi_type->id);
         }
@@ -771,13 +771,13 @@ void EdPersistor::insert_lines(const std::vector<types::Line*>& lines){
 
         std::stringstream shape;
         if (line->shape.empty())
-            shape << "NULL";
+            shape << lotus.null_value;
         else
             shape << std::setprecision(16) << boost::geometry::wkt(line->shape);
         values.push_back(shape.str());
 
-        values.push_back(line->opening_time ? boost::posix_time::to_simple_string(*line->opening_time) : "NULL");
-        values.push_back(line->closing_time ? boost::posix_time::to_simple_string(*line->closing_time) : "NULL");
+        values.push_back(line->opening_time ? boost::posix_time::to_simple_string(*line->opening_time) : lotus.null_value);
+        values.push_back(line->closing_time ? boost::posix_time::to_simple_string(*line->closing_time) : lotus.null_value);
 
         values.push_back(line->text_color);
 
@@ -861,7 +861,7 @@ void EdPersistor::insert_routes(const std::vector<types::Route*>& routes){
         }
         std::stringstream shape;
         if (route->shape.empty())
-            shape << "NULL";
+            shape << lotus.null_value;
         else
             shape << std::setprecision(16) << boost::geometry::wkt(route->shape);
         values.push_back(shape.str());
@@ -915,7 +915,7 @@ void EdPersistor::insert_stop_times(const std::vector<types::StopTime*>& stop_ti
         values.push_back(std::to_string(stop->stop_point->idx));
         std::stringstream shape;
         if (stop->shape_from_prev.empty()) {
-            shape << "NULL";
+            shape << lotus.null_value;
         } else {
             shape << std::setprecision(16)
                   << boost::geometry::wkt(stop->shape_from_prev);
@@ -1119,7 +1119,7 @@ void EdPersistor::insert_meta_vj(const std::map<std::string, types::MetaVehicleJ
 
 }
 
-void EdPersistor::insert_object_codes(const std::map<ed::types::pt_object_header, std::map<std::string, std::string>>& object_codes){
+void EdPersistor::insert_object_codes(const std::map<ed::types::pt_object_header, std::map<std::string, std::vector<std::string>>>& object_codes){
     size_t count = 0;
     this->lotus.prepare_bulk_insert("navitia.object_code", {"object_id", "object_type_id", "key", "value"});
     for(const auto& object_code_map: object_codes){
@@ -1127,14 +1127,15 @@ void EdPersistor::insert_object_codes(const std::map<ed::types::pt_object_header
             if (object_code_map.first.pt_object->idx == nt::invalid_idx) {
                 ++count;
             } else {
-                std::vector<std::string> values {
-                    std::to_string(object_code_map.first.pt_object->idx),
-                    std::to_string(static_cast<int>(object_code_map.first.type)),
-                    object_code.first,
-                    object_code.second
-
-                };
-                this->lotus.insert(values);
+                for (const auto& object_code_value: object_code.second) {
+                    std::vector<std::string> values {
+                        std::to_string(object_code_map.first.pt_object->idx),
+                        std::to_string(static_cast<int>(object_code_map.first.type)),
+                        object_code.first,
+                        object_code_value
+                    };
+                    this->lotus.insert(values);
+                }
             }
         }
     }

@@ -1,11 +1,13 @@
 # encoding: utf-8
+import os
+
 START_MONITORING_THREAD = False
 
 SAVE_STAT = True
 
 DISABLE_DATABASE = True
-
-INSTANCE_TIMEOUT = 500  # for tests we want only 1/2 seconds timeout instead of the normal 10s timeout
+# for tests we want only 1/2 seconds timeout instead of the normal 10s
+INSTANCE_TIMEOUT = int(os.environ.get('CUSTOM_INSTANCE_TIMEOUT', 500))
 
 # do not authenticate for tests
 PUBLIC = True
@@ -55,4 +57,4 @@ MODULES = {
 CIRCUIT_BREAKER_MAX_INSTANCE_FAIL = 99999
 CIRCUIT_BREAKER_INSTANCE_TIMEOUT_S = 1
 
-GRAPHICAL_ISOCHRON = True
+GRAPHICAL_ISOCHRONE = True

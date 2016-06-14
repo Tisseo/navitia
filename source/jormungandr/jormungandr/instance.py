@@ -222,6 +222,11 @@ class Instance(object):
         return get_value_or_default('factor_too_long_journey', instance_db, self.name)
 
     @property
+    def successive_physical_mode_to_limit_id(self):
+        instance_db = self.get_models()
+        return get_value_or_default('successive_physical_mode_to_limit_id', instance_db, self.name)
+
+    @property
     def min_duration_too_long_journey(self):
         instance_db = self.get_models()
         return get_value_or_default('min_duration_too_long_journey', instance_db, self.name)
@@ -304,7 +309,6 @@ class Instance(object):
             return self.breaker.call(self._send_and_receive, *args, **kwargs)
         except pybreaker.CircuitBreakerError as e:
             raise DeadSocketException(self.name, self.socket_path)
-
 
     def _send_and_receive(self,
                          request,

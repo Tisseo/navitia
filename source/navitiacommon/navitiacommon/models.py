@@ -219,6 +219,7 @@ class PoiType(db.Model):
 class Instance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, unique=True, nullable=False)
+    discarded = db.Column(db.Boolean, default=False, nullable=False)
     is_free = db.Column(db.Boolean, default=False, nullable=False)
 
     authorizations = db.relationship('Authorization', backref=backref('instance', lazy='joined'),
@@ -231,7 +232,7 @@ class Instance(db.Model):
     # ============================================================
     # params for jormungandr
     # ============================================================
-    #the scenario used by jormungandr, by default we use the default scenario (clever isn't it?)
+    #the scenario used by jormungandr, by default we use the new default scenario (and not the default one...)
     scenario = db.Column(db.Text, nullable=False, default='new_default')
 
     #order of the journey, this order is for clockwise request, else it is reversed
@@ -299,6 +300,11 @@ class Instance(db.Model):
     max_additional_connections = db.Column(db.Integer, default=default_values.max_additional_connections,
                                   nullable=False, server_default='2')
 
+    successive_physical_mode_to_limit_id = db.Column(db.Text,
+                                                     default=default_values.successive_physical_mode_to_limit_id,
+                                                     nullable=False,
+                                                     server_default=default_values.successive_physical_mode_to_limit_id)
+
     def __init__(self, name=None, is_free=False, authorizations=None,
                  jobs=None):
         self.name = name
@@ -329,9 +335,22 @@ class Instance(db.Model):
         return result
 
     @classmethod
+    def query_existing(cls):
+        return cls.query.filter_by(discarded=False)
+
+    @classmethod
     def get_by_name(cls, name):
-        res = cls.query.filter_by(name=name).first()
+        res = cls.query_existing().filter_by(name=name).first()
         return res
+
+    @classmethod
+    def get_from_id_or_name(cls, id=None, name=None):
+        if id:
+            return cls.query.get_or_404(id)
+        elif name:
+            return cls.query_existing().filter_by(name=name).first_or_404()
+        else:
+            raise Exception({'error': 'instance is required'}, 400)
 
     def __repr__(self):
         return '<Instance %r>' % self.name

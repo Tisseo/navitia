@@ -31,10 +31,19 @@ www.navitia.io
 #pragma once
 
 #include "type/geographical_coord.h"
+#include "utils/exception.h"
 #include "raptor.h"
 #include <set>
 
 namespace navitia { namespace routing {
+
+struct IsochroneException: public recoverable_exception {
+    IsochroneException(const std::string& msg): recoverable_exception(msg) {}
+    IsochroneException() = default;
+    IsochroneException(const IsochroneException&) = default;
+    IsochroneException& operator=(const IsochroneException&) = default;
+    virtual ~IsochroneException() noexcept;
+};
 
 constexpr static double N_RAD_TO_DEG = 57.295779513;
 
@@ -51,20 +60,23 @@ type::Polygon circle(const type::GeographicalCoord& center,
 
 
 //Create a multi polygon with circles around all the stop points in the isochrone
-type::MultiPolygon build_single_isochron(RAPTOR& raptor,
+type::MultiPolygon build_single_isochrone(RAPTOR& raptor,
                                 const std::vector<type::StopPoint*>& stop_points,
                                 const bool clockwise,
+                                const type::GeographicalCoord& coord_origin,
                                 const DateTime& bound,
                                 const map_stop_point_duration &origine,
                                 const double& speed,
                                 const int& duration);
 
-type::MultiPolygon build_isochrons(RAPTOR& raptor,
-                                   const bool clockwise,
-                                   const DateTime& bound_max,
-                                   const DateTime& bound_min,
-                                   const map_stop_point_duration& origin,
-                                   const double& speed,
-                                   const int& max_duration,
-                                   const int& min_duration);
+type::MultiPolygon build_isochrones(RAPTOR& raptor,
+                                    const bool clockwise,
+                                    const type::GeographicalCoord& coord_origin,
+                                    const DateTime& bound_max,
+                                    const DateTime& bound_min,
+                                    const map_stop_point_duration& origin,
+                                    const double& speed,
+                                    const int& max_duration,
+                                    const int& min_duration);
+
 }}

@@ -40,6 +40,7 @@ from jormungandr.interfaces.v1.make_links import create_internal_link, create_ex
 from jormungandr.timezone import get_timezone
 from jormungandr.utils import timestamp_to_str
 from navitiacommon import response_pb2, type_pb2
+import ujson
 
 
 class PbField(fields.Nested):
@@ -404,20 +405,8 @@ class MultiPolyGeoJson(fields.Raw):
 
     def format(self, value):
 
-        polys = []
-
-        for poly in value.polygons:
-            p = []
-            outer = [[c.lon, c.lat] for c in poly.outer.coordinates]
-            p.append(outer)
-            for inners in poly.inners:
-                inner = [[c.lon, c.lat] for c in inners.coordinates]
-                p.append(inner)
-            polys.append(p)
-        response = {
-            "type": "MultiPolygon",
-            "coordinates": polys,
-        }
+        geojson = str(value)
+        response = ujson.loads(geojson)
 
         return response
 
@@ -823,6 +812,7 @@ instance_parameters = {
     'night_bus_filter_base_factor': fields.Raw,
     'priority': fields.Raw,
     'bss_provider': fields.Boolean,
+    'successive_physical_mode_to_limit_id': fields.Raw,
     'max_additional_connections': fields.Raw
 }
 
