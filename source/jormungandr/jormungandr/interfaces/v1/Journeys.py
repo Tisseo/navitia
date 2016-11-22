@@ -38,7 +38,7 @@ from jormungandr import i_manager, app
 from jormungandr.interfaces.v1.fields import disruption_marshaller, Links
 from jormungandr.interfaces.v1.fields import display_informations_vj, error, place,\
     PbField, stop_date_time, enum_type, NonNullList, NonNullNested,\
-    SectionGeoJson, Co2Emission, PbEnum, feed_publisher
+    SectionGeoJson, PbEnum, feed_publisher, Durations
 
 from jormungandr.interfaces.parsers import option_value, date_time_format, default_count_arg_type, date_time_format
 from jormungandr.interfaces.v1.ResourceUri import ResourceUri, complete_links
@@ -62,6 +62,8 @@ from jormungandr.interfaces.v1.Calendars import calendar
 from navitiacommon.default_traveler_profile_params import acceptable_traveler_types
 from navitiacommon import default_values
 from jormungandr.interfaces.v1.journey_common import JourneyCommon, dt_represents, compute_possible_region
+from jormungandr.parking_space_availability.bss.stands_manager import ManageStands
+
 
 f_datetime = "%Y%m%dT%H%M%S"
 class SectionLinks(fields.Raw):
@@ -69,7 +71,7 @@ class SectionLinks(fields.Raw):
     def output(self, key, obj):
         links = None
         try:
-            if obj.HasField(b"uris"):
+            if obj.HasField(str("uris")):
                 links = obj.uris.ListFields()
         except ValueError:
             return None
@@ -78,7 +80,7 @@ class SectionLinks(fields.Raw):
             for type_, value in links:
                 response.append({"type": type_.name, "id": value})
 
-        if obj.HasField(b'pt_display_informations'):
+        if obj.HasField(str('pt_display_informations')):
             for value in obj.pt_display_informations.notes:
                 response.append({"type": 'notes', "id": value.uri, 'value': value.note})
         return response
@@ -194,7 +196,10 @@ section = {
     "base_departure_date_time": DateTime(attribute="base_begin_date_time"),
     "arrival_date_time": DateTime(attribute="end_date_time"),
     "base_arrival_date_time": DateTime(attribute="base_end_date_time"),
-    "co2_emission": Co2Emission(),
+    "co2_emission": NonNullNested({
+        'value': fields.Raw,
+        'unit': fields.String
+        }),
 }
 
 cost = {
@@ -222,7 +227,11 @@ journey = {
     'tags': fields.List(fields.String),
     "status": fields.String(attribute="most_serious_disruption_effect"),
     "calendars": NonNullList(NonNullNested(calendar)),
-    "co2_emission": Co2Emission(),
+    "co2_emission": NonNullNested({
+        'value': fields.Raw,
+        'unit': fields.String
+        }),
+    "durations": Durations(),
     "debug": JourneyDebugInfo()
 }
 
@@ -235,6 +244,14 @@ ticket = {
     "links": TicketLinks(attribute="section_id")
 }
 
+context = {
+    'car_direct_path': {
+        'co2_emission': NonNullNested({
+            'value': fields.Raw,
+            'unit': fields.String
+        }, attribute="car_co2_emission")
+    }
+}
 
 journeys = {
     "journeys": NonNullList(NonNullNested(journey)),
@@ -243,6 +260,7 @@ journeys = {
     "disruptions": fields.List(NonNullNested(disruption_marshaller), attribute="impacts"),
     "feed_publishers": fields.List(NonNullNested(feed_publisher)),
     "links": fields.List(Links()),
+    "context": context,
 }
 
 
@@ -360,8 +378,12 @@ class Journeys(JourneyCommon):
         parser_get.add_argument("_night_bus_filter_max_factor", type=float)
         parser_get.add_argument("_min_car", type=int)
         parser_get.add_argument("_min_bike", type=int)
+        parser_get.add_argument("bss_stands", type=boolean, default=False, description="Show bss stands availability")
 
         self.method_decorators.append(complete_links(self))
+
+        if parser_get.parse_args().get("bss_stands"):
+            self.method_decorators.insert(1, ManageStands(self, 'journeys'))
 
     @add_debug_info()
     @add_fare_links()
@@ -371,9 +393,6 @@ class Journeys(JourneyCommon):
     def get(self, region=None, lon=None, lat=None, uri=None):
         args = self.parsers['get'].parse_args()
         possible_regions = compute_possible_region(region, args)
-        if args.get('traveler_type') is not None:
-            traveler_profile = TravelerProfile.make_traveler_profile(region, args['traveler_type'])
-            traveler_profile.override_params(args)
         args.update(self.parse_args(region, uri))
 
 
@@ -392,13 +411,22 @@ class Journeys(JourneyCommon):
             if args.get('max_duration') is None:
                 args['max_duration'] = app.config['ISOCHRONE_DEFAULT_VALUE']
 
-        if region:
+        def _set_specific_params(mod):
             if args.get('max_duration') is None:
-                args['max_duration'] = i_manager.instances[region].max_duration
-        else:
-            if args.get('max_duration') is None:
-                args['max_duration'] = default_values.max_duration
+                args['max_duration'] = mod.max_duration
+            if args.get('_walking_transfer_penalty') is None:
+                args['_walking_transfer_penalty'] = mod.walking_transfer_penalty
+            if args.get('_night_bus_filter_base_factor') is None:
+                args['_night_bus_filter_base_factor'] = mod.night_bus_filter_base_factor
+            if args.get('_night_bus_filter_max_factor') is None:
+                args['_night_bus_filter_max_factor'] = mod.night_bus_filter_max_factor
+            if args.get('_max_additional_connections') is None:
+                args['_max_additional_connections'] = mod.max_additional_connections
 
+        if region:
+            _set_specific_params(i_manager.instances[region])
+        else:
+            _set_specific_params(default_values)
 
         if not (args['destination'] or args['origin']):
             abort(400, message="you should at least provide either a 'from' or a 'to' argument")
@@ -409,6 +437,7 @@ class Journeys(JourneyCommon):
         #we add the interpreted parameters to the stats
         self._register_interpreted_parameters(args)
         logging.getLogger(__name__).debug("We are about to ask journeys on regions : {}".format(possible_regions))
+
         #we want to store the different errors
         responses = {}
         for r in possible_regions:
@@ -430,7 +459,7 @@ class Journeys(JourneyCommon):
 
             response = i_manager.dispatch(args, api, instance_name=self.region)
 
-            if response.HasField(b'error') \
+            if response.HasField(str('error')) \
                     and len(possible_regions) != 1:
                 logging.getLogger(__name__).debug("impossible to find journeys for the region {},"
                                                  " we'll try the next possible region ".format(r))
@@ -444,14 +473,16 @@ class Journeys(JourneyCommon):
                 responses[r] = response
                 continue
 
-            if all(map(lambda j: j.type in ("non_pt_walk", "non_pt_bike", "non_pt_bss", "car"), response.journeys)):
+            non_pt_types = ("non_pt_walk", "non_pt_bike", "non_pt_bss", "car")
+            if all(j.type in non_pt_types for j in response.journeys) or \
+               all("non_pt" in j.tags for j in response.journeys):
                 responses[r] = response
                 continue
 
             return response
 
         for response in responses.values():
-            if not response.HasField(b"error"):
+            if not response.HasField(str("error")):
                 return response
 
 

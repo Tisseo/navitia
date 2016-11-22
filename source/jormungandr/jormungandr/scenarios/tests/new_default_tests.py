@@ -29,7 +29,11 @@
 
 from __future__ import absolute_import, print_function, unicode_literals, division
 import navitiacommon.response_pb2 as response_pb2
+import jormungandr.scenarios.tests.helpers_tests as helpers_tests
 from jormungandr.scenarios import new_default
+from jormungandr.scenarios.new_default import _tag_journey_by_mode, get_kraken_calls
+from werkzeug.exceptions import HTTPException
+import pytest
 """
  sections       0   1   2   3   4   5   6   7   8   9   10
  -------------------------------------------------------------
@@ -268,7 +272,7 @@ def merge_responses_on_errors_test():
     
     merged_response = new_default.merge_responses(r)
     
-    assert merged_response.HasField(b'error')
+    assert merged_response.HasField(str('error'))
     assert merged_response.error.id == response_pb2.Error.no_solution
     # both messages must be in the composite error
     assert resp1.error.message in merged_response.error.message
@@ -344,3 +348,100 @@ def create_next_kraken_request_test():
     # anticlockwise: we should have the next request one second after departure of pt journey 1015->1020
     next_request = new_def.create_next_kraken_request(request_anticlock, [response])
     assert next_request == {'datetime': 101999, 'clockwise': False}
+
+
+def get_kraken_calls_test():
+    for md in ["bike", "walking", "bss", "car"]:
+        req = {"origin_mode": [md], "destination_mode": [md]}
+        assert get_kraken_calls(req) == [(md, md)]
+
+    req = {"origin_mode": ["bss", "walking"], "destination_mode": ["walking"]}
+    assert get_kraken_calls(req) == [("walking", "walking")]
+
+    req = {"origin_mode": ["bike", "walking"], "destination_mode": ["walking"]}
+    assert get_kraken_calls(req) == [("walking", "walking"), ("bike", "walking")]
+
+    req = {"origin_mode": ["bike", "walking"], "destination_mode": ["bss"]}
+    assert get_kraken_calls(req) == [("bike", "bss")]
+
+    req = {"origin_mode": ["bike", "car"], "destination_mode": ["bss"]}
+    assert get_kraken_calls(req) == [("bike", "bss"), ("car", "bss")]
+
+
+def get_kraken_calls_invalid_1_test():
+    with pytest.raises(HTTPException):
+        get_kraken_calls({"origin_mode": ["bss", "walking"], "destination_mode": ["car"]})
+
+
+def get_kraken_calls_invalid_2_test():
+    with pytest.raises(HTTPException):
+        get_kraken_calls({"origin_mode": ["bss", "walking"], "destination_mode": ["bike"]})
+
+
+def get_kraken_calls_invalid_3_test():
+    with pytest.raises(HTTPException):
+        get_kraken_calls({"origin_mode": ["bss", "bike"], "destination_mode": ["bike"]})
+
+
+def tag_by_mode_test():
+    ww = helpers_tests.get_walking_walking_journey()
+    _tag_journey_by_mode(ww)
+    assert 'walking' in ww.tags
+    wb = helpers_tests.get_walking_bike_journey()
+    _tag_journey_by_mode(wb)
+    assert 'bike' in wb.tags
+    wbss = helpers_tests.get_walking_bss_journey()
+    _tag_journey_by_mode(wbss)
+    assert 'bss' in wbss.tags
+    wc = helpers_tests.get_walking_car_journey()
+    _tag_journey_by_mode(wc)
+    assert 'car' in wc.tags
+    cw = helpers_tests.get_car_walking_journey()
+    _tag_journey_by_mode(cw)
+    assert 'car' in cw.tags
+    c = helpers_tests.get_car_journey()
+    _tag_journey_by_mode(c)
+    assert 'car' in c.tags
+    bw = helpers_tests.get_bike_walking_journey()
+    _tag_journey_by_mode(bw)
+    assert 'bike' in bw.tags
+    bbss = helpers_tests.get_bike_bss_journey()
+    _tag_journey_by_mode(bbss)
+    assert 'bike' in bbss.tags
+    bc = helpers_tests.get_bike_car_journey()
+    _tag_journey_by_mode(bc)
+    assert 'car' in bc.tags
+    bw = helpers_tests.get_bike_walking_journey()
+    _tag_journey_by_mode(bw)
+    assert 'bike' in bw.tags
+    bssb = helpers_tests.get_bss_bike_journey()
+    _tag_journey_by_mode(bssb)
+    assert 'bike' in bssb.tags
+    bssbss = helpers_tests.get_bss_bss_journey()
+    _tag_journey_by_mode(bssbss)
+    assert 'bss' in bssbss.tags
+    bssc = helpers_tests.get_bss_car_journey()
+    _tag_journey_by_mode(bssc)
+    assert 'car' in bssc.tags
+
+def tag_direct_path_test():
+    response = response_pb2.Response()
+
+    # test with one walk and one pt
+    journey_walk = response.journeys.add()
+    section = journey_walk.sections.add()
+    section.type = response_pb2.STREET_NETWORK
+    section.street_network.mode = response_pb2.Walking
+    journey_bike = response.journeys.add()
+    section = journey_bike.sections.add()
+    section.type = response_pb2.STREET_NETWORK
+    section.street_network.mode = response_pb2.Bike
+    journey_pt = response.journeys.add()
+    section = journey_pt.sections.add()
+    section.type = response_pb2.PUBLIC_TRANSPORT
+    new_default.tag_direct_path(response)
+    assert 'non_pt_walking' in response.journeys[0].tags
+    assert 'non_pt' in response.journeys[0].tags
+    assert 'non_pt_bike' in response.journeys[1].tags
+    assert 'non_pt' in response.journeys[1].tags
+    assert not response.journeys[2].tags

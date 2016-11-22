@@ -81,7 +81,7 @@ template<class T> int T::* idx_getter(){return &T::idx;}
 
 struct HasMessages{
 protected:
-    mutable std::vector<boost::weak_ptr<disruption::Impact>> impacts;
+    std::vector<boost::weak_ptr<disruption::Impact>> impacts;
 public:
     void add_impact(const boost::shared_ptr<disruption::Impact>& i) {impacts.push_back(i);}
 
@@ -109,6 +109,8 @@ public:
             impacts.erase(it);
         }
     }
+
+    void clean_weak_impacts();
 };
 
 enum class ConnectionType {
@@ -167,7 +169,7 @@ struct StopPoint : public Header, Nameable, hasProperties, HasMessages {
     StopPoint(): fare_zone(0),  stop_area(nullptr), network(nullptr) {}
 
     Indexes get(Type_e type, const PT_Data & data) const;
-    bool operator<(const StopPoint & other) const { return this < &other; }
+    bool operator<(const StopPoint & other) const;
 
 };
 
@@ -277,10 +279,11 @@ struct Network : public Header, HasMessages {
     int sort = std::numeric_limits<int>::max();
 
     std::vector<Line*> line_list;
+    std::set<Dataset*> dataset_list;
 
     template<class Archive> void serialize(Archive & ar, const unsigned int ) {
         ar & idx & name & uri & address_name & address_number & address_type_name
-            & mail & website & fax & sort & line_list & impacts;
+            & mail & website & fax & sort & line_list & impacts & dataset_list;
     }
 
     Indexes get(Type_e type, const PT_Data & data) const;
@@ -507,7 +510,7 @@ struct VehicleJourney: public Header, Nameable, hasVehicleProperties {
     // however, sometime we do not have a date to convert the time to a local value (in jormungandr)
     // For example for departure board over a period (calendar)
     // thus we might need the shift to convert all stop times of the vehicle journey to local
-    int16_t utc_to_local_offset() const; //in seconds
+    int32_t utc_to_local_offset() const; //in seconds
 
     RTLevel realtime_level = RTLevel::Base;
     bool is_base_schedule() const{
@@ -668,7 +671,7 @@ struct Route : public Header, Nameable, HasMessages {
     }
 
     Indexes get(Type_e type, const PT_Data & data) const;
-    bool operator<(const Route & other) const { return this < &other; }
+    bool operator<(const Route & other) const;
 
     std::string get_label() const;
 };

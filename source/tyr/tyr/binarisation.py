@@ -53,6 +53,8 @@ from navitiacommon import models
 from tyr.helper import get_instance_logger, get_named_arg
 from contextlib import contextmanager
 import glob
+from redis.exceptions import ConnectionError
+import retrying
 
 
 def unzip_if_needed(filename):
@@ -90,6 +92,7 @@ def make_connection_string(instance_config):
     connection_string += ' user=' + instance_config.pg_username
     connection_string += ' dbname=' + instance_config.pg_dbname
     connection_string += ' password=' + instance_config.pg_password
+    connection_string += ' port=' + instance_config.pg_port
     return connection_string
 
 class Lock(object):
@@ -102,18 +105,26 @@ class Lock(object):
             logging.debug('args: %s -- kwargs: %s', args, kwargs)
             job = models.Job.query.get(job_id)
             logger = get_instance_logger(job.instance)
-            lock = redis.lock('tyr.lock|' + job.instance.name, timeout=self.timeout)
-            if not lock.acquire(blocking=False):
-                logger.info('lock on %s retry %s in 300sec', job.instance.name, func.__name__)
-                task = args[func.func_code.co_varnames.index('self')]
-                task.retry(countdown=60, max_retries=10)
+            task = args[func.func_code.co_varnames.index('self')]
+            try:
+                lock = redis.lock('tyr.lock|' + job.instance.name, timeout=self.timeout)
+                locked = lock.acquire(blocking=False)
+            except ConnectionError:
+                logging.exception('Exception with redis while locking. Retrying in 10sec')
+                task.retry(countdown=10, max_retries=10)
+            if not locked:
+                countdown = 300
+                logger.info('lock on %s retry %s in %s sec', job.instance.name, func.__name__, countdown)
+                task.retry(countdown=countdown, max_retries=10)
             else:
                 try:
                     logger.debug('lock acquired on %s for %s', job.instance.name, func.__name__)
                     return func(*args, **kwargs)
                 finally:
                     logger.debug('release lock on %s for %s', job.instance.name, func.__name__)
-                    lock.release()
+                    #sometimes we are disconnected from redis when we want to release the lock,
+                    #so we retry only the release
+                    retrying.Retrying(stop_max_attempt_number=5, wait_fixed=1000).call(lock.release)
         return wrapper
 
 @contextmanager
@@ -383,9 +394,9 @@ def load_bounding_shape(instance_name, instance_conf, shape_path):
         logging.error("bounding_shape: {} has an unknown extension.".format(shape_path))
         return
 
-    connection_string = "postgres://{u}:{pw}@{h}/{db}"\
+    connection_string = "postgres://{u}:{pw}@{h}:{port}/{db}"\
         .format(u=instance_conf.pg_username, pw=instance_conf.pg_password,
-                h=instance_conf.pg_host, db=instance_conf.pg_dbname)
+                h=instance_conf.pg_host, db=instance_conf.pg_dbname, port=instance_conf.pg_port)
     engine = sqlalchemy.create_engine(connection_string)
     # create the line if it does not exists
     engine.execute("""
@@ -454,6 +465,8 @@ def ed2nav(self, instance_config, job_id, custom_output_dir):
         argv = ["-o", output_file, "--connection-string", connection_string]
         if 'CITIES_DATABASE_URI' in current_app.config and current_app.config['CITIES_DATABASE_URI']:
             argv.extend(["--cities-connection-string", current_app.config['CITIES_DATABASE_URI']])
+        if instance.full_sn_geometries:
+            argv.extend(['--full_street_network_geometries'])
 
         res = None
         with collect_metric('ed2nav', job, None):

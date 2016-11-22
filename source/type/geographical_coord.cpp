@@ -48,17 +48,19 @@ bool operator==(const GeographicalCoord & a, const GeographicalCoord & b){
     return a.distance_to(b) < 0.1; // soit 0.1m
 }
 
-std::pair<GeographicalCoord, float> GeographicalCoord::project(GeographicalCoord segment_start, GeographicalCoord segment_end) const{
-    std::pair<GeographicalCoord, float> result;
 
+template<typename F>
+std::pair<GeographicalCoord, float> GeographicalCoord::project_common(GeographicalCoord segment_start,
+                                                                      GeographicalCoord segment_end,
+                                                                      F f) const{
+    std::pair<GeographicalCoord, float> result;
     double dlon = segment_end._lon - segment_start._lon;
     double dlat = segment_end._lat - segment_start._lat;
     double length_sqr = dlon * dlon + dlat * dlat;
     double u;
-
     // On gère le cas où le segment est particulièrement court, et donc ça peut poser des problèmes (à cause de la division par length²)
     if(length_sqr < 1e-11){ // moins de un mètre, on projette sur une extrémité
-        if(this->distance_to(segment_start) < this->distance_to(segment_end))
+        if(f(*this, segment_start) < f(*this, segment_end))
             u = 0;
         else
             u = 1;
@@ -69,16 +71,32 @@ std::pair<GeographicalCoord, float> GeographicalCoord::project(GeographicalCoord
 
     // Les deux cas où le projeté tombe en dehors
     if(u < 0)
-        result = std::make_pair(segment_start, this->distance_to(segment_start));
+        result = std::make_pair(segment_start, f(*this, segment_start));
     else if(u > 1)
-        result = std::make_pair(segment_end, this->distance_to(segment_end));
+        result = std::make_pair(segment_end, f(*this, segment_end));
     else {
         result.first._lon = segment_start._lon + u * (segment_end._lon - segment_start._lon);
         result.first._lat = segment_start._lat + u * (segment_end._lat - segment_start._lat);
-        result.second = this->distance_to(result.first);
+        result.second = f(*this, result.first);
     }
 
     return result;
+}
+
+std::pair<GeographicalCoord, float> GeographicalCoord::project(GeographicalCoord segment_start, GeographicalCoord segment_end) const{
+    auto dist = [](GeographicalCoord source, GeographicalCoord target) {
+        return source.distance_to(target);
+    };
+    return project_common(segment_start, segment_end, dist);
+}
+
+std::pair<GeographicalCoord, float> GeographicalCoord::approx_project(GeographicalCoord segment_start,
+                                                                      GeographicalCoord segment_end,
+                                                                      double coslat) const{
+    auto dist = [coslat](GeographicalCoord source, GeographicalCoord target) {
+        return sqrt(source.approx_sqr_distance(target, coslat));
+    };
+    return project_common(segment_start, segment_end, dist);
 }
 
 std::ostream & operator<<(std::ostream & os, const GeographicalCoord & coord){
@@ -120,6 +138,50 @@ GeographicalCoord project(const MultiLineString& multiline, const GeographicalCo
     }
 
     return projected;
+}
+
+LineString split_line_at_point(const LineString& ls, const GeographicalCoord& blade, bool end_of_geom) {
+    LineString result;
+    if(ls.size() > 1) {
+        for(auto coord = ls.begin(); coord < ls.end() - 1; coord++) {
+            /* Check if blade is between the current chunk of geometry
+               We have a chunk a---------b, we want to know if c is in the segment
+               We compute the distances ab, ac, and cb.
+               There are three possibilities:
+               - The 3 points form a triangle => ac+bc > ab
+               - They are collinear and c is outside the ab segment => ac+bc > ab
+               - They are collinear and c is inside the ab segment => ac+bc = ab
+            */
+            float ab = coord->distance_to(*(coord + 1));
+            float ac = blade.distance_to(*coord);
+            float bc = blade.distance_to(*(coord + 1));
+            if(std::abs(ac + bc - ab) < 0.1) {
+                if(end_of_geom) {
+                    result.push_back(blade);
+                    result.insert(result.end(), coord + 1, ls.end());
+                }
+                else {
+                    result.insert(result.begin(), ls.begin(), coord +1);
+                    result.push_back(blade);
+                }
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+double real_distance_from_extremity(const LineString& ls, const GeographicalCoord& c, bool distance_from_target) {
+    LineString splitted_geom(split_line_at_point(ls, c, distance_from_target));
+
+    double distance(0);
+    if(splitted_geom.size() > 1) {
+        for(auto it = splitted_geom.begin(); it < splitted_geom.end() - 1 ; it++) {
+            distance += fabs(it->distance_to(*(it+1)));
+        }
+    }
+
+    return distance;
 }
 
 }}// namespace navitia::type

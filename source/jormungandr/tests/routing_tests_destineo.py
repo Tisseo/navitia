@@ -31,7 +31,6 @@ import logging
 from datetime import timedelta
 
 from .tests_mechanism import AbstractTestFixture, dataset
-from .routing_tests import TestJourneys
 from .check_utils import *
 from nose.tools import eq_
 import jormungandr.scenarios.destineo
@@ -50,7 +49,7 @@ def filter_prev_next_journeys(journeys):
     return list_journeys
 
 
-@dataset({"main_routing_test": {}})
+@dataset({"main_routing_test": {"scenario": "destineo"}})
 class TestJourneysDestineo(AbstractTestFixture):
     """
     Test the structure of the journeys response
@@ -58,19 +57,8 @@ class TestJourneysDestineo(AbstractTestFixture):
     if needed we can override the tests in this class
     """
 
-    def setup(self):
-        logging.debug('setup for destineo')
-        from jormungandr import i_manager
-        dest_instance = i_manager.instances['main_routing_test']
-        self.old_scenario = dest_instance._scenario
-        dest_instance._scenario = jormungandr.scenarios.destineo.Scenario()
-
-    def teardown(self):
-        from jormungandr import i_manager
-        i_manager.instances['main_routing_test']._scenario = self.old_scenario
-
     @staticmethod
-    def check_next_datetime_link(dt, response):
+    def check_next_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """destineo prev/next link mechanism is different"""
@@ -81,7 +69,7 @@ class TestJourneysDestineo(AbstractTestFixture):
         eq_(j_departure + timedelta(minutes=1), dt)
 
     @staticmethod
-    def check_previous_datetime_link(dt, response):
+    def check_previous_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """destineo prev/next link mechanism is different"""

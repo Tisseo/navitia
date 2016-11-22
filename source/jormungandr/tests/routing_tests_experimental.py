@@ -27,23 +27,20 @@
 # https://groups.google.com/d/forum/navitia
 # www.navitia.io
 from __future__ import absolute_import, print_function, unicode_literals, division
-from .tests_mechanism import AbstractTestFixture
-import logging
 from datetime import timedelta
-from .tests_mechanism import dataset
-from .check_utils import *
-from nose.tools import eq_
-import jormungandr.scenarios.experimental
-from jormungandr.instance import Instance
+from .tests_mechanism import config
 from jormungandr.scenarios.qualifier import min_from_criteria
+from .journey_common_tests import *
+from unittest import skip
+from .routing_tests import OnBasicRouting
 
+'''
+This unit runs all the common tests in journey_common_tests.py along with locals tests added in this
+unit for scenario experimental
+'''
 
-def check_journeys(resp):
-    assert not resp.get('journeys') or sum([1 for j in resp['journeys'] if j['type'] == "best"]) == 1
-
-
-@dataset({"main_routing_test": {}})
-class TestJourneysExperimental(AbstractTestFixture):
+@config({'scenario': 'experimental'})
+class TestJourneysExperimental(JourneyCommon, DirectPath, AbstractTestFixture):
     """
     Test the experiental scenario
     All the tests are defined in "TestJourneys" class, we only change the scenario
@@ -52,85 +49,67 @@ class TestJourneysExperimental(AbstractTestFixture):
     NOTE: for the moment we cannot import all routing tests, so we only get 2, but we need to add some more
     """
 
-    def setup(self):
-        logging.debug('setup for experimental')
-        from jormungandr import i_manager
-        dest_instance = i_manager.instances['main_routing_test']
-        self.old_scenario = dest_instance._scenario
-        dest_instance._scenario = jormungandr.scenarios.experimental.Scenario()
-
-    def teardown(self):
-        from jormungandr import i_manager
-        i_manager.instances['main_routing_test']._scenario = self.old_scenario
-
     @staticmethod
-    def check_next_datetime_link(dt, response):
+    def check_next_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """default next behaviour is 1s after the best or the soonest"""
         j_to_compare = min_from_criteria(generate_pt_journeys(response),
-                                         new_default_pagination_journey_comparator(clockwise=True))
+                                         new_default_pagination_journey_comparator(clockwise=clockwise))
 
         j_departure = get_valid_datetime(j_to_compare['departure_date_time'])
         eq_(j_departure + timedelta(seconds=1), dt)
 
     @staticmethod
-    def check_previous_datetime_link(dt, response):
+    def check_previous_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """default previous behaviour is 1s before the best or the latest """
         j_to_compare = min_from_criteria(generate_pt_journeys(response),
-                                         new_default_pagination_journey_comparator(clockwise=False))
+                                         new_default_pagination_journey_comparator(clockwise=clockwise))
 
         j_departure = get_valid_datetime(j_to_compare['arrival_date_time'])
         eq_(j_departure - timedelta(seconds=1), dt)
 
-    def test_journeys(self):
-        #NOTE: we query /v1/coverage/main_routing_test/journeys and not directly /v1/journeys
-        #not to use the jormungandr database
-        response = self.query_region(journey_basic_query)
+    def test_best_filtering(self):
+        """
+        This feature is no longer supported"""
+        pass
 
-        check_journeys(response)
-        self.is_valid_journey_response(response, journey_basic_query)
+    def test_datetime_represents_arrival(self):
+        super(TestJourneysExperimental, self).test_datetime_represents_arrival()
 
-    def test_error_on_journeys(self):
-        """ if we got an error with kraken, an error should be returned"""
+    def test_journeys_wheelchair_profile(self):
+        """
+        This feature is no longer supported
+        """
+        pass
 
-        query_out_of_production_bound = "journeys?from={from_coord}&to={to_coord}&datetime={datetime}"\
-            .format(from_coord="0.0000898312;0.0000898312",  # coordinate of S in the dataset
-            to_coord="0.00188646;0.00071865",  # coordinate of R in the dataset
-            datetime="20110614T080000")  # 2011 should not be in the production period
+    def test_not_existent_filtering(self):
+        """
+        This feature is no longer supported
+        """
+        pass
 
-        response, status = self.query_no_assert("v1/coverage/main_routing_test/" + query_out_of_production_bound)
-
-        assert status != 200, "the response should not be valid"
-
-        check_journeys(response)
-        assert response['error']['id'] == "date_out_of_bounds"
-        assert response['error']['message'] == "date is not in data production period"
-
-        #and no journey is to be provided
-        assert 'journeys' not in response or len(response['journeys']) == 0
+    def test_other_filtering(self):
+        """
+        This feature is no longer supported
+        """
+        pass
 
 
-@dataset({"main_ptref_test": {}})
-class TestJourneysExperimentalWithPtref(AbstractTestFixture):
-    """Test the experimental scenario with ptref_test data"""
+@config({"scenario": "experimental"})
+class TestExperimentalJourneysWithPtref(JourneysWithPtref, AbstractTestFixture):
+    pass
 
-    def setup(self):
-        logging.debug('setup for experimental')
-        from jormungandr import i_manager
-        dest_instance = i_manager.instances['main_ptref_test']
-        self.old_scenario = dest_instance._scenario
-        dest_instance._scenario = jormungandr.scenarios.experimental.Scenario()
 
-    def teardown(self):
-        from jormungandr import i_manager
-        i_manager.instances['main_ptref_test']._scenario = self.old_scenario
+@config({"scenario": "experimental"})
+class TestExperimentalOnBasicRouting(OnBasicRouting, AbstractTestFixture):
 
-    def test_strange_line_name(self):
-        response = self.query("v1/coverage/main_ptref_test/journeys"
-                              "?from=stop_area:stop2&to=stop_area:stop1"
-                              "&datetime=20140107T100000", display=True)
-        check_journeys(response)
-        eq_(len(response['journeys']), 1)
+    @skip("temporarily disabled")
+    def test_sp_to_sp(self):
+        super(OnBasicRouting, self).test_sp_to_sp()
+
+    @skip("temporarily disabled")
+    def test_isochrone(self):
+        super(OnBasicRouting, self).test_isochrone()

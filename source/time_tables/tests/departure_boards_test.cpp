@@ -336,6 +336,43 @@ BOOST_AUTO_TEST_CASE(partial_terminus_test1) {
 }
 
 
+BOOST_AUTO_TEST_CASE(terminus_multiple_route) {
+    /*
+     * Check partial terminus tag
+     *
+     * 1 line, 2 route, bob and bobette (one forward, and one backward)
+     * Bob    :  A -> B -> C
+     * Bobette:  C -> B -> A
+     *
+     * for a stop schedule on A, A must be the terminus only for bobette
+     * */
+    ed::builder b("20160802");
+    b.vj("bob")    ("A", "10:00"_t)("B", "11:00"_t)("C", "12:00"_t);
+    b.vj("bobette")("C", "10:00"_t)("B", "11:00"_t)("A", "12:00"_t);
+
+    b.finish();
+    b.data->pt_data->index();
+    b.data->build_raptor();
+    b.data->pt_data->build_uri();
+
+    navitia::PbCreator pb_creator(*(b.data), bt::second_clock::universal_time(), null_time_period);
+    departure_board(pb_creator, "stop_point.uri=A", {}, {}, d("20160802T090000"), 86400, 0,
+                    10, 0, nt::RTLevel::Base, std::numeric_limits<size_t>::max());
+
+    pbnavitia::Response resp = pb_creator.get_response();
+    BOOST_REQUIRE_EQUAL(resp.stop_schedules_size(), 2);
+    for (const auto& stop_sched: resp.stop_schedules()) {
+        if (stop_sched.route().name() == "bob") {
+            BOOST_CHECK_EQUAL(stop_sched.response_status(), pbnavitia::ResponseStatus::none);
+        } else if (stop_sched.route().name() == "bobette") {
+            BOOST_CHECK_EQUAL(stop_sched.response_status(), pbnavitia::ResponseStatus::terminus);
+        } else {
+            BOOST_FAIL("wrong route name");
+        }
+    }
+}
+
+
 BOOST_FIXTURE_TEST_CASE(test_data_set, calendar_fixture) {
     //simple test on the data set creation
 
@@ -899,4 +936,35 @@ BOOST_AUTO_TEST_CASE(departureboard_test_with_lines_closed) {
     resp = pb_creator.get_response();
     BOOST_CHECK_EQUAL(resp.stop_schedules(0).response_status(), ResponseStatus::no_active_circulation_this_day);
     BOOST_CHECK_EQUAL(resp.stop_schedules(1).response_status(), ResponseStatus::no_active_circulation_this_day);
+}
+
+// Check with depth 3 than disable_geojson doesn't fill geojson in the response
+BOOST_AUTO_TEST_CASE(departureboard_no_geojson) {
+    using pbnavitia::ResponseStatus;
+    ed::builder b("20161026");
+
+    b.vj("A", "11111", "", true, "vj1", "")("stop1", "10:00"_t, "10:00"_t)("stop2", "10:30"_t, "10:30"_t);
+    b.finish();
+    b.data->pt_data->index();
+    b.data->build_raptor();
+    b.data->pt_data->build_uri();
+
+    pbnavitia::Response resp;
+    navitia::PbCreator pb_creator(*(b.data), bt::second_clock::universal_time(), null_time_period);
+    departure_board(pb_creator, "stop_point.uri=stop1", {}, {}, d("20161026T093000"), 600, 3,
+                    10, 0, nt::RTLevel::Base, std::numeric_limits<size_t>::max());
+    resp = pb_creator.get_response();
+
+    BOOST_REQUIRE_EQUAL(resp.stop_schedules_size(), 1);
+    BOOST_REQUIRE(resp.stop_schedules(0).route().has_geojson());
+    BOOST_REQUIRE(resp.stop_schedules(0).route().line().has_geojson());
+
+    navitia::PbCreator pb_creator_no_geojson(*(b.data), bt::second_clock::universal_time(), null_time_period, true);
+    departure_board(pb_creator_no_geojson, "stop_point.uri=stop1", {}, {}, d("20161026T093000"), 600, 3,
+                    10, 0, nt::RTLevel::Base, std::numeric_limits<size_t>::max());
+    resp = pb_creator_no_geojson.get_response();
+
+    BOOST_REQUIRE_EQUAL(resp.stop_schedules_size(), 1);
+    BOOST_REQUIRE(!resp.stop_schedules(0).route().has_geojson());
+    BOOST_REQUIRE(!resp.stop_schedules(0).route().line().has_geojson());
 }

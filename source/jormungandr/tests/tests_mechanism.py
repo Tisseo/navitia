@@ -52,13 +52,13 @@ krakens_dir = os.environ['KRAKEN_BUILD_DIR'] + '/tests'
 
 
 class FakeModel(object):
-    def __init__(self, priority, is_free):
+    def __init__(self, priority, is_free, scenario='default'):
         self.priority = priority
         self.is_free = is_free
-        self.scenario = 'default'
+        self.scenario = scenario
 
 
-class AbstractTestFixture:
+class AbstractTestFixture(object):
     """
     Mother class for all integration tests
 
@@ -98,17 +98,18 @@ class AbstractTestFixture:
 
     @classmethod
     def create_dummy_json(cls):
-        conf_template_str = ('{{ \n'
-                             '    "key": "{instance_name}",\n'
-                             '    "zmq_socket": "ipc:///tmp/{instance_name}",\n'
-                             '    "realtime_proxies": {proxy_conf}\n'
-                             '}}')
         for name in cls.krakens_pool:
-            proxy_conf = cls.data_sets[name].get('proxy_conf', '[]')
+            instance_config = {
+                "key": name,
+                "zmq_socket": "ipc:///tmp/{instance_name}".format(instance_name=name),
+                "realtime_proxies": cls.data_sets[name].get('proxy_conf', [])
+            }
+            street_network = cls.data_sets[name].get('street_network', None)
+            if street_network:
+                instance_config['street_network'] = street_network
             with open(os.path.join(krakens_dir, name) + '.json', 'w') as f:
                 logging.debug("writing ini file {} for {}".format(f.name, name))
-                r = conf_template_str.format(instance_name=name, proxy_conf=proxy_conf)
-                f.write(r)
+                f.write(json.dumps(instance_config, indent=4))
 
         #we set the env var that will be used to init jormun
         return [
@@ -129,9 +130,10 @@ class AbstractTestFixture:
             priority = cls.data_sets[name].get('priority', 0)
             logging.info('instance %s has priority %s', name, priority)
             is_free = cls.data_sets[name].get('is_free', False)
+            scenario = cls.data_sets[name].get('scenario', 'default')
             cls.mocks.append(mock.patch.object(i_manager.instances[name],
                                                'get_models',
-                                               return_value=FakeModel(priority, is_free)))
+                                               return_value=FakeModel(priority, is_free, scenario)))
 
         for m in cls.mocks:
             m.start()
@@ -142,7 +144,7 @@ class AbstractTestFixture:
             try:
                 retrying.Retrying(stop_max_delay=5000,
                                   wait_fixed=10,
-                                  retry_on_result=lambda x: not instance.is_up).call(instance.init)
+                                  retry_on_result=lambda x: not instance.is_initialized).call(instance.init)
             except RetryError:
                 logging.exception('impossible to start kraken {}'.format(name))
                 assert False, 'impossible to start a kraken'
@@ -234,6 +236,7 @@ class AbstractTestFixture:
 
     def check_journeys_links(self, response, query_dict):
         journeys_links = get_links_dict(response)
+        clockwise = query_dict.get('datetime_represents', 'departure') == "departure"
         for l in ["prev", "next", "first", "last"]:
             assert l in journeys_links
             url = journeys_links[l]['href']
@@ -242,21 +245,19 @@ class AbstractTestFixture:
             for k, v in additional_args.items():
                 if k == 'datetime':
                     if l == 'next':
-                        self.check_next_datetime_link(get_valid_datetime(v), response)
+                        self.check_next_datetime_link(get_valid_datetime(v), response, clockwise)
                     elif l == 'prev':
-                        self.check_previous_datetime_link(get_valid_datetime(v), response)
+                        self.check_previous_datetime_link(get_valid_datetime(v), response, clockwise)
+                    elif l == 'first':
+                        assert v.endswith('T000000')
+                    elif l == 'last':
+                        assert v.endswith('T235959')
                     continue
                 if k == 'datetime_represents':
-                    query_dt_rep = query_dict.get('datetime_represents', 'departure')
                     if l in ['prev', 'last']:
-                        # the datetime_represents is negated
-                        if query_dt_rep == 'departure':
-                            assert v == 'arrival'
-                        else:
-                            assert v == 'departure'
+                        assert v == 'arrival'
                     else:
-                        assert query_dt_rep == v
-
+                        assert v == 'departure'
                     continue
 
                 eq_(query_dict[k], v)
@@ -309,7 +310,7 @@ class AbstractTestFixture:
             assert 'debug' not in response
 
     @staticmethod
-    def check_next_datetime_link(dt, response):
+    def check_next_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """default next behaviour is 1 min after the best or the soonest"""
@@ -320,7 +321,7 @@ class AbstractTestFixture:
         eq_(j_departure + timedelta(minutes=1), dt)
 
     @staticmethod
-    def check_previous_datetime_link(dt, response):
+    def check_previous_datetime_link(dt, response, clockwise):
         if not response.get('journeys'):
             return
         """default previous behaviour is 1 min before the best or the latest """
@@ -343,5 +344,22 @@ def dataset(datasets):
     """
     def deco(cls):
         cls.data_sets = datasets
+        return cls
+    return deco
+
+
+def config(configs=None):
+    import copy
+    if not configs:
+        configs = {"scenario": "default"}
+
+    def deco(cls):
+        cls.data_sets = {}
+        for c in cls.__bases__:
+            if hasattr(c, "data_sets"):
+                for key in c.data_sets:
+                    orig_config = copy.deepcopy(c.data_sets[key])
+                    orig_config.update(configs)
+                    cls.data_sets.update({key: orig_config})
         return cls
     return deco

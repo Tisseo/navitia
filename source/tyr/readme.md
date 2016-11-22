@@ -67,7 +67,6 @@ Procfile:
 web: ./manage_tyr.py runserver
 worker: celery worker -A tyr.tasks
 scheduler: celery beat -A tyr.tasks
-reloader_at: ./manage_tyr.py at_reloader
 ```
 
 .env:
@@ -87,6 +86,13 @@ pip install -r requirements_dev.txt
 ```
 You will need docker on your machine, it will be used for spawning a database.
 
+You will also need the python protobuf files from Navitia, so you should use CMake target `protobuf_files` for that :
+```
+cd <path/to/build/directory>
+cmake <path/to/navitia/repo>/source/
+make protobuf_files
+```
+
 then run the test:
 ```
 PYTHONPATH=../navitiacommon py.test tests
@@ -99,7 +105,16 @@ honcho run py.test tests
 
 ## Data integration
 
-TODO
+You can get the last data integrations using the jobs endpoint
+
+    GET $HOST/v0/jobs/
+
+You may want to specify an instance to filter these jobs :
+
+    GET $HOST/v0/jobs/<INSTANCE>
+
+A job is created when a new dataset is detected by tyr_beat.
+You can also trigger a data integration by posting your dataset to the job endpoint filtered by instance.
 
 ## Authentication
 
@@ -136,17 +151,76 @@ Returns the list of instances
 response:
 ```json
 [
-    {
-        "id": 1,
-        "is_free": false,
-        "name": "picardie"
-    },
-    {
-        "id": 2,
-        "is_free": false,
-        "name": "PaysDeLaLoire"
-    }
+        {
+            "min_tc_with_bss" : 300,
+            "journey_order" : "arrival_time",
+            "max_duration" : 86400,
+            "max_bss_duration_to_pt" : 1800,
+            "max_nb_transfers" : 10,
+            "bike_speed" : 4.1,
+            "walking_transfer_penalty" : 120,
+            "night_bus_filter_base_factor" : 3600,
+            "walking_speed" : 1.12,
+            "id" : 1,
+            "max_duration_fallback_mode" : "walking",
+            "priority" : 0,
+            "car_speed" : 11.11,
+            "min_tc_with_car" : 300,
+            "min_tc_with_bike" : 300,
+            "min_bike" : 240,
+            "max_walking_duration_to_pt" : 1800,
+            "is_free" : false,
+            "min_car" : 300,
+            "max_bike_duration_to_pt" : 1800,
+            "max_duration_criteria" : "time",
+            "bss_provider" : true,
+            "name" : "jdr",
+            "scenario" : "new_default",
+            "bss_speed" : 4.1,
+            "discarded" : false,
+            "min_bss" : 420,
+            "night_bus_filter_max_factor" : 3,
+            "max_car_duration_to_pt" : 1800
+        },
+        {
+            "min_tc_with_bss" : 300,
+            "journey_order" : "arrival_time",
+            "max_duration" : 86400,
+            "max_bss_duration_to_pt" : 1800,
+            "max_nb_transfers" : 10,
+            "bike_speed" : 4.1,
+            "walking_transfer_penalty" : 120,
+            "night_bus_filter_base_factor" : 900,
+            "walking_speed" : 1.12,
+            "id" : 3,
+            "max_duration_fallback_mode" : "walking",
+            "priority" : 0,
+            "car_speed" : 11.11,
+            "min_tc_with_car" : 300,
+            "min_tc_with_bike" : 300,
+            "min_bike" : 240,
+            "max_walking_duration_to_pt" : 1800,
+            "is_free" : true,
+            "min_car" : 300,
+            "max_bike_duration_to_pt" : 1800,
+            "max_duration_criteria" : "time",
+            "bss_provider" : true,
+            "name" : "fr-idf",
+            "scenario" : "new_default",
+            "bss_speed" : 3.5,
+            "discarded" : false,
+            "min_bss" : 240,
+            "night_bus_filter_max_factor" : 1.5,
+            "max_car_duration_to_pt" : 1800
+        }
 ]
+```
+
+You can also update the config of the instance with a PUT request.
+
+For instance, if you have many instances on the same geographical area, you may want to set the priority property to define which one should be used first when requesting navitia APIs without coverage ($navitia_uri/v1/journeys, $navitia_uri/v1/coord/, etc)
+```bash
+    curl 'http://localhost:5000/v0/instances/<INSTANCE>?priority=1' -X PUT
 ```
 
 #### Api
@@ -179,6 +253,8 @@ To get the list of users
         "id": 1,
         "login": "foo",
         "type": "with_free_instances",
+        "has_shape": false,
+        "shape": null,
         "billing_plan": {
             "max_request_count": 3000,
             "name": "foo",
@@ -198,6 +274,8 @@ To get the list of users
         "id": 3,
         "login": "alex",
         "type": "with_free_instances",
+        "has_shape": true,
+        "shape": {},
         "billing_plan": {
             "max_request_count": 3000,
             "name": "foo",
@@ -230,13 +308,15 @@ Look for a user with his email:
             "id": 1
         },
         "end_point": {
-            "default": false, 
-            "hostnames": [], 
-            "id": 1, 
+            "default": false,
+            "hostnames": [],
+            "id": 1,
             "name": "foo"
         },
         "type": "with_free_instances",
         "email": "foo@example.com",
+        "has_shape": false,
+        "shape": null,
         "id": 1,
         "login": "foo"
     }
@@ -258,13 +338,15 @@ Get all users for a specific endpoint
             "id": 1
         },
         "end_point": {
-            "default": false, 
-            "hostnames": [], 
-            "id": 1, 
+            "default": false,
+            "hostnames": [],
+            "id": 1,
             "name": "foo"
         },
         "type": "with_free_instances",
         "email": "foo@example.com",
+        "has_shape": false,
+        "shape": null,
         "id": 1,
         "login": "foo"
     }
@@ -286,31 +368,106 @@ Get all a user information:
     },
     "authorizations": [],
     "email": "alex@example.com",
+        "has_shape": false,
+        "shape": null,
     "id": 3,
     "keys": [],
     "login": "alex",
     "end_point": {
-        "default": false, 
-        "hostnames": [], 
-        "id": 1, 
+        "default": false,
+        "hostnames": [],
+        "id": 1,
         "name": "foo"
     },
 }
 ```
+
+#### GET Parameters
+
+name             | description                                                                          | required | default        |
+-----------------|--------------------------------------------------------------------------------------|----------|----------------|
+disable_geojson  | if false the shape will be fully displayed (otherwise displaying: `null` or `{}`)    | nope     | true          |
+
+
+Example for `disable_geojson=false` (see default above for `true`)
+
+    GET $HOST/v0/users?disable_geojson=false
+
+```json
+[
+    {
+        "email": "foo@example.com",
+        "id": 1,
+        "login": "foo",
+        "type": "with_free_instances",
+        "has_shape": false,
+        "shape": null,
+        "billing_plan": {
+            "max_request_count": 3000,
+            "name": "foo",
+            "default": true,
+            "max_object_count": 60000,
+            "id": 1
+        },
+        "end_point": {
+            "default": false,
+            "hostnames": [],
+            "id": 2,
+            "name": "foo"
+        }
+    },
+    {
+        "email": "alex@example.com",
+        "id": 3,
+        "login": "alex",
+        "type": "with_free_instances",
+        "has_shape": true,
+        "shape": {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [ [ [100, 0], [101, 0], [101, 1], [100, 1], [100, 0] ] ]
+            },
+            "properties": {
+                "prop0": "value0",
+                "prop1": {
+                    "this": "that"
+                }
+            }
+        },
+        "billing_plan": {
+            "max_request_count": 3000,
+            "name": "foo",
+            "default": true,
+            "max_object_count": 60000,
+            "id": 1
+        },
+        "end_point": {
+            "default": false,
+            "hostnames": [],
+            "id": 1,
+            "name": "alex"
+        }
+    }
+]
+```
+
+
 
 
 To create a user, parameters need to given in the query's string or in json send in the body
 
 Note: email addresses are validated via api not only on the format but on it's existence. However no email are send.
 
-#### Parameters
+#### POST Parameters
 
 name         | description                                                                          | required | default                            |
 -------------|--------------------------------------------------------------------------------------|----------|------------------------------------|
-email        | adress email of the user                                                             | true     |                                    |
-login        | login of the user                                                                    | true     |                                    |
-type         | type of the user between: [with_free_instances, without_free_instances, super_user]  | false    | with_free_instances                |
-end_point_id | the id of the endpoint for this user (in most case the default value is good enough  | false    | the default end_point (navitia.io) |
+email        | adress email of the user                                                             | yep      |                                    |
+login        | login of the user                                                                    | yep      |                                    |
+type         | type of the user between: [with_free_instances, without_free_instances, super_user]  | nope     | with_free_instances                |
+end_point_id | the id of the endpoint for this user (in most case the default value is good enough  | nope     | the default end_point (navitia.io) |
+shape        | the shape (geojson) to be used for autocomplete for this user                        | nope     | null                               |
 
 
     POST /v0/users/?email=alex@example.com&login=alex
@@ -330,6 +487,35 @@ If you use the json format as input, boolean need to be passed as string.
     "login": "alex"
 }
 ```
+
+#### PUT Parameters
+
+They are the same as POST.
+When a parameter is missing, it is not changed.
+When PUTing the exact result of a GET (using disable_geojson or not), nothing is changed.
+
+##### Shape modification
+`has_shape` is not a parameter (no effect whatsoever).
+To modify a shape, PUT the new shape (so far, simple feature only):
+```json
+{
+  "shape": {"type": "Feature",
+      "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+              [[100.0, 0.0], [101.0, 0.0], [101.0, 1.0],
+               [100.0, 1.0], [100.0, 0.0]]
+          ]
+      },
+      "properties": {
+          "prop0": "value0",
+          "prop1": {"this": "that"}
+      }
+  }
+}
+```
+To remove a shape, PUT `{"shape":null}`.
+
 
 #### Keys
 
@@ -603,4 +789,3 @@ A little help if you want to add a new POI type and keep all the default ones:
     curl 'http://localhost:5000/v0/instances/<INSTANCE>/poi_types/amenity:townhall?name=Mairie' -X POST
     curl 'http://localhost:5000/v0/instances/<INSTANCE>/poi_types/leisure:garden?name=Jardin' -X POST
     curl 'http://localhost:5000/v0/instances/<INSTANCE>/poi_types/leisure:park?name=Zone+Parc.+Zone+verte+ouverte,+pour+déambuler.+habituellement+municipale' -X POST
-

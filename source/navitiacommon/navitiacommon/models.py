@@ -36,7 +36,7 @@ from geoalchemy2.types import Geography
 from flask import current_app
 from sqlalchemy.orm import load_only, backref, aliased
 from datetime import datetime
-from sqlalchemy import func, and_, UniqueConstraint, cast, true
+from sqlalchemy import func, and_, UniqueConstraint, cast, true, false
 from sqlalchemy.dialects.postgresql import ARRAY, UUID, INTERVAL
 from navitiacommon.utils import street_source_types, address_source_types, \
     poi_source_types, admin_source_types
@@ -124,6 +124,9 @@ class User(db.Model):
     type = db.Column(db.Enum('with_free_instances', 'without_free_instances', 'super_user', name='user_type'),
                              default='with_free_instances', nullable=False)
 
+    shape = db.Column(db.Text, nullable=True)
+
+
     def __init__(self, login=None, email=None, block_until=None, keys=None, authorizations=None):
         self.login = login
         self.email = email
@@ -181,6 +184,9 @@ class User(db.Model):
             return True
 
         return False
+
+    def has_shape(self):
+        return self.shape is not None
 
 class Key(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -293,7 +299,7 @@ class Instance(db.Model):
 
     priority = db.Column(db.Integer, default=default_values.priority,
                                   nullable=False, server_default='0')
-                                  
+
     bss_provider = db.Column(db.Boolean, default=default_values.bss_provider,
                                   nullable=False, server_default=true())
 
@@ -304,6 +310,8 @@ class Instance(db.Model):
                                                      default=default_values.successive_physical_mode_to_limit_id,
                                                      nullable=False,
                                                      server_default=default_values.successive_physical_mode_to_limit_id)
+
+    full_sn_geometries = db.Column(db.Boolean, default=False, nullable=False, server_default=false())
 
     def __init__(self, name=None, is_free=False, authorizations=None,
                  jobs=None):
@@ -447,7 +455,8 @@ class Job(db.Model, TimestampMixin):
     task_uuid = db.Column(db.Text)
     instance_id = db.Column(db.Integer,
                             db.ForeignKey('instance.id'))
-
+    autocomplete_params_id = db.Column(db.Integer,
+                                       db.ForeignKey('autocomplete_parameter.id'))
     #name is used for the ENUM name in postgreSQL
     state = db.Column(db.Enum('pending', 'running', 'done', 'failed',
                               name='job_state'))
@@ -543,6 +552,15 @@ class AutocompleteParameter(db.Model, TimestampMixin):
 
     def backup_dir(self, root_path):
         return os.path.join(self.main_dir(root_path), "backup")
+
+    def autocomplete_latest_datasets(self, nb_dataset=1):
+        return db.session.query(DataSet)\
+            .join(Job) \
+            .join(AutocompleteParameter) \
+            .filter(AutocompleteParameter.id == self.id, DataSet.family_type == "autocomplete", Job.state == 'done') \
+            .order_by(Job.created_at.desc()) \
+            .limit(nb_dataset) \
+            .all()
 
     def __repr__(self):
         return '<AutocompleteParameter %r>' % self.name

@@ -38,19 +38,12 @@ from jormungandr.realtime_schedule.realtime_proxy import RealtimeProxy
 from jormungandr.schedule import RealTimePassage
 from datetime import datetime, time
 from jormungandr.utils import timestamp_to_datetime
+from navitiacommon.ratelimit import RateLimiter, FakeRateLimiter
 
 
 def _to_duration(hour_str):
     t = datetime.strptime(hour_str, "%H:%M:%S")
     return time(hour=t.hour, minute=t.minute, second=t.second)
-
-
-def _get_current_date():
-    """
-    encapsulate the current date in a method to be able to mock it
-    """
-    # Note: we use now() and not utc_now() because we want a local time, the same used by timeo
-    return datetime.now()
 
 
 class Timeo(RealtimeProxy):
@@ -59,19 +52,31 @@ class Timeo(RealtimeProxy):
     """
 
     def __init__(self, id, service_url, service_args, timezone,
-                 object_id_tag=None, destination_id_tag=None, instance=None, timeout=10):
+                 object_id_tag=None, destination_id_tag=None, instance=None, timeout=10, **kwargs):
         self.service_url = service_url
         self.service_args = service_args
-        self.timeout = timeout  # timeout in seconds
+        self.timeout = timeout  #timeout in seconds
         self.rt_system_id = id
         self.object_id_tag = object_id_tag if object_id_tag else id
         self.destination_id_tag = destination_id_tag
         self.instance = instance
-        self.breaker = pybreaker.CircuitBreaker(fail_max=app.config['CIRCUIT_BREAKER_MAX_TIMEO_FAIL'],
-                                                reset_timeout=app.config['CIRCUIT_BREAKER_TIMEO_TIMEOUT_S'])
+        fail_max = kwargs.get('circuit_breaker_max_fail', app.config['CIRCUIT_BREAKER_MAX_TIMEO_FAIL'])
+        reset_timeout = kwargs.get('circuit_breaker_reset_timeout', app.config['CIRCUIT_BREAKER_TIMEO_TIMEOUT_S'])
+        self.breaker = pybreaker.CircuitBreaker(fail_max=fail_max, reset_timeout=reset_timeout)
 
         # Note: if the timezone is not know, pytz raise an error
         self.timezone = pytz.timezone(timezone)
+
+        if kwargs.get('redis_host') and kwargs.get('rate_limit_count'):
+            self.rate_limiter = RateLimiter(conditions=[{'requests': kwargs.get('rate_limit_count'),
+                                                         'seconds': kwargs.get('rate_limit_duration', 1)}],
+                                            redis_host=kwargs.get('redis_host'),
+                                            redis_port=kwargs.get('redis_port', 6379),
+                                            redis_db=kwargs.get('redis_db', 0),
+                                            redis_password=kwargs.get('redis_password'),
+                                            redis_namespace=kwargs.get('redis_namespace', 'jormungandr.rate_limiter'))
+        else:
+            self.rate_limiter = FakeRateLimiter()
 
 
     def __repr__(self):
@@ -90,6 +95,8 @@ class Timeo(RealtimeProxy):
         The call is also cached
         """
         try:
+            if not self.rate_limiter.acquire(self.rt_system_id, block=False):
+                return None
             return self.breaker.call(requests.get, url, timeout=self.timeout)
         except pybreaker.CircuitBreakerError as e:
             logging.getLogger(__name__).error('Timeo RT service dead, using base '
@@ -132,9 +139,9 @@ class Timeo(RealtimeProxy):
                                               .format(r.url))
             return None
 
-        return self._get_passages(r.json(), route_point.fetch_line_uri())
+        return self._get_passages(r.json(), current_dt, route_point.fetch_line_uri())
 
-    def _get_passages(self, timeo_resp, line_uri=None):
+    def _get_passages(self, timeo_resp, current_dt, line_uri=None):
         logging.getLogger(__name__).debug('timeo response: {}'.format(timeo_resp))
 
         st_responses = timeo_resp.get('StopTimesResponse')
@@ -148,7 +155,7 @@ class Timeo(RealtimeProxy):
         next_passages = []
         for next_expected_st in next_st.get('NextExpectedStopTime', []):
             # for the moment we handle only the NextStop and the direction
-            dt = self._get_dt(next_expected_st['NextStop'])
+            dt = self._get_dt(next_expected_st['NextStop'], current_dt)
             direction = self._get_direction_name(line_uri=line_uri,
                                                  object_code=next_expected_st.get('Terminus'),
                                                  default_value=next_expected_st.get('Destination'))
@@ -186,7 +193,7 @@ class Timeo(RealtimeProxy):
             return None
 
         # timeo can only handle items_per_schedule if it's < 5
-        count = min(count, 5) or 5  # if no value defined we ask for 5 passages
+        count = min(count or 5, 5)# if no value defined we ask for 5 passages
 
         # if a custom datetime is provided we give it to timeo
         dt_param = '&NextStopReferenceTime={dt}'\
@@ -211,10 +218,10 @@ class Timeo(RealtimeProxy):
 
         return url
 
-    def _get_dt(self, hour_str):
+    def _get_dt(self, hour_str, current_dt):
         hour = _to_duration(hour_str)
         # we then have to complete the hour with the date to have a datetime
-        now = _get_current_date()
+        now = current_dt
         dt = datetime.combine(now.date(), hour)
 
         utc_dt = self.timezone.normalize(self.timezone.localize(dt)).astimezone(pytz.utc)

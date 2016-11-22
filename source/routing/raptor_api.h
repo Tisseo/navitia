@@ -47,11 +47,19 @@ namespace navitia{
         struct StreetNetwork;
     }
     class time_duration;
+    struct PbCreator;
 }
 
 namespace navitia { namespace routing {
 
 struct RAPTOR;
+
+void add_direct_path(PbCreator& pb_creator,
+                     const georef::Path& path,
+                     const type::EntryPoint& origin,
+                     const type::EntryPoint& destination,
+                     const std::vector<bt::ptime>& datetimes,
+                     const bool clockwise);
 
 pbnavitia::Response make_response(RAPTOR &raptor,
                                   const type::EntryPoint &origin,
@@ -91,7 +99,8 @@ pbnavitia::Response make_pt_response(RAPTOR &raptor,
                                      const navitia::time_duration& transfer_penalty,
                                      uint32_t max_duration=std::numeric_limits<uint32_t>::max(),
                                      uint32_t max_transfers=std::numeric_limits<uint32_t>::max(),
-                                     uint32_t max_extra_second_pass = 0);
+                                     uint32_t max_extra_second_pass = 0,
+                                     const boost::optional<navitia::time_duration>& direct_path_duration = boost::none);
 
 routing::map_stop_point_duration
 get_stop_points( const type::EntryPoint &ep, const type::Data& data,
@@ -101,8 +110,7 @@ pbnavitia::Response make_graphical_isochrone(RAPTOR &raptor_max,
                                             const boost::posix_time::ptime& current_datetime,
                                             type::EntryPoint origin,
                                             const uint64_t departure_datetime,
-                                            const int& max_duration,
-                                            const int& min_duration,
+                                            const std::vector<DateTime>& boundary_duration,
                                             uint32_t max_transfers,
                                             const type::AccessibiliteParams& accessibilite_params,
                                             const std::vector<std::string>& forbidden,
@@ -110,6 +118,21 @@ pbnavitia::Response make_graphical_isochrone(RAPTOR &raptor_max,
                                             const nt::RTLevel rt_level,
                                             georef::StreetNetwork & worker,
                                             const double& speed) ;
+
+pbnavitia::Response make_heat_map(RAPTOR &raptor,
+                                  const boost::posix_time::ptime& current_datetime,
+                                  type::EntryPoint center,
+                                  const uint64_t departure_datetime,
+                                  DateTime max_duration,
+                                  uint32_t max_transfers,
+                                  const type::AccessibiliteParams& accessibilite_params,
+                                  const std::vector<std::string>& forbidden,
+                                  bool clockwise,
+                                  const nt::RTLevel rt_level,
+                                  georef::StreetNetwork & worker,
+                                  const double& speed,
+                                  const navitia::type::Mode_e mode,
+                                  const uint32_t resolution);
 
 
 }}

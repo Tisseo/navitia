@@ -169,7 +169,23 @@ nt::GeographicalCoord Way::nearest_coord(const int number, const Graph& graph) c
 nt::MultiLineString Way::make_multiline(const Graph& graph) const {
     nt::MultiLineString multiline;
     for (auto edge: this->edges) {
-        multiline.push_back({graph[edge.first].coord, graph[edge.second].coord});
+        /*
+         * Loop on every out_edges from edge.first and keep all edges ending at edge.second.
+         * Mandatory if we want all parallel edges.
+         */
+        BOOST_FOREACH(const auto out_edge, boost::out_edges(edge.first, graph)) {
+            if(target(out_edge, graph) == edge.second) {
+                Edge e = graph[out_edge];
+                // Keep only edges on the current way
+                if(e.way_idx == this->idx) {
+                    if(e.geom_idx != nt::invalid_idx) {
+                        multiline.push_back(this->geoms[e.geom_idx]);
+                    } else {
+                        multiline.push_back({graph[edge.first].coord, graph[edge.second].coord});
+                    }
+                }
+            }
+        }
         boost::range::sort(multiline.back());
     }
     auto cmp = [](const nt::LineString& a, const nt::LineString& b) -> bool {
@@ -301,11 +317,11 @@ ProjectionData::ProjectionData(const type::GeographicalCoord & coord, const GeoR
     }
 }
 
-ProjectionData::ProjectionData(const type::GeographicalCoord & coord, const GeoRef & sn, type::idx_t offset, const proximitylist::ProximityList<vertex_t> &prox){
+ProjectionData::ProjectionData(const type::GeographicalCoord & coord, const GeoRef & sn, type::idx_t offset, const proximitylist::ProximityList<vertex_t> &prox, double horizon){
     edge_t edge;
     found = true;
     try {
-        edge = sn.nearest_edge(coord, prox, offset);
+        edge = sn.nearest_edge(coord, prox, offset, horizon);
     } catch(proximitylist::NotFound) {
         found = false;
         vertices[Direction::Source] = std::numeric_limits<vertex_t>::max();
@@ -318,16 +334,24 @@ ProjectionData::ProjectionData(const type::GeographicalCoord & coord, const GeoR
 }
 
 void ProjectionData::init(const type::GeographicalCoord & coord, const GeoRef & sn, edge_t nearest_edge) {
-    // On cherche les coordonnées des extrémités de ce segment
+    // We retrieve both vertices of nearest_edge from the graph to get their coordinates
     vertices[Direction::Source] = boost::source(nearest_edge, sn.graph);
     vertices[Direction::Target] = boost::target(nearest_edge, sn.graph);
     const type::GeographicalCoord& vertex1_coord = sn.graph[vertices[Direction::Source]].coord;
     const type::GeographicalCoord& vertex2_coord = sn.graph[vertices[Direction::Target]].coord;
-    // On projette le nœud sur le segment
-    this->projected = coord.project(vertex1_coord, vertex2_coord).first;
-    // On calcule la distance « initiale » déjà parcourue avant d'atteindre ces extrémité d'où on effectue le calcul d'itinéraire
-    distances[Direction::Source] = projected.distance_to(vertex1_coord);
-    distances[Direction::Target] = projected.distance_to(vertex2_coord);
+    // We project the point on nearest_edge geometry if it exists, on a straight line between vertices otherwise.
+    // We store distance from the projected point to each vertex since the pt routing is done from them and not the exact coord.
+    edge = sn.graph[nearest_edge];
+    if(edge.geom_idx != nt::invalid_idx) {
+        auto& geom = sn.ways[edge.way_idx]->geoms[edge.geom_idx];
+        this->projected = type::project(geom, coord);
+        distances[Direction::Source] = type::real_distance_from_extremity(geom, projected, false);
+        distances[Direction::Target] = type::real_distance_from_extremity(geom, projected, true);
+    } else {
+        this->projected = coord.project(vertex1_coord, vertex2_coord).first;
+        distances[Direction::Source] = projected.distance_to(vertex1_coord);
+        distances[Direction::Target] = projected.distance_to(vertex2_coord);
+    }
     this->real_coord = coord;
 }
 
@@ -611,17 +635,37 @@ edge_t GeoRef::nearest_edge(const type::GeographicalCoord & coordinates) const {
     return this->nearest_edge(coordinates, this->pl);
 }
 
+static bool is_sn_edge(const GeoRef& georef, const edge_t& e) {
+    switch (georef.get_caracteristic(e)) {
+    case PathItem::TransportCaracteristic::Walk:
+    case PathItem::TransportCaracteristic::Bike:
+    case PathItem::TransportCaracteristic::Car:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// Get the nearest_edge with at least one vertex in the graph corresponding to the offset (walking, bike, ...)
-edge_t GeoRef::nearest_edge(const type::GeographicalCoord & coordinates, const proximitylist::ProximityList<vertex_t>& prox, type::idx_t offset) const {
+edge_t GeoRef::nearest_edge(const type::GeographicalCoord & coordinates, const proximitylist::ProximityList<vertex_t>& prox, type::idx_t offset, double horizon) const {
     boost::optional<edge_t> res;
-    float min_dist = 0.;
-    for (const auto pair_coord : prox.find_within(coordinates)) {
+    float min_dist = 0., cur_dist = 0.;
+    for (const auto pair_coord : prox.find_within(coordinates, horizon)) {
         //we increment the index to get the vertex in the other graph
         const auto u = pair_coord.first + offset;
 
         BOOST_FOREACH (edge_t e, boost::out_edges(u, graph)) {
             const auto v = target(e, graph);
-            float cur_dist = coordinates.project(graph[u].coord, graph[v].coord).second;
+            if (! is_sn_edge(*this, e)) { continue; }
+            const auto edge = graph[e];
+            // If there is a geometry for this edge get the projected point to get the distance
+            if(edge.geom_idx != nt::invalid_idx) {
+                auto projected = type::project(ways[edge.way_idx]->geoms[edge.geom_idx], coordinates);
+                cur_dist = coordinates.distance_to(projected);
+            }
+            else {
+                cur_dist = coordinates.project(graph[u].coord, graph[v].coord).second;
+            }
             if (!res || cur_dist < min_dist) {
                 min_dist = cur_dist;
                 res = e;

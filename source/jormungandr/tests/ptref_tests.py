@@ -261,6 +261,45 @@ class TestPtRef(AbstractTestFixture):
 
         self._test_links(response, 'lines')
 
+    def test_line_without_shape(self):
+        """test line formating with shape disabled"""
+        response = self.query_region("v1/lines?disable_geojson=true")
+        lines = get_not_null(response, 'lines')
+
+        assert len(lines) == 3
+        l = lines[0]
+        is_valid_line(l, depth_check=1)
+        #we don't want a geojson since we have desactivate them
+        assert 'geojson' not in l
+
+        response = self.query_region("v1/lines")
+        lines = get_not_null(response, 'lines')
+
+        assert len(lines) == 3
+        l = lines[0]
+        is_valid_line(l, depth_check=1)
+
+        #we check our geojson, just to be safe :)
+        assert 'geojson' in l
+        geo = get_not_null(l, 'geojson')
+        shape(geo)
+
+    def test_line_with_shape(self):
+        """test line formating with shape explicitly enabled"""
+        response = self.query_region("v1/lines?disable_geojson=false")
+
+        lines = get_not_null(response, 'lines')
+
+        assert len(lines) == 3
+
+        l = lines[0]
+
+        is_valid_line(l, depth_check=1)
+
+        # Test that the geojson is indeed there
+        geo = get_not_null(l, 'geojson')
+        shape(geo)
+
     def test_line_groups(self):
         """test line group formating"""
         # Test for each possible range to ensure main_line is always at a depth of 0
@@ -287,6 +326,22 @@ class TestPtRef(AbstractTestFixture):
         assert len(line_groups) == 1
         lg = line_groups[0]
         is_valid_line_group(lg)
+
+    def test_line_with_active_disruption(self):
+        """test disruption is active"""
+        response = self.query_region("v1/lines/line:A?_current_datetime=20140115T235959")
+
+        disruptions = get_not_null(response, 'disruptions')
+
+        assert len(disruptions) == 1
+        d = disruptions[0]
+
+        # in pt_ref, the status is always active as the checked
+        # period is the validity period
+        assert d["status"] == "active"
+
+        messages = get_not_null(d, 'messages')
+        assert(messages[0]['text']) == 'Disruption on Line line:A'
 
     def test_line_codes(self):
         """test line formating"""
@@ -526,6 +581,13 @@ class TestPtRef(AbstractTestFixture):
         assert code == 400
         assert get_not_null(response, 'error')['message'] == 'ptref : Filters: Unable to find object'
 
+    def test_pt_ref_internal_method(self):
+        from jormungandr import i_manager
+        from navitiacommon import type_pb2
+        i = i_manager.instances['main_ptref_test']
+
+        assert len([r for r in i.ptref.get_objs(type_pb2.ROUTE)]) == 3
+
 
 @dataset({"main_ptref_test": {}, "main_routing_test": {}})
 class TestPtRefRoutingAndPtrefCov(AbstractTestFixture):
@@ -725,7 +787,7 @@ class TestPtRefRoutingCov(AbstractTestFixture):
 
     def test_headsign_display_info_journeys(self):
         """test basic print of headsign in section for journeys"""
-        response = self.query_region('journeys?from=stop_point:stopB&to=stop_point:stopA&datetime=20120615T000000')
+        response = self.query_region('journeys?from=stop_point:stopB&to=stop_point:stopA&datetime=20120615T000000&max_duration_to_pt=0')
         assert 'error' not in response
         journeys = get_not_null(response, 'journeys')
         eq_(len(journeys), 1)
@@ -822,7 +884,7 @@ class TestPtRefRoutingCov(AbstractTestFixture):
 
     def test_attributs_in_display_info_journeys(self):
         """test some attributs in  display_information of a section for journeys"""
-        response = self.query_region('journeys?from=stop_point:stopB&to=stop_point:stopA&datetime=20120615T000000')
+        response = self.query_region('journeys?from=stop_point:stopB&to=stop_point:stopA&datetime=20120615T000000&max_duration_to_pt=0')
         assert 'error' not in response
         journeys = get_not_null(response, 'journeys')
         eq_(len(journeys), 1)

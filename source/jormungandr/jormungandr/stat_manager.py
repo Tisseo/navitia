@@ -36,11 +36,12 @@ from navitiacommon import stat_pb2
 from datetime import datetime
 import logging
 from jormungandr import app
-from jormungandr.authentication import get_user, get_token, get_app_name
+from jormungandr.authentication import get_user, get_token, get_app_name, get_used_coverages
 from jormungandr import utils
 import re
 from threading import Lock
 
+import pytz
 import time
 import sys
 import kombu
@@ -105,6 +106,11 @@ def find_destination_admin(journey):
     return find_admin(journey['sections'][-1]['to'])
 
 
+def tz_str_to_utc_timestamp(dt_str, timezone):
+    dt = timezone.normalize(timezone.localize(utils.str_to_dt(dt_str)))
+    return utils.date_to_timestamp(dt.astimezone(pytz.utc))
+
+
 class StatManager(object):
 
     def __init__(self):
@@ -134,7 +140,7 @@ class StatManager(object):
         """
         try:
             self.connection = kombu.Connection(self.broker_url)
-            exchange = kombu.Exchange(self.exchange_name, type="direct")
+            exchange = kombu.Exchange(self.exchange_name, type="topic")
             self.producer = self.connection.Producer(exchange=exchange)
         except:
             logging.getLogger(__name__).exception('Unable to activate the producer of stat')
@@ -225,8 +231,6 @@ class StatManager(object):
         """
         g.stat_interpreted_parameters = args
 
-    def register_regions(self, regions):
-        g.stat_regions = regions
 
     def fill_parameters(self, stat_request):
         for key in request.args:
@@ -271,13 +275,11 @@ class StatManager(object):
 
 
     def fill_coverages(self, stat_request):
-        if 'region' in request.view_args:
-            stat_coverage = stat_request.coverages.add()
-            stat_coverage.region_id = request.view_args['region']
-        elif hasattr(g, 'stat_regions'):
-            for region_id in g.stat_regions:
+        coverages = get_used_coverages()
+        if coverages:
+            for coverage in coverages:
                 stat_coverage = stat_request.coverages.add()
-                stat_coverage.region_id = region_id
+                stat_coverage.region_id = coverage
         else:
             # We need an empty coverage.
             stat_request.coverages.add()
@@ -296,14 +298,16 @@ class StatManager(object):
         of the node journeys in the result.
         """
         init_journey(stat_journey)
+
+        tz = utils.get_timezone()
         if 'requested_date_time' in resp_journey:
-            stat_journey.requested_date_time = utils.str_to_time_stamp(resp_journey['requested_date_time'])
+            stat_journey.requested_date_time = tz_str_to_utc_timestamp(resp_journey['requested_date_time'], tz)
 
         if 'departure_date_time' in resp_journey:
-            stat_journey.departure_date_time = utils.str_to_time_stamp(resp_journey['departure_date_time'])
+            stat_journey.departure_date_time = tz_str_to_utc_timestamp(resp_journey['departure_date_time'], tz)
 
         if 'arrival_date_time' in resp_journey:
-            stat_journey.arrival_date_time = utils.str_to_time_stamp(resp_journey['arrival_date_time'])
+            stat_journey.arrival_date_time = tz_str_to_utc_timestamp(resp_journey['arrival_date_time'], tz)
 
         if 'duration' in resp_journey:
             stat_journey.duration = resp_journey['duration']
@@ -347,11 +351,13 @@ class StatManager(object):
 
     def fill_journeys(self, stat_request, call_result):
         """
-        Fill journeys and sections for each journey
+        Fill journeys and sections for each journey (datetimes are all UTC)
         """
         journey_request = stat_request.journey_request
         if hasattr(g, 'stat_interpreted_parameters') and g.stat_interpreted_parameters['original_datetime']:
-            journey_request.requested_date_time = int(time.mktime(g.stat_interpreted_parameters['original_datetime'].timetuple()))
+            tz = utils.get_timezone()
+            dt = tz.normalize(tz.localize(g.stat_interpreted_parameters['original_datetime']))
+            journey_request.requested_date_time = utils.date_to_timestamp(dt.astimezone(pytz.utc))
             journey_request.clockwise = g.stat_interpreted_parameters['clockwise']
         if 'journeys' in call_result[0] and call_result[0]['journeys']:
             first_journey = call_result[0]['journeys'][0]
@@ -385,11 +391,12 @@ class StatManager(object):
         return result
 
     def fill_section(self, stat_section, resp_section, previous_section):
+        tz = utils.get_timezone()
         if 'departure_date_time' in resp_section:
-            stat_section.departure_date_time = utils.str_to_time_stamp(resp_section['departure_date_time'])
+            stat_section.departure_date_time = tz_str_to_utc_timestamp(resp_section['departure_date_time'], tz)
 
         if 'arrival_date_time' in resp_section:
-            stat_section.arrival_date_time = utils.str_to_time_stamp(resp_section['arrival_date_time'])
+            stat_section.arrival_date_time = tz_str_to_utc_timestamp(resp_section['arrival_date_time'], tz)
 
         if 'duration' in resp_section:
             stat_section.duration = resp_section['duration']
@@ -485,7 +492,7 @@ class StatManager(object):
                 if self.producer is None:
                     #if the initialization failed we have to retry the creation of the objects
                     self._init_rabbitmq()
-                self.producer.publish(pbf)
+                self.producer.publish(pbf, routing_key=stat_request.api)
             except self.connection.connection_errors + self.connection.channel_errors:
                 logging.getLogger(__name__).exception('Server went away, will be reconnected..')
                 #Relese and close the previous connection
@@ -495,7 +502,7 @@ class StatManager(object):
                 self._init_rabbitmq()
                 #If connection is established publish the stat message.
                 if self.save_stat:
-                    self.producer.publish(pbf)
+                    self.producer.publish(pbf, routing_key=stat_request.api)
 
     def fill_admin_from(self, stat_section, admin):
         if admin[0]:

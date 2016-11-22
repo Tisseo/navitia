@@ -54,6 +54,7 @@ from jormungandr.interfaces.common import odt_levels
 from jormungandr.utils import date_to_timestamp
 from jormungandr.resources_utc import ResourceUtc
 from datetime import datetime
+from flask import g
 
 
 class Uri(ResourceUri, ResourceUtc):
@@ -104,6 +105,8 @@ class Uri(ResourceUri, ResourceUtc):
                             description="filters objects not valid before this date")
         parser.add_argument("until", type=date_time_format,
                             description="filters objects not valid after this date")
+        parser.add_argument("disable_geojson", type=boolean, default=False,
+                            description="remove geojson from the response")
 
         if is_collection:
             parser.add_argument("filter", type=unicode, default="",
@@ -123,6 +126,9 @@ class Uri(ResourceUri, ResourceUtc):
                 args["filter"] += " and " + f
             else:
                 args["filter"] = f
+
+        if args['disable_geojson']:
+            g.disable_geojson = True
 
         # for retrocompatibility purpose
         for forbid_id in args['__temporary_forbidden_id[]']:
@@ -538,7 +544,7 @@ def pois(is_collection):
             self.parsers["get"].add_argument("original_id", type=unicode,
                             description="original uri of the object you"
                                     "want to query")
-            self.parsers["get"].add_argument("bss_stands", type=bool, default=True,
+            self.parsers["get"].add_argument("bss_stands", type=boolean, default=True,
                                              description="Show bss stands availability")
             args = self.parsers["get"].parse_args()
             if args["bss_stands"]:

@@ -43,7 +43,7 @@ class Cleverage(RealtimeProxy):
     class managing calls to cleverage external service providing real-time next passages
     """
     def __init__(self, id, service_url, service_args, timezone, object_id_tag=None,
-                 destination_id_tag=None, instance=None, timeout=10):
+                 destination_id_tag=None, instance=None, timeout=10, **kwargs):
         self.service_url = service_url if (service_url[-1] == u'/') else (service_url+'/')
         self.service_args = service_args
         self.timeout = timeout  # timeout in seconds
@@ -106,7 +106,7 @@ class Cleverage(RealtimeProxy):
     def _get_passages(self, route_point, cleverage_resp):
         logging.getLogger(__name__).debug('cleverage response: {}'.format(cleverage_resp))
 
-        line_code = route_point.fetch_line_code()
+        line_code = route_point.fetch_line_id(self.object_id_tag)
 
         schedules = next((line['schedules'] for line in cleverage_resp if line['code'].lower() == line_code.lower()), None)
 
@@ -116,7 +116,8 @@ class Cleverage(RealtimeProxy):
                 # for the moment we handle only the NextStop and the direction
                 dt = self._get_dt(next_expected_st['departure'])
                 direction = next_expected_st.get('destination_name')
-                next_passage = RealTimePassage(dt, direction)
+                is_real_time = next_expected_st.get('realtime') == '1'
+                next_passage = RealTimePassage(dt, direction, is_real_time)
                 next_passages.append(next_passage)
 
             return next_passages

@@ -33,6 +33,7 @@ from jormungandr.interfaces.v1 import Uri
 from jormungandr.interfaces.v1 import Coverage
 from jormungandr.interfaces.v1 import Journeys
 from jormungandr.interfaces.v1 import GraphicalIsochrone
+from jormungandr.interfaces.v1 import HeatMap
 from jormungandr.interfaces.v1 import Schedules
 from jormungandr.interfaces.v1 import Places
 from jormungandr.interfaces.v1 import Ptobjects
@@ -41,6 +42,7 @@ from jormungandr.interfaces.v1 import Disruptions
 from jormungandr.interfaces.v1 import Calendars
 from jormungandr.interfaces.v1 import converters_collection_type
 from jormungandr.interfaces.v1 import Status
+from jormungandr.interfaces.v1 import GeoStatus
 from werkzeug.routing import BaseConverter, FloatConverter, PathConverter
 from jormungandr.modules_loader import AModule
 from jormungandr import app
@@ -191,6 +193,11 @@ class V1Routing(AModule):
                             region + 'isochrones',
                             endpoint='isochrones')
 
+        if app.config.get('HEAT_MAP'):
+            self.add_resource(HeatMap.HeatMap,
+                              region + 'heat_maps',
+                              endpoint='heat_maps')
+
         self.add_resource(Schedules.RouteSchedules,
                           region + '<uri:uri>/route_schedules',
                           coord + '<uri:uri>/route_schedules',
@@ -225,6 +232,9 @@ class V1Routing(AModule):
         self.add_resource(Status.Status,
                           region + 'status',
                           endpoint='status')
+        self.add_resource(GeoStatus.GeoStatus,
+                          region + '_geo_status',
+                          endpoint='geo_status')
 
         self.add_resource(Calendars.Calendars,
                           region + 'calendars',

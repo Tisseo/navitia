@@ -36,6 +36,7 @@ www.navitia.io
 #include "type/meta_data.h"
 #include "fare/fare.h"
 #include "isochrone.h"
+#include "heat_map.h"
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/range/algorithm/count.hpp>
@@ -206,6 +207,22 @@ static void co2_emission_aggregator(pbnavitia::Journey* pb_journey){
     }
 }
 
+static void compute_durations(pbnavitia::Journey* pb_journey) {
+    uint32_t total_walking_duration = 0;
+    for (const auto& section: pb_journey->sections()) {
+        if ((section.type() == pbnavitia::STREET_NETWORK && section.street_network().mode() == pbnavitia::StreetNetworkMode::Walking) ||
+        (section.type() == pbnavitia::TRANSFER && section.transfer_type() == pbnavitia::walking) ||
+        (section.type() == pbnavitia::CROW_FLY && section.street_network().mode() == pbnavitia::StreetNetworkMode::Walking)) {
+            total_walking_duration += section.duration();
+        }
+    }
+    const auto ts_departure = pb_journey->sections(0).begin_date_time();
+    const auto ts_arrival = pb_journey->sections(pb_journey->sections_size() - 1).end_date_time();
+    pbnavitia::Durations* durations = pb_journey->mutable_durations();
+    durations->set_walking(total_walking_duration);
+    durations->set_total(ts_arrival - ts_departure);
+}
+
 static georef::Path get_direct_path(georef::StreetNetwork& worker,
                             const type::EntryPoint& origin,
                             const type::EntryPoint& destination) {
@@ -215,12 +232,12 @@ static georef::Path get_direct_path(georef::StreetNetwork& worker,
     return worker.get_direct_path(origin, destination);
 }
 
-static void add_direct_path(PbCreator& pb_creator,
-                       const georef::Path& path,
-                       const type::EntryPoint& origin,
-                       const type::EntryPoint& destination,
-                       const std::vector<bt::ptime>& datetimes,
-                       const bool clockwise) {
+void add_direct_path(PbCreator& pb_creator,
+                     const georef::Path& path,
+                     const type::EntryPoint& origin,
+                     const type::EntryPoint& destination,
+                     const std::vector<bt::ptime>& datetimes,
+                     const bool clockwise) {
 
     log4cplus::Logger logger = log4cplus::Logger::getInstance(LOG4CPLUS_TEXT("logger"));
     if (! path.path_items.empty()) {
@@ -256,6 +273,7 @@ static void add_direct_path(PbCreator& pb_creator,
             destination_pb->Clear();
             pb_creator.fill(&destination, destination_pb, 2);
             co2_emission_aggregator(pb_journey);
+            compute_durations(pb_journey);
         }
     }
 }
@@ -536,7 +554,9 @@ static void add_pathes(PbCreator& pb_creator,
             const auto& departure_stop_point = path.items.front().stop_points.front();
             georef::Path sn_departure_path = worker.get_path(departure_stop_point->idx);
 
-            if (use_crow_fly(origin, departure_stop_point, sn_departure_path, pb_creator.data)){
+            if (is_same_stop_point(origin, *departure_stop_point)) {
+                // nothing in this case
+            } else if (use_crow_fly(origin, *departure_stop_point, sn_departure_path, pb_creator.data)){
                 type::EntryPoint destination_tmp(type::Type_e::StopPoint, departure_stop_point->uri);
                 destination_tmp.coordinates = departure_stop_point->coord;
                 pb_creator.action_period = bt::time_period (path.items.front().departures.front(),
@@ -599,17 +619,19 @@ static void add_pathes(PbCreator& pb_creator,
             const auto arrival_stop_point = path.items.back().stop_points.back();
             georef::Path sn_arrival_path = worker.get_path(arrival_stop_point->idx, true);
 
-            if (use_crow_fly(destination, arrival_stop_point, sn_arrival_path, pb_creator.data)) {
+            if (is_same_stop_point(destination, *arrival_stop_point)) {
+                // nothing in this case
+            } else if (use_crow_fly(destination, *arrival_stop_point, sn_arrival_path, pb_creator.data)) {
                 type::EntryPoint origin_tmp(type::Type_e::StopPoint, arrival_stop_point->uri);
+                auto dt = path.items.back().arrivals.back();
                 origin_tmp.coordinates = arrival_stop_point->coord;
-                pb_creator.action_period = bt::time_period(path.items.back().departures.back(),
-                                              path.items.back().departures.back()+bt::minutes(1));
+                pb_creator.action_period = bt::time_period(dt, dt + bt::minutes(1));
                 const time_duration& crow_fly_duration = find_or_default(SpIdx(*arrival_stop_point),
                                                 worker.arrival_path_finder.distance_to_entry_point);
                 arrival_time = arrival_time + pt::seconds(crow_fly_duration.to_posix().total_seconds());
                 pb_creator.fill_crowfly_section(origin_tmp, destination, crow_fly_duration,
                                                 get_crowfly_mode(sn_arrival_path),
-                                                path.items.back().departures.back(), pb_journey);
+                                                dt, pb_journey);
             }
             // for stop areas, we don't want to display the fallback section if start
             // from one of the stop area's stop point
@@ -649,6 +671,7 @@ static void add_pathes(PbCreator& pb_creator,
         pb_journey->set_arrival_date_time(arrival);
         pb_journey->set_duration(arrival - departure);
         co2_emission_aggregator(pb_journey);
+        compute_durations(pb_journey);
     }
 
     add_direct_path(pb_creator, direct_path, origin, destination, datetimes, clockwise);
@@ -695,6 +718,7 @@ static void add_pt_pathes(PbCreator& pb_creator,
         pb_journey->set_duration((arrival_time - departure_time).total_seconds());
 
         co2_emission_aggregator(pb_journey);
+        compute_durations(pb_journey);
     }
 }
 
@@ -820,6 +844,7 @@ get_stop_points( const type::EntryPoint &ep, const type::Data& data,
     if (ep.type == type::Type_e::Address
                 || ep.type == type::Type_e::Coord
                 || ep.type == type::Type_e::StopArea
+                || ep.type == type::Type_e::StopPoint
                 || ep.type == type::Type_e::POI) {
 
         if (ep.type == type::Type_e::StopArea) {
@@ -832,6 +857,15 @@ get_stop_points( const type::EntryPoint &ep, const type::Data& data,
                         result[sp_idx] = {};
                     }
                 }
+            }
+        }
+
+        if (ep.type == type::Type_e::StopPoint) {
+            auto it = data.pt_data->stop_points_map.find(ep.uri);
+            if (it != data.pt_data->stop_points_map.end()){
+                const SpIdx sp_idx{*it->second};
+                concerned_path_finder.distance_to_entry_point[sp_idx] = {};
+                result[sp_idx] = {};
             }
         }
 
@@ -868,11 +902,6 @@ get_stop_points( const type::EntryPoint &ep, const type::Data& data,
             if(result.find(sp_idx) == result.end()) {
                 result[sp_idx] = idx_duration.second;
             }
-        }
-    } else if (ep.type == type::Type_e::StopPoint) {
-        auto it = data.pt_data->stop_points_map.find(ep.uri);
-        if (it != data.pt_data->stop_points_map.end()){
-            result[SpIdx{*it->second}] = {};
         }
     } else if(ep.type == type::Type_e::Admin) {
         //for an admin, we want to leave from it's main stop areas if we have some, else we'll leave from the center of the admin
@@ -943,7 +972,8 @@ pbnavitia::Response make_pt_response(RAPTOR &raptor,
                                      const navitia::time_duration& transfer_penalty,
                                      uint32_t max_duration,
                                      uint32_t max_transfers,
-                                     uint32_t max_extra_second_pass){
+                                     uint32_t max_extra_second_pass,
+                                     const boost::optional<navitia::time_duration>& direct_path_duration){
     log4cplus::Logger logger = log4cplus::Logger::getInstance(LOG4CPLUS_TEXT("logger"));
     PbCreator pb_creator(raptor.data, current_datetime, null_time_period);
     std::vector<bt::ptime> datetimes;
@@ -981,11 +1011,15 @@ pbnavitia::Response make_pt_response(RAPTOR &raptor,
     DateTime init_dt = DateTimeUtils::set(day, time);
 
     if(max_duration != std::numeric_limits<uint32_t>::max()) {
-        bound = clockwise ? init_dt + max_duration : init_dt - max_duration;
+        if (clockwise) {
+            bound = init_dt + max_duration;
+        } else {
+            bound = init_dt > max_duration ? init_dt - max_duration : 0;
+        }
     }
     std::vector<Path> pathes = raptor.compute_all(
             departures, arrivals, init_dt, rt_level, transfer_penalty, bound, max_transfers,
-            accessibilite_params, forbidden, clockwise, {}, max_extra_second_pass);
+            accessibilite_params, forbidden, clockwise, direct_path_duration, max_extra_second_pass);
 
     for(auto & path : pathes) {
         path.request_time = datetime;
@@ -1070,8 +1104,12 @@ make_response(RAPTOR &raptor,
         int time = datetime.time_of_day().total_seconds();
         DateTime init_dt = DateTimeUtils::set(day, time);
 
-        if(max_duration!=std::numeric_limits<uint32_t>::max()) {
-            bound = clockwise ? init_dt + max_duration : init_dt - max_duration;
+        if(max_duration != std::numeric_limits<uint32_t>::max()) {
+            if (clockwise) {
+                bound = init_dt + max_duration;
+            } else {
+                bound = init_dt > max_duration ? init_dt - max_duration : 0;
+            }
         }
         std::vector<Path> tmp = raptor.compute_all(
             departures, destinations, init_dt, rt_level, transfer_penalty, bound, max_transfers,
@@ -1146,17 +1184,6 @@ pbnavitia::Response make_isochrone(RAPTOR &raptor,
     return pb_creator.get_response();
 }
 
-template<typename F, typename R>
-void separated_by_coma(std::stringstream& os, F f, const R& range) {
-    auto it = range.begin();
-    const auto end = range.end();
-    if (it != end) { f(os, *it); ++it; }
-    for (; it != end; ++it) {
-        os << ",";
-        f(os, *it);
-    }
-}
-
 static void print_coord(std::stringstream& ss,
                         const type::GeographicalCoord coord) {
     ss << std::setprecision(15) << "[" << coord.lon() << "," << coord.lat() << "]";
@@ -1174,12 +1201,30 @@ static void print_polygon(std::stringstream& os, const type::Polygon& polygon) {
     os << "]";
 }
 
+template<typename T>
+static void add_common_isochrone(PbCreator& pb_creator,
+                                 type::EntryPoint center,
+                                 bool clockwise,
+                                 bt::ptime datetime,
+                                 T pb) {
+    if (clockwise) {
+        pb_creator.fill(&center, pb->mutable_origin(), 2);
+    } else {
+        pb_creator.fill(&center, pb->mutable_destination(), 2);
+    }
+    pb->set_requested_date_time(navitia::to_posix_timestamp(datetime));
+}
+
 static void add_graphical_isochrone(const type::MultiPolygon& shape,
                                     const int& min_duration,
                                     const int& max_duration,
                                     PbCreator& pb_creator,
                                     type::EntryPoint center,
-                                    bool clockwise) {
+                                    bool clockwise,
+                                    bt::ptime datetime,
+                                    const type::Data &d,
+                                    DateTime min_date_time,
+                                    DateTime max_date_time) {
     std::stringstream geojson;
     geojson << R"({"type":"MultiPolygon","coordinates":[)";
     separated_by_coma(geojson, print_polygon, shape);
@@ -1189,28 +1234,52 @@ static void add_graphical_isochrone(const type::MultiPolygon& shape,
     pb_isochrone->set_geojson(geojson.str());
     pb_isochrone->set_min_duration(min_duration);
     pb_isochrone->set_max_duration(max_duration);
-    if (clockwise) {
-        pb_creator.fill(&center, pb_isochrone->mutable_origin(), 2);
-    } else {
-        pb_creator.fill(&center, pb_isochrone->mutable_destination(), 2);
-    }
+    pb_isochrone->set_min_date_time(navitia::to_posix_timestamp(min_date_time, d));
+    pb_isochrone->set_max_date_time(navitia::to_posix_timestamp(max_date_time, d));
+    add_common_isochrone(pb_creator, center, clockwise, datetime, pb_isochrone);
 }
 
-pbnavitia::Response make_graphical_isochrone(RAPTOR &raptor,
-                                            const boost::posix_time::ptime& current_datetime,
-                                            type::EntryPoint center,
-                                            const uint64_t departure_datetime,
-                                            const int& max_duration,
-                                            const int& min_duration,
-                                            uint32_t max_transfers,
-                                            const type::AccessibiliteParams& accessibilite_params,
-                                            const std::vector<std::string>& forbidden,
-                                            bool clockwise,
-                                            const nt::RTLevel rt_level,
-                                            georef::StreetNetwork & worker,
-                                            const double& speed) {
+static void add_heat_map(const std::string& heat_map,
+                         PbCreator& pb_creator,
+                         type::EntryPoint center,
+                         bool clockwise,
+                         bt::ptime datetime) {
+    auto pb_heat_map = pb_creator.add_heat_maps();
+    pb_heat_map->mutable_heat_matrix();
+    pb_heat_map->set_heat_matrix(heat_map);
+    add_common_isochrone(pb_creator, center, clockwise, datetime, pb_heat_map);
+}
 
-    PbCreator pb_creator(raptor.data, current_datetime, null_time_period);
+struct IsochroneCommon {
+    bool clockwise;
+    type::GeographicalCoord coord_origin;
+    map_stop_point_duration departures;
+    double speed;
+    DateTime init_dt;
+    type::EntryPoint center;
+    DateTime bound;
+    bt::ptime datetime;
+    IsochroneCommon(){}
+    IsochroneCommon(const bool clockwise, const type::GeographicalCoord& coord_origin,
+                    const map_stop_point_duration& departures, const double speed, const DateTime init_dt,
+                    const type::EntryPoint& center, const DateTime bound, bt::ptime datetime):clockwise(clockwise),
+        coord_origin(coord_origin), departures(departures), speed(speed), init_dt(init_dt),
+        center(center), bound(bound), datetime(datetime){}
+};
+
+static boost::optional<pbnavitia::Response> fill_isochrone_common(IsochroneCommon& isochrone_common,
+                                                                  RAPTOR& raptor,
+                                                                  type::EntryPoint center,
+                                                                  const uint64_t departure_datetime,
+                                                                  const double max_duration,
+                                                                  uint32_t max_transfers,
+                                                                  const type::AccessibiliteParams& accessibilite_params,
+                                                                  const std::vector<std::string>& forbidden,
+                                                                  bool clockwise,
+                                                                  const nt::RTLevel rt_level,
+                                                                  georef::StreetNetwork & worker,
+                                                                  const double& speed,
+                                                                  PbCreator& pb_creator) {
     bt::ptime datetime;
     auto tmp_datetime = parse_datetimes(raptor, {departure_datetime}, pb_creator, clockwise);
     if(pb_creator.has_error() || tmp_datetime.size() == 0 ||
@@ -1222,20 +1291,89 @@ pbnavitia::Response make_graphical_isochrone(RAPTOR &raptor,
     auto departures = get_stop_points(center, raptor.data, worker);
 
     if (departures.empty()) {
-        pb_creator.set_response_type(pbnavitia::NO_ORIGIN_POINT);
+        pb_creator.set_response_type(pbnavitia::NO_ORIGIN_NOR_DESTINATION_POINT);
         return pb_creator.get_response();
     }
     int day = (datetime.date() - raptor.data.meta->production_date.begin()).days();
     int time = datetime.time_of_day().total_seconds();
     DateTime init_dt = DateTimeUtils::set(day, time);
-    DateTime bound_max = clockwise ? init_dt + max_duration : init_dt - max_duration;
-    DateTime bound_min = clockwise ? init_dt + min_duration : init_dt - min_duration;
-    raptor.isochrone(departures, init_dt, bound_max, max_transfers,
+    DateTime bound = build_bound(clockwise, max_duration, init_dt);
+    raptor.isochrone(departures, init_dt, bound, max_transfers,
                      accessibilite_params, forbidden, clockwise, rt_level);
     type::GeographicalCoord coord_origin = center.coordinates;
-    type::MultiPolygon isochrone = build_isochrones(raptor, clockwise, coord_origin, bound_max, bound_min, departures,
-                                                    speed, max_duration, min_duration);
-    add_graphical_isochrone(isochrone, min_duration, max_duration, pb_creator, center, clockwise);
+    isochrone_common = IsochroneCommon(clockwise, coord_origin, departures, speed, init_dt, center, bound, datetime);
+    return boost::none;
+}
+
+static DateTime make_isochrone_date (const DateTime& init_dt,
+                                     const DateTime& offset,
+                                     const bool clockwise) {
+        return init_dt + (clockwise ? 1: -1) * offset;
+}
+
+pbnavitia::Response make_graphical_isochrone(RAPTOR &raptor,
+                                            const boost::posix_time::ptime& current_datetime,
+                                            type::EntryPoint center,
+                                            const uint64_t departure_datetime,
+                                            const std::vector<DateTime>& boundary_duration,
+                                            uint32_t max_transfers,
+                                            const type::AccessibiliteParams& accessibilite_params,
+                                            const std::vector<std::string>& forbidden,
+                                            bool clockwise,
+                                            const nt::RTLevel rt_level,
+                                            georef::StreetNetwork & worker,
+                                            const double& speed) {
+
+    PbCreator pb_creator(raptor.data, current_datetime, null_time_period);
+    IsochroneCommon isochrone_common;
+    auto resp = fill_isochrone_common(isochrone_common, raptor, center, departure_datetime,
+                                      boundary_duration[0], max_transfers, accessibilite_params, forbidden, clockwise,
+                                      rt_level, worker, speed, pb_creator);
+    if (resp) {
+        return *resp;
+    }
+    std::vector<Isochrone> isochrone = build_isochrones(raptor, isochrone_common.clockwise,
+                                                        isochrone_common.coord_origin,
+                                                        isochrone_common.departures,
+                                                        speed, boundary_duration, isochrone_common.init_dt);
+    for (const auto& iso: isochrone) {
+        auto min_date_time = make_isochrone_date(isochrone_common.init_dt, iso.min_duration, clockwise);
+        auto max_date_time = make_isochrone_date(isochrone_common.init_dt, iso.max_duration, clockwise);
+        add_graphical_isochrone(iso.shape, iso.min_duration, iso.max_duration, pb_creator, center,
+                                clockwise, isochrone_common.datetime, raptor.data, min_date_time, max_date_time);
+    }
+
+    return pb_creator.get_response();
+}
+
+pbnavitia::Response make_heat_map(RAPTOR &raptor,
+                                  const boost::posix_time::ptime& current_datetime,
+                                  type::EntryPoint center,
+                                  const uint64_t departure_datetime,
+                                  DateTime max_duration,
+                                  uint32_t max_transfers,
+                                  const type::AccessibiliteParams& accessibilite_params,
+                                  const std::vector<std::string>& forbidden,
+                                  bool clockwise,
+                                  const nt::RTLevel rt_level,
+                                  georef::StreetNetwork & worker,
+                                  const double& speed,
+                                  const navitia::type::Mode_e mode,
+                                  const uint32_t resolution) {
+
+    PbCreator pb_creator(raptor.data, current_datetime, null_time_period);
+    IsochroneCommon isochrone_common;
+    auto resp = fill_isochrone_common(isochrone_common, raptor, center, departure_datetime,
+                                 max_duration, max_transfers, accessibilite_params, forbidden, clockwise,
+                                 rt_level, worker, speed, pb_creator);
+    if (resp) {
+        return *resp;
+    }
+    auto heat_map = build_raster_isochrone(worker.geo_ref, speed, mode, isochrone_common.init_dt, raptor,
+                                           isochrone_common.coord_origin, max_duration, clockwise,
+                                           isochrone_common.bound, resolution);
+    add_heat_map(heat_map, pb_creator, center, clockwise, isochrone_common.datetime);
+
     return pb_creator.get_response();
 }
 

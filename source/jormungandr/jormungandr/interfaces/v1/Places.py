@@ -32,11 +32,13 @@
 from __future__ import absolute_import, print_function, unicode_literals, division
 from flask import Flask, request
 from flask.ext.restful import Resource, fields, reqparse, abort
+from flask.ext.restful.inputs import boolean
 from flask.globals import g
-from jormungandr import i_manager, timezone, global_autocomplete, bss_provider_manager
+from jormungandr import i_manager, timezone, global_autocomplete, bss_provider_manager, authentication
 from jormungandr.interfaces.v1.fields import disruption_marshaller
 from jormungandr.interfaces.v1.make_links import add_id_links
-from jormungandr.interfaces.v1.fields import place, NonNullList, NonNullNested, PbField, pagination, error, coord, feed_publisher
+from jormungandr.interfaces.v1.fields import place, NonNullList, NonNullNested, PbField, pagination,\
+                                             error, feed_publisher, Lit, ListLit, beta_endpoint
 from jormungandr.interfaces.v1.ResourceUri import ResourceUri
 from jormungandr.interfaces.argument import ArgumentDoc
 from jormungandr.interfaces.parsers import depth_argument, default_count_arg_type, date_time_format
@@ -47,8 +49,141 @@ from functools import wraps
 from flask_restful import marshal, marshal_with
 import datetime
 from jormungandr.parking_space_availability.bss.stands_manager import ManageStands
+import ujson as json
 
 
+#global marshal
+def delete_prefix(value, prefix):
+    if value and value.startswith(prefix):
+        return value[len(prefix):]
+    return value
+
+def create_admin_field(geocoding):
+    """
+    This field is needed to respect the geocodejson-spec
+    https://github.com/geocoders/geocodejson-spec/tree/master/draft#feature-object
+    """
+    if not geocoding:
+        return None
+    admin_list = geocoding.get('admin', {})
+    response = []
+    for level, name in admin_list.items():
+        response.append({
+            "insee": None,
+            "name": name,
+            "level": int(level.replace('level', '')),
+            "coord": {"lat": None, "lon": None},
+            "label": None,
+            "id": None,
+            "zip_code": None
+        })
+    return response
+
+class AddressId(fields.Raw):
+    def output(self, key, obj):
+        if not obj:
+            return None
+        geocoding = obj.get('properties', {}).get('geocoding', {})
+        return delete_prefix(geocoding.get('id'), "addr:")
+
+def create_administrative_regions_field(geocoding):
+    if not geocoding:
+        return None
+    administrative_regions = geocoding.get('administrative_regions', {})
+    response = []
+    for admin in administrative_regions:
+        coord = admin.get('coord', {})
+        lat = coord.get('lat') if coord else None
+        lon = coord.get('lon') if coord else None
+        response.append({
+            "insee": admin.get('insee'),
+            "name": admin.get('label'),
+            "level": int(admin.get('level')),
+            "coord": {
+                "lat": lat,
+                "lon": lon
+            },
+            "label": admin.get('label'),
+            "id": admin.get('id'),
+            "zip_code": admin.get('zip_code')
+        })
+    return response
+
+
+class AdministrativeRegionField(fields.Raw):
+    """
+    This field is needed to respect Navitia's spec for the sake of compatibility
+    """
+    def output(self, key, obj):
+        if not obj:
+            return None
+        geocoding = obj.get('properties', {}).get('geocoding', {})
+        return create_administrative_regions_field(geocoding) or create_admin_field(geocoding)
+
+
+class AddressField(fields.Raw):
+    def output(self, key, obj):
+        if not obj:
+            return None
+
+        coordinates = obj.get('geometry', {}).get('coordinates', [])
+        if len(coordinates) == 2:
+            lon = coordinates[0]
+            lat = coordinates[1]
+        else:
+            lon = None
+            lat = None
+
+        geocoding = obj.get('properties', {}).get('geocoding', {})
+
+        return {
+            "id": delete_prefix(geocoding.get('id'), "addr:"),
+            "coord": {
+                "lon": lon,
+                "lat": lat,
+            },
+            "house_number": geocoding.get('housenumber') or '0',
+            "label": geocoding.get('label'),
+            "name": geocoding.get('name'),
+            "administrative_regions":
+                create_administrative_regions_field(geocoding) or create_admin_field(geocoding) ,
+        }
+
+geocode_admin = {
+    "embedded_type": Lit("administrative_region"),
+    "quality": Lit("0"),
+    "id": fields.String(attribute='properties.geocoding.id'),
+    "name": fields.String(attribute='properties.geocoding.name'),
+    "administrative_regions": AdministrativeRegionField()
+}
+
+
+geocode_addr = {
+    "embedded_type": Lit("address"),
+    "quality": Lit("0"),
+    "id": AddressId,
+    "name": fields.String(attribute='properties.geocoding.label'),
+    "address": AddressField()
+}
+
+class GeocodejsonFeature(fields.Raw):
+    def format(self, place):
+        type_ = place.get('properties', {}).get('geocoding', {}).get('type')
+
+        if type_ == 'city':
+            return marshal(place, geocode_admin)
+        elif type_ in ('street', 'house'):
+            return marshal(place, geocode_addr)
+
+        return place
+
+geocodejson = {
+    "places": fields.List(GeocodejsonFeature, attribute='features'),
+    "warnings": ListLit([fields.Nested(beta_endpoint)]),
+}
+
+
+#instance marshal
 places = {
     "places": NonNullList(NonNullNested(place)),
     "error": PbField(error, attribute='error'),
@@ -92,12 +227,17 @@ class Places(ResourceUri):
                                                      " Note: it will mainly change the disruptions that concern "
                                                      "the object The timezone should be specified in the format,"
                                                      " else we consider it as UTC")
+        self.parsers['get'].add_argument("disable_geojson", type=boolean, default=False,
+                            description="remove geojson from the response")
 
     def get(self, region=None, lon=None, lat=None):
         args = self.parsers["get"].parse_args()
         self._register_interpreted_parameters(args)
         if len(args['q']) == 0:
             abort(400, message="Search word absent")
+
+        if args['disable_geojson']:
+            g.disable_geojson = True
 
         # If a region or coords are asked, we do the search according
         # to the region, else, we do a word wide search
@@ -108,7 +248,12 @@ class Places(ResourceUri):
             response = i_manager.dispatch(args, "places", instance_name=instance)
         else:
             if global_autocomplete:
-                response = global_autocomplete.get(args, None)
+                user = authentication.get_user(token=authentication.get_token(), abort_if_no_token=False)
+                shape = None
+                if user and user.shape :
+                    shape = json.loads(user.shape)
+                bragi_response = global_autocomplete.get(args, None, shape=shape)
+                response = marshal(bragi_response, geocodejson)
             else:
                 raise TechnicalError('world wide autocompletion service not available')
         return response, 200
@@ -121,11 +266,15 @@ class PlaceUri(ResourceUri):
         self.parsers = {}
         self.parsers["get"] = reqparse.RequestParser(
             argument_class=ArgumentDoc)
-        self.parsers["get"].add_argument("bss_stands", type=bool, default=True,
+        self.parsers["get"].add_argument("bss_stands", type=boolean, default=True,
                                          description="Show bss stands availability")
+        self.parsers['get'].add_argument("disable_geojson", type=boolean, default=False,
+                            description="remove geojson from the response")
         args = self.parsers["get"].parse_args()
         if args["bss_stands"]:
             self.method_decorators.insert(1, ManageStands(self, 'places'))
+        if args['disable_geojson']:
+            g.disable_geojson = True
 
     @marshal_with(places)
     def get(self, id, region=None, lon=None, lat=None):
@@ -178,7 +327,7 @@ class PlacesNearby(ResourceUri):
         self.parsers["get"].add_argument("start_page", type=int, default=0,
                                          description="The page number of the\
                                          ptref result")
-        self.parsers["get"].add_argument("bss_stands", type=bool, default=True,
+        self.parsers["get"].add_argument("bss_stands", type=boolean, default=True,
                                          description="Show bss stands availability")
 
         self.parsers["get"].add_argument("_current_datetime", type=date_time_format, default=datetime.datetime.utcnow(),
@@ -187,6 +336,8 @@ class PlacesNearby(ResourceUri):
                                                      " Note: it will mainly change the disruptions that concern "
                                                      "the object The timezone should be specified in the format,"
                                                      " else we consider it as UTC")
+        self.parsers['get'].add_argument("disable_geojson", type=boolean, default=False,
+                            description="remove geojson from the response")
         args = self.parsers["get"].parse_args()
         if args["bss_stands"]:
             self.method_decorators.insert(1, ManageStands(self, 'places_nearby'))
@@ -196,6 +347,8 @@ class PlacesNearby(ResourceUri):
         self.region = i_manager.get_region(region, lon, lat)
         timezone.set_request_timezone(self.region)
         args = self.parsers["get"].parse_args()
+        if args['disable_geojson']:
+            g.disable_geojson = True
         if uri:
             if uri[-1] == '/':
                 uri = uri[:-1]

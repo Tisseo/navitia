@@ -74,9 +74,6 @@ std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_applicable_m
         const boost::posix_time::time_period& action_period) const {
     std::vector<boost::shared_ptr<disruption::Impact>> result;
 
-    //we cleanup the released pointer (not in the loop for code clarity)
-    clean_up_weak_ptr(impacts);
-
     for (auto impact : this->impacts) {
         auto impact_acquired = impact.lock();
         if (! impact_acquired) {
@@ -91,7 +88,6 @@ std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_applicable_m
 }
 
 std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_impacts() const {
-    clean_up_weak_ptr(impacts);
     std::vector<boost::shared_ptr<disruption::Impact>> result;
     for (const auto impact: impacts) {
         auto impact_sptr = impact.lock();
@@ -104,9 +100,6 @@ std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_impacts() co
 std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_publishable_messages(
             const boost::posix_time::ptime& current_time) const{
     std::vector<boost::shared_ptr<disruption::Impact>> result;
-
-    //we cleanup the released pointer (not in the loop for code clarity)
-    clean_up_weak_ptr(impacts);
 
     for (auto impact : this->impacts) {
         auto impact_acquired = impact.lock();
@@ -123,9 +116,6 @@ std::vector<boost::shared_ptr<disruption::Impact>> HasMessages::get_publishable_
 bool HasMessages::has_applicable_message(
         const boost::posix_time::ptime& current_time,
         const boost::posix_time::time_period& action_period) const {
-    //we cleanup the released pointer (not in the loop for code clarity)
-    clean_up_weak_ptr(impacts);
-
     for (auto impact : this->impacts) {
         auto impact_acquired = impact.lock();
         if (! impact_acquired) {
@@ -139,9 +129,6 @@ bool HasMessages::has_applicable_message(
 }
 
 bool HasMessages::has_publishable_message(const boost::posix_time::ptime& current_time) const{
-    //we cleanup the released pointer (not in the loop for code clarity)
-    clean_up_weak_ptr(impacts);
-
     for (auto impact : this->impacts) {
         auto impact_acquired = impact.lock();
         if (! impact_acquired) {
@@ -154,6 +141,9 @@ bool HasMessages::has_publishable_message(const boost::posix_time::ptime& curren
     return false;
 }
 
+void HasMessages::clean_weak_impacts() {
+    clean_up_weak_ptr(impacts);
+}
 
 StopTime StopTime::clone() const{
     StopTime ret{arrival_time, departure_time, stop_point};
@@ -544,7 +534,7 @@ MetaVehicleJourney::get_base_vj_circulating_at_date(const boost::gregorian::date
     return nullptr;
 }
 
-int16_t VehicleJourney::utc_to_local_offset() const {
+int32_t VehicleJourney::utc_to_local_offset() const {
     const auto* vp = validity_patterns[realtime_level];
     if (! vp) {
         throw navitia::recoverable_exception("vehicle journey " + uri +
@@ -727,6 +717,7 @@ Indexes Network::get(Type_e type, const PT_Data& data) const {
     switch(type) {
     case Type_e::Line: return indexes(line_list);
     case Type_e::Impact: return data.get_impacts_idx(get_impacts());
+    case Type_e::Dataset: return indexes(dataset_list);
     default: break;
     }
     return result;
@@ -802,6 +793,13 @@ std::string Line::get_label() const {
     if (commercial_mode) { s << commercial_mode->name << " "; }
     s << code << " (" << name << ")";
     return s.str();
+}
+
+bool Route::operator<(const Route & other) const{
+    if(this->uri != other.uri){
+        return this->uri < other.uri;
+    }
+    return this < &other;
 }
 
 std::string Route::get_label() const {
@@ -885,6 +883,13 @@ Indexes VehicleJourney::get(Type_e type, const PT_Data& data) const {
 VehicleJourney::~VehicleJourney() {}
 FrequencyVehicleJourney::~FrequencyVehicleJourney() {}
 DiscreteVehicleJourney::~DiscreteVehicleJourney() {}
+
+bool StopPoint::operator<(const StopPoint & other) const{
+    if(this->uri != other.uri){
+        return this->uri < other.uri;
+    }
+    return this < &other;
+}
 
 Indexes StopPoint::get(Type_e type, const PT_Data& data) const {
     Indexes result;

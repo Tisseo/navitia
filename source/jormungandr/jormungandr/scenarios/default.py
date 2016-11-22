@@ -47,6 +47,8 @@ from jormungandr.scenarios.helpers import walking_duration, bss_duration, bike_d
 from jormungandr.scenarios.helpers import select_best_journey_by_time, select_best_journey_by_duration, max_duration_fallback_modes
 from jormungandr.scenarios.helpers import fallback_mode_comparator
 from jormungandr.utils import pb_del_if, date_to_timestamp
+import flask
+import gevent, gevent.pool
 
 non_pt_types = ['non_pt_walk', 'non_pt_bike', 'non_pt_bss']
 
@@ -151,15 +153,26 @@ class Scenario(simple.Scenario):
             for all combinaison of departure and arrival mode we call kraken
         """
         logger = logging.getLogger(__name__)
+        futures = []
+
+        def worker(o_mode, d_mode, instance, request, request_id):
+            return (o_mode, d_mode, instance.send_and_receive(request, request_id=request_id))
+
+        pool = gevent.pool.Pool(current_app.config.get('GREENLET_POOL_SIZE', 3))
         for o_mode, d_mode in itertools.product(self.origin_modes, self.destination_modes):
-            req.journeys.streetnetwork_params.origin_mode = o_mode
-            req.journeys.streetnetwork_params.destination_mode = d_mode
+            #since we use multiple green thread we have to copy the request
+            local_req = copy.deepcopy(req)
+            local_req.journeys.streetnetwork_params.origin_mode = o_mode
+            local_req.journeys.streetnetwork_params.destination_mode = d_mode
             if o_mode == 'car' or (is_admin(req.journeys.origin[0].place) and is_admin(req.journeys.destination[0].place)):
                 # we don't want direct path for car or for admin to admin journeys
                 req.journeys.streetnetwork_params.enable_direct_path = False
             else:
                 req.journeys.streetnetwork_params.enable_direct_path = True
-            local_resp = instance.send_and_receive(req)
+            futures.append(pool.spawn(worker, o_mode, d_mode, instance, local_req, request_id=flask.request.id))
+
+        for future in gevent.iwait(futures):
+            o_mode, d_mode, local_resp = future.get()
             if local_resp.response_type == response_pb2.ITINERARY_FOUND:
 
                 # if a specific tag was provided, we tag the journeys
@@ -173,6 +186,7 @@ class Scenario(simple.Scenario):
                     request_type = "arrival" if req.journeys.clockwise else "departure"
                     qualifier_one(local_resp.journeys, request_type)
 
+                fill_uris(local_resp)
                 if not resp:
                     resp = local_resp
                 else:
@@ -181,7 +195,6 @@ class Scenario(simple.Scenario):
                 resp = local_resp
             logger.debug("for mode %s|%s we have found %s journeys: %s", o_mode, d_mode, len(local_resp.journeys), [j.type for j in local_resp.journeys])
 
-        fill_uris(resp)
         return resp
 
     def change_request(self, pb_req, resp, forbidden_uris=[]):
@@ -241,9 +254,9 @@ class Scenario(simple.Scenario):
             at_least_one_journey_found = True
 
             if request['clockwise']:
-                new_datetime = self.next_journey_datetime(tmp_resp.journeys)
+                new_datetime = self.next_journey_datetime(tmp_resp.journeys, request['clockwise'])
             else:
-                new_datetime = self.previous_journey_datetime(tmp_resp.journeys)
+                new_datetime = self.previous_journey_datetime(tmp_resp.journeys, request['clockwise'])
 
             if new_datetime is None:
                 break
@@ -271,12 +284,12 @@ class Scenario(simple.Scenario):
         self.choose_best(resp)
         self.delete_journeys(resp, request, final_filter=True)  # filter one last time to remove similar journeys
 
-        if len(resp.journeys) == 0 and at_least_one_journey_found and not resp.HasField(b"error"):
+        if len(resp.journeys) == 0 and at_least_one_journey_found and not resp.HasField(str("error")):
             error = resp.error
             error.id = response_pb2.Error.no_solution
             error.message = "No journey found, all were filtered"
 
-        self._compute_pagination_links(resp, instance)
+        self._compute_pagination_links(resp, instance, request['clockwise'])
 
         return resp
 
@@ -296,7 +309,7 @@ class Scenario(simple.Scenario):
         self.erase_journeys(resp, to_delete)
 
     @staticmethod
-    def next_journey_datetime(journeys):
+    def next_journey_datetime(journeys, clockwise):
         """
         by default to get the next journey, we add one minute to:
         the best if we have one, else to the journey that has the earliest departure
@@ -314,7 +327,7 @@ class Scenario(simple.Scenario):
         return last_best.departure_date_time + one_minute
 
     @staticmethod
-    def previous_journey_datetime(journeys):
+    def previous_journey_datetime(journeys, clockwise):
         """
         by default to get the previous journey, we substract one minute to:
         the best if we have one, else to the journey that has the tardiest arrival
@@ -365,8 +378,8 @@ class Scenario(simple.Scenario):
             return
 
         #if the initial response was an error we remove the error since we have result now
-        if initial_response.HasField(b'error'):
-            initial_response.ClearField(b'error')
+        if initial_response.HasField(str('error')):
+            initial_response.ClearField(str('error'))
 
         #we don't want to add a journey already there
         tickets_to_add = set()
@@ -429,7 +442,7 @@ class Scenario(simple.Scenario):
                                    and len(request['origin']) > 1:
                 return #for n-m calculation we don't want to filter
 
-        if resp.HasField(b"error"):
+        if resp.HasField(str("error")):
             return #we don't filter anything if errors
 
         #filter on journey type (the qualifier)

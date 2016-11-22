@@ -9,6 +9,12 @@ Also known as `/coverage` service.
 You can easily navigate through regions covered by navitia.io, with the
 coverage api. The shape of the region is provided in GeoJSON.
 
+In Navitia, a coverage is a combination of multiple [datasets](#datasets)
+provided by different [contributors](#contributors)
+(typically data provided by a transport authority in GTFS format).
+The combination of datasets used by a coverage is arbitrarily determined
+but we try to use something that makes sense and has a reasonnable amount of data (country).
+
 The only arguments are the ones of [paging](#paging).
 
 ### Accesses
@@ -17,7 +23,49 @@ The only arguments are the ones of [paging](#paging).
 |----------------------------------------------|-------------------------------------|
 | `coverage`                              | List of the areas covered by navitia|
 | `coverage/{region_id}`                  | Information about a specific region |
-| `coverage/{region_id}/coords/{lon;lat}` | Information about a specific region |
+| `coverage/{lon;lat}`                    | Information about a specific region |
+
+
+<a name="datasets"></a>Datasets
+-------------------------------
+
+Very simple endpoint providing the sets of data that are used in the given coverage.
+
+Those datasets (typically from transport authority in GTFS format), each provided by a
+unique [contributor](#contributors) are forming a [coverage](#coverage).
+
+Contributor providing the dataset is also provided in the response.
+Very usefull to know all the datas that form a coverage.
+
+The only arguments are the ones of [paging](#paging).
+
+### Accesses
+
+| url | Result |
+|----------------------------------------------|-------------------------------------------|
+| `coverage/{region_id}/datasets               | List of the datasets of a specific region |
+| `coverage/{region_id}/datasets/{dataset_id}  | Information about a specific dataset      |
+
+
+<a name="contributors"></a>Contributors
+-------------------------------
+
+Very simple endpoint providing the contributors of data for the given coverage.
+
+A contributor is a data provider (typically a transport authority), and can provide multiple [datasets](#datasets).
+For example, the contributor Italian Railways will provide a dataset for the national train and some others for the regional trains.
+We will try to put them in the same [coverage](#coverage) so that we assemble them in the same journey search, using both.
+
+Very usefull to know which contributors are used in the datasets forming a coverage.
+
+The only arguments are the ones of [paging](#paging).
+
+### Accesses
+
+| url | Result |
+|--------------------------------------------------|-----------------------------------------------|
+| `coverage/{region_id}/contributors               | List of the contributors of a specific region |
+| `coverage/{region_id}/contributors/{dataset_id}  | Information about a specific contributor      |
 
 
 <a name="coord"></a>Inverted geocoding
@@ -91,6 +139,14 @@ Very simple service: you give Navitia some coordinates, it answers you
 -   the right Navitia "coverage" which allows you to access to all known
     local mobility services
 
+### Accesses
+
+| url | Result |
+|----------------------------------------------|-------------------------------------|
+| `coords/{lon;lat}`                           | Detailed address point              |
+| `coverage/{region_id}/coords/{lon;lat}`      | Detailed address point              |
+
+
 You can also combine `/coords` with other filter as :
 
 -   get [POIs](#poi) near a coordinate
@@ -103,39 +159,7 @@ You can also combine `/coords` with other filter as :
 <a name="pt-ref"></a>Public Transportation Objects exploration
 --------------------------------------------------------------
 
-Also known as `/networks`, `/lines`, `/stop_areas`... services.
-
-
-Once you have selected a region, you can explore the public
-transportation objects easily with these APIs. You just need to add at
-the end of your URL a collection name to see every objects within a
-particular collection. To see an object detail, add the id of this object at the
-end of the collection's URL. The [paging](#paging) arguments may be used to
-paginate results.
-
-### Accesses
-
-| url | Result |
-|---------------------------------------------------------|-------------------------------------|
-| `/coverage/{region_id}/{collection_name}`               | Collection of objects of a region   |
-| `/coverage/{region_id}/{collection_name}/{object_id}`   | Information about a specific region |
-| `/coverage/{lon;lat}/{collection_name}`                 | Collection of objects of a region   |
-| `/coverage/{lon;lat}/{collection_name}/{object_id}`     | Information about a specific region |
-
-### Collections
-
--   [networks](#network)
--   [lines](#line)
--   [routes](#route)
--   [stop_points](#stop-point)
--   [stop_areas](#stop-area)
--   [commercial_modes](#commercial-mode)
--   [physical_modes](#physical-mode)
--   [companies](#company)
--   [vehicle_journeys](#vehicle-journey)
--   [disruptions](#disruption)
-
-### Parameters
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fpt_objects%3Fq%3Dmetro%25201)
 
 ``` shell
 curl 'https://api.navitia.io/v1/coverage/sandbox/pt_objects?q=metro%201' -H 'Authorization: 3b036afe-0110-4202-b9ed-99718476c2e0'
@@ -176,6 +200,41 @@ HTTP/1.1 200 OK
     ]
 }
 ```
+
+
+Also known as `/networks`, `/lines`, `/stop_areas`... services.
+
+
+Once you have selected a region, you can explore the public
+transportation objects easily with these APIs. You just need to add at
+the end of your URL a collection name to see every objects within a
+particular collection. To see an object detail, add the id of this object at the
+end of the collection's URL. The [paging](#paging) arguments may be used to
+paginate results.
+
+### Accesses
+
+| url | Result |
+|---------------------------------------------------------|-------------------------------------|
+| `/coverage/{region_id}/{collection_name}`               | Collection of objects of a region   |
+| `/coverage/{region_id}/{collection_name}/{object_id}`   | Information about a specific region |
+| `/coverage/{lon;lat}/{collection_name}`                 | Collection of objects of a region   |
+| `/coverage/{lon;lat}/{collection_name}/{object_id}`     | Information about a specific region |
+
+### Collections
+
+-   [networks](#network)
+-   [lines](#line)
+-   [routes](#route)
+-   [stop_points](#stop-point)
+-   [stop_areas](#stop-area)
+-   [commercial_modes](#commercial-mode)
+-   [physical_modes](#physical-mode)
+-   [companies](#company)
+-   [vehicle_journeys](#vehicle-journey)
+-   [disruptions](#disruption)
+
+### Parameters
 
 #### <a name="depth"></a>depth
 
@@ -267,6 +326,21 @@ Example:
     vehicle journey, "since" is included and "until" is excluded.
 </aside>
 
+#### disable_geojson
+
+By default geojson part of an object are returned in navitia's responses, this parameter allows you to
+remove them, it's useful when searching lines that you don't want to display on a map.
+
+<aside class="notice">
+    Geojson objects can be very large, 1MB is not unheard of, and they don't compress very well.
+    So this parameter is mostly here for reducing your downloading times and helping your json parser.
+    It's almost mandatory on mobile devices since most cellular networks are still relatively slow.
+</aside>
+
+Examples :
+
+-   <https://api.navitia.io/v1/coverage/fr-idf/lines?disable_geojson=true>
+
 ### <a name="filter"></a>Filter
 
 It is possible to apply a filter to the returned collection, using
@@ -276,6 +350,9 @@ is sent. If object or attribute provided is not handled, the filter is
 ignored.
 
 #### {collection}.has_code
+
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fstop_areas%3Ffilter%3Dstop_area.has_code%28source%2CCAMPO%29)
+
 ``` shell
 #for any pt_object request, as this one:
 $ curl 'https://api.navitia.io/v1/coverage/sandbox/stop_areas' -H 'Authorization: 3b036afe-0110-4202-b9ed-99718476c2e0'
@@ -378,11 +455,14 @@ Other examples
 -   Line list for one mode
     -   <https://api.navitia.io/v1/coverage/fr-idf/physical_modes/physical_mode:Metro/lines>
 
-But you will find lots of more advanced example in [a quick exploration](#a-quick-exploration)
+You will find lots of more advanced example in [a quick exploration](#a-quick-exploration)
 chapter
 
 <a name="pt-objects"></a>Autocomplete on Public Transport objects
 -----------------------------------------------------------------
+
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fpt_objects%3Fq%3Dmetro%25204%26type%5B%5D%3Dline%26type%5B%5D%3Droute)
+
 
 ``` shell
 # Search objects of type 'line' or 'route' containing 'metro 4'
@@ -486,8 +566,8 @@ HTTP/1.1 200 OK
 ```
 
 | url | Result |
-|------------------------------------------------|-------------------------------------|
-| `/coverage/{resource_path}/pt_objects`         | List of public transport objects    |
+|-------------------------------------------------------|-------------------------------------|
+| `/coverage/{region_id}/{resource_path}/pt_objects`    | List of public transport objects    |
 
 
 ### Parameters
@@ -568,11 +648,15 @@ Differents kind of objects can be returned (sorted as):
   yep      | q           | string    | The search term        |
   nop      | type[]      | array of string | Type of objects you want to query It takes one the following values: [`stop_area`, `address`, `administrative_region`, `poi`, `stop_point`] | [`stop_area`, `address`, `poi`, `administrative_region`]
   nop      | admin_uri[] | array of string | If filled, it will filter the search within the given admin uris
+  nop      | disable_geojson | boolean | remove geojson from the response | False
 
 
 
 <a name="places-nearby-api"></a>Places Nearby
 -----------------------------------------
+
+>[Try it on Navitia playground (click on "MAP" buttons to see places)](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fstop_areas%2Fstop_area%3ARAT%3ASA%3ACAMPO%2Fplaces_nearby)
+
 
 ``` shell
 #request
@@ -608,10 +692,11 @@ coordinates, returning a [places](#place) collection.
 ### Accesses
 
 | url | Result |
-|------------------------------------------------|-----------------------------------------------------------|
-| `/coord/{lon;lat}/places_nearby`           | List of objects near the resource without any region id   |
-| `/coverage/{lon;lat}/places_nearby`        | List of objects near the resource without any region id   |
-| `/coverage/{resource_path}/places_nearby`  | List of objects near the resource                         |
+|--------------------------------------------------------|-----------------------------------------------------------|
+| `/coord/{lon;lat}/places_nearby`                       | List of objects near the resource without any region id   |
+| `/coverage/{lon;lat}/coords/{lon;lat}/places_nearby`   | List of objects near the resource without any region id   |
+| `/coverage/{region_id}/coords/{lon;lat}/places_nearby` | List of objects near a coordinate                         |
+| `/coverage/{region_id}/{resource_path}/places_nearby`  | List of objects near the resource                         |
 
 
 ### Parameters
@@ -622,6 +707,7 @@ coordinates, returning a [places](#place) collection.
   nop      | type[]      | array of string | Type of objects you want to query | [`stop_area`, `stop_point`, `poi`, `administrative_region`]
   nop      | admin_uri[] | array of string | If filled, will filter the search within the given admin uris       |
   nop      | filter      | string          | Use to filter returned objects. for example: places_type.id=theater |
+  nop      | disable_geojson | boolean     | remove geojson from the response  | False
 
 Filters can be added:
 
@@ -637,6 +723,8 @@ Filters can be added:
 
 <a name="journeys"></a>Journeys
 -------------------------------
+
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fjourneys%3Ffrom%3D2.3749036%3B48.8467927%26to%3D2.2922926%3B48.8583736)
 
 ``` shell
 #request
@@ -778,7 +866,7 @@ Here is the structure of a standard journey request:
 <https://api.navitia.io/v1/journeys?from={resource_id_1}&to={resource_id_2}&datetime={date_time_to_leave}> .
 
 <a
-    href="http://jsfiddle.net/gh/get/jquery/2.2.2/CanalTP/navitia/tree/documentation/slate/source/examples/jsFiddle/journeys/"
+    href="https://jsfiddle.net/kisiodigital/0oj74vnz/"
     target="_blank"
     class="button button-blue">
     Code it yourself on JSFiddle
@@ -804,7 +892,7 @@ If you want to retreive every possible journey from a single point at a time, yo
 It will retrieve all the journeys from the resource (in order to make *[isochrone tables](https://en.wikipedia.org/wiki/Isochrone_map)*).
 
 <a
-    href="http://jsfiddle.net/gh/get/jquery/2.2.2/CanalTP/navitia/tree/documentation/slate/source/examples/jsFiddle/isochron/"
+    href="https://jsfiddle.net/kisiodigital/x6207t6f/"
     target="_blank"
     class="button button-blue">
     Code it yourself on JSFiddle
@@ -941,6 +1029,10 @@ direction       | int                    | Angle (in degree) between the previou
 <a name="isochrones_api"></a>Isochrones (currently in Beta)
 ---------------------------------------
 
+>[Try a simple example on Navitia playground (click on "MAP" buttons for "wow effect")](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fisochrones%3Ffrom%3D2.377097%3B48.846905%26max_duration%3D2000%26min_duration%3D1000&token=3b036afe-0110-4202-b9ed-99718476c2e0)
+
+>[Try a multi-color example on Navitia playground (click on "MAP" buttons for "WOW effect")](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fisochrones%3Ffrom%3D2.377097%253B48.846905%26boundary_duration%255B%255D%3D1000%26boundary_duration%255B%255D%3D2000%26boundary_duration%255B%255D%3D3000%26&token=3b036afe-0110-4202-b9ed-99718476c2e0)
+
 ``` shell
 # Request
 curl 'https://api.navitia.io/v1/coverage/sandbox/isochrones?from=stop_area:RAT:SA:GDLYO&max_duration=3600' -H 'Authorization: 3b036afe-0110-4202-b9ed-99718476c2e0'
@@ -1020,41 +1112,21 @@ You just have to verify that the coordinates of the geocoded object are inside t
 | nop       | from                    | id            | The id of the departure of your journey. Required to compute isochrones "departure after" |               |
 | nop       | to                      | id            | The id of the arrival of your journey. Required to compute isochrones "arrival before"    |               |
 | yep       | datetime                | [iso-date-time](#iso-date-time) | Date and time to go                                                                          |               |
+| yep       | boundary_duration[]  | int   | A duration delineating a reachable area (in seconds). Using multiple boundary makes map more readable |      |
 | nop       | forbidden_uris[]        | id            | If you want to avoid lines, modes, networks, etc.</br> Note: the forbidden_uris[] concern only the public transport objects. You can't for example forbid the use of the bike with them, you have to set the fallback modes for this (`first_section_mode[]` and `last_section_mode[]`)                                                 |               |
 | nop       | first_section_mode[]    | array of string   | Force the first section mode if the first section is not a public transport one. It takes one the following values: `walking`, `car`, `bike`, `bss`.<br>`bss` stands for bike sharing system.<br>It's an array, you can give multiple modes.<br><br>Note: choosing `bss` implicitly allows the `walking` mode since you might have to walk to the bss station.<br> Note 2: The parameter is inclusive, not exclusive, so if you want to forbid a mode, you need to add all the other modes.<br> Eg: If you never want to use a `car`, you need: `first_section_mode[]=walking&first_section_mode[]=bss&first_section_mode[]=bike&last_section_mode[]=walking&last_section_mode[]=bss&last_section_mode[]=bike` | walking |
 | nop       | last_section_mode[]     | array of string   | Same as first_section_mode but for the last section  | walking     |
 
-Other parameters to come...
+### Other parameters
 
-<a name="route-schedules"></a>Route Schedules and time tables
+| Required  | Name                 | Type  | Description                                                  | Default value |
+|-----------|----------------------|-------|--------------------------------------------------------------|---------------|
+| nop       | min_duration         | int   | Minimum duration delineating the reachable area (in seconds) |      |
+| nop       | max_duration         | int   | Maximum duration delineating the reachable area (in seconds) |      |
+
+
+<a name="route-schedules"></a>Route Schedules
 -------------------------------------------------------------
-
-Also known as `/route_schedules` service.
-
-This endpoint gives you access to schedules of routes, with a response made
-of an array of [route_schedule](#route-schedule), and another one of [note](#note). You can
-access it via that kind of url: <https://api.navitia.io/v1/{a_path_to_a_resource}/route_schedules>
-
-### Accesses
-
-| url | Result |
-|-------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `/coverage/{resource_path}/route_schedules`  | List of the entire route schedules for a given resource                                                       |
-| `/coverage/{lon;lat}/route_schedules`        | List of the entire route schedules for coordinates                                                       |
-
-### Parameters
-
-Required | Name               | Type      | Description                                                                              | Default Value
----------|--------------------|-----------|------------------------------------------------------------------------------------------|--------------
-yep      | from_datetime      | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules                    |
-nop      | duration           | int       | Maximum duration in seconds between from_datetime and the retrieved datetimes.           | 86400
-nop      | items_per_schedule | int       | Maximum number of columns per schedule.                                                  |
-nop      | forbidden_uris[]   | id        | If you want to avoid lines, modes, networks, etc.                                        |
-nop      | data_freshness     | enum      | Define the freshness of data to use<br><ul><li>realtime</li><li>base_schedule</li></ul>  | base_schedule
-
-### Objects
-
-#### <a name="route-schedule">route_schedule object
 
 ``` shell
 #request
@@ -1062,123 +1134,128 @@ $ curl 'https://api.navitia.io/v1/coverage/sandbox/lines/line:RAT:M1/route_sched
 
 #response
 HTTP/1.1 200 OK
+
 {
-    pagination: {},
-    links: [],
-    disruptions: [],
-    notes: [],
-    feed_publishers: [],
-    exceptions: [],
-    route_schedules: [{
-        display_informations: {
-            direction: "Château de Vincennes (Saint-Mandé)",
-            code: "1",
-            network: "RATP",
-            links: [],
-            color: "F2C931",
-            commercial_mode: "Metro",
-            text_color: "000000",
-            label: "1"
+    "pagination": {},
+    "links": [],
+    "disruptions": [],
+    "notes": [],
+    "feed_publishers": [],
+    "exceptions": [],
+    "route_schedules": [
+    {
+        "display_informations": {
+            "direction": "Château de Vincennes (Saint-Mandé)",
+            "code": "1",
+            "network": "RATP",
+            "links": [],
+            "color": "F2C931",
+            "commercial_mode": "Metro",
+            "text_color": "000000",
+            "label": "1"
         },
-        table: {
-            headers: [
-            {
-                    display_informations: {
-                        direction: "Château de Vincennes (Saint-Mandé)",
-                        code: "",
-                        description: "",
-                        links: [],
-                        color: "",
-                        physical_mode: "M?tro",
-                        headsign: "Château de Vincennes",
-                        commercial_mode: "",
-                        equipments: [],
-                        text_color: "",
-                        network: ""
+        "table": {
+            "headers": [{
+                    "display_informations": {
+                        "direction": "Château de Vincennes (Saint-Mandé)",
+                        "code": "",
+                        "description": "",
+                        "links": [],
+                        "color": "",
+                        "physical_mode": "Métro",
+                        "headsign": "Château de Vincennes",
+                        "commercial_mode": "",
+                        "equipments": [],
+                        "text_color": "",
+                        "network": ""
                     },
-                    additional_informations: [
-                        "regular"
-                    ],
-                    links: [{
-                        type: "vehicle_journey",
-                        id: "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2"
+                    "additional_informations": ["regular"],
+                    "links": [{
+                        "type": "vehicle_journey",
+                        "id": "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2"
                     }, {
-                        type: "physical_mode",
-                        id: "physical_mode:Metro"
+                        "type": "physical_mode",
+                        "id": "physical_mode:Metro"
                     }]
                 },
                 { ... },
                 { ... }
             ],
-            rows: [{
-                stop_point: {
-                    codes: [{
-                        type: "external_code",
-                        value: "RATDENFE2"
-                    }, {
-                        type: "source",
-                        value: "DENFE2"
+            "rows": [{
+                "stop_point": {
+                    "codes": [ ... ],
+                    "name": "La Défense Grande Arche",
+                    "links": [],
+                    "physical_modes": [{
+                        "name": "Métro",
+                        "id": "physical_mode:Metro"
                     }],
-                    name: "La Défense Grande Arche",
-                    links: [],
-                    physical_modes: [{
-                        name: "Métro",
-                        id: "physical_mode:Metro"
-                    }],
-                    coord: {
-                        lat: "48.891935",
-                        lon: "2.237883"
-                    },
-                    label: "La Défense Grande Arche (Puteaux)",
-                    equipments: [],
-                    commercial_modes: [{
-                        name: "Metro",
-                        id: "commercial_mode:Metro"
-                    }],
-                    administrative_regions: [{
-                        insee: "92062",
-                        name: "Puteaux",
-                        level: 8,
-                        coord: {
-                            lat: "48.884151",
-                            lon: "2.236886"
-                        },
-                        label: "Puteaux (92800)",
-                        id: "admin:91776extern",
-                        zip_code: "92800"
-                    }],
-                    id: "stop_point:RAT:SP:DENFE2",
-                    stop_area: { ... }
+                    "coord": {"lat": "48.891935","lon": "2.237883"},
+                    "label": "La Défense Grande Arche (Puteaux)",
+                    "equipments": [],
+                    "commercial_modes": [...],
+                    "administrative_regions": [ ... ],
+                    "id": "stop_point:RAT:SP:DENFE2",
+                    "stop_area": { ... }
                 },
-                date_times: [{
-                    date_time: "20160616T093300",
-                    additional_informations: [],
-                    links: [{
-                        type: "vehicle_journey",
-                        value: "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2",
-                        rel: "vehicle_journeys",
-                        id: "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2"
+                "date_times": [{
+                    "date_time": "20160616T093300",
+                    "additional_informations": [],
+                    "links": [{
+                        "type": "vehicle_journey",
+                        "value": "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2",
+                        "rel": "vehicle_journeys",
+                        "id": "vehicle_journey:RAT:RATRM1REGA9828-1_dst_2"
                     }],
-                    data_freshness: "base_schedule"
+                    "data_freshness": "base_schedule"
                 }, {
-                    date_time: "20160617T094400",
-                    additional_informations: [],
-                    links: [{
-                        type: "vehicle_journey",
-                        value: "vehicle_journey:RAT:RATRM1REGA9827-1_dst_2",
-                        rel: "vehicle_journeys",
-                        id: "vehicle_journey:RAT:RATRM1REGA9827-1_dst_2"
+                    "date_time": "20160617T094400",
+                    "additional_informations": [],
+                    "links": [{
+                        "type": "vehicle_journey",
+                        "value": "vehicle_journey:RAT:RATRM1REGA9827-1_dst_2",
+                        "rel": "vehicle_journeys",
+                        "id": "vehicle_journey:RAT:RATRM1REGA9827-1_dst_2"
                     }],
-                    data_freshness: "base_schedule"
+                    "data_freshness": "base_schedule"
                 }]
             }]
         },
-        additional_informations: null,
-        links: [],
-        geojson: {}
+        "additional_informations": null,
+        "links": [],
+        "geojson": {}
     }]
 }
 ```
+
+
+Also known as `/route_schedules` service.
+
+This endpoint gives you access to schedules of routes (so a kind of time table), with a response made
+of an array of [route_schedule](#route-schedule), and another one of [note](#note). You can
+access it via that kind of url: <https://api.navitia.io/v1/{a_path_to_a_resource}/route_schedules>
+
+### Accesses
+
+| url | Result |
+|---------------------------------------------------------|-----------------------------------------------------------|
+| `/coverage/{region_id}/{resource_path}/route_schedules` | List of the entire route schedules for a given resource   |
+| `/coverage/{lon;lat}/coords/{lon;lat}/route_schedules`  | List of the entire route schedules for coordinates        |
+
+### Parameters
+
+Required | Name               | Type      | Description                                                                              | Default Value
+---------|--------------------|-----------|------------------------------------------------------------------------------------------|--------------
+nop      | from_datetime      | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules                    |
+nop      | duration           | int       | Maximum duration in seconds between from_datetime and the retrieved datetimes.           | 86400
+nop      | items_per_schedule | int       | Maximum number of columns per schedule.                                                  |
+nop      | forbidden_uris[]   | id        | If you want to avoid lines, modes, networks, etc.                                        |
+nop      | data_freshness     | enum      | Define the freshness of data to use<br><ul><li>realtime</li><li>base_schedule</li></ul>  | base_schedule
+nop      | disable_geojson    | boolean   | remove geojson fields from the response                                                  | False
+
+### Objects
+
+#### <a name="route-schedule">route_schedule object
 
 |Field|Type|Description|
 |-----|----|-----------|
@@ -1207,8 +1284,12 @@ Field      | Type                             | Description
 date_times | Array of [pt-date-time](#pt-date-time) | Array of public transport formated date time
 stop_point | [stop_point](#stop-point)              | The stop point of the row
 
-<a name="stop-schedules"></a>Stop Schedules and other kind of time tables
--------------------------------------------------------------------------
+
+<a name="stop-schedules"></a>Stop Schedules
+-------------------------------------------
+
+>[Try it on Navitia playground (click on "EXT" buttons to see times)](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fstop_areas%2Fstop_area%253ARAT%253ASA%253AGDLYO%2Fstop_schedules%3Fitems_per_schedule%3D2%26&token=3b036afe-0110-4202-b9ed-99718476c2e0)
+
 
 ``` shell
 #request
@@ -1217,73 +1298,59 @@ $ curl 'https://api.navitia.io/v1/coverage/sandbox/lines/line:RAT:M1/stop_schedu
 #response
 HTTP/1.1 200 OK
 {
-    stop_schedules: [
+    "stop_schedules": [
         {
-            stop_point: {...},
-            links: [
+            "stop_point": {...},
+            "links": [...],
+            "date_times": [
                 {
-                    type: "line",
-                    id: "line:RAT:M1"
-                }, {
-                    type: "route",
-                    id: "route:RAT:M1_R"
-                }, {
-                    type: "commercial_mode",
-                    id: "commercial_mode:Metro"
-                }, {
-                    type: "network",
-                    id: "network:RAT:1"
-                }
-            ],
-            date_times: [
-                {
-                    date_time: "20160615T115300",
-                    additional_informations: [],
-                    links: [
+                    "date_time": "20160615T115300",
+                    "additional_informations": [],
+                    "links": [
                         {
-                            type: "vehicle_journey",
-                            value: "vehicle_journey:RAT:RATRM1REGA9869-1_dst_2",
-                            rel: "vehicle_journeys",
-                            id: "vehicle_journey:RAT:RATRM1REGA9869-1_dst_2"
+                            "type": "vehicle_journey",
+                            "value": "vehicle_journey:RAT:RATRM1REGA9869-1_dst_2",
+                            "rel": "vehicle_journeys",
+                            "id": "vehicle_journey:RAT:RATRM1REGA9869-1_dst_2"
                         }
                     ],
-                    data_freshness: "base_schedule"
+                    "data_freshness": "base_schedule"
                 },
                 {
-                    date_time: "20160616T115000",
-                    additional_informations: [],
-                    links: [
+                    "date_time": "20160616T115000",
+                    "additional_informations": [],
+                    "links": [
                         {
-                            type: "vehicle_journey",
-                            value: "vehicle_journey:RAT:RATRM1REGA9868-1_dst_2",
-                            rel: "vehicle_journeys",
-                            id: "vehicle_journey:RAT:RATRM1REGA9868-1_dst_2"
+                            "type": "vehicle_journey",
+                            "value": "vehicle_journey:RAT:RATRM1REGA9868-1_dst_2",
+                            "rel": "vehicle_journeys",
+                            "id": "vehicle_journey:RAT:RATRM1REGA9868-1_dst_2"
                         }
                     ],
-                    data_freshness: "base_schedule"
+                    "data_freshness": "base_schedule"
                 },
-                ...
+                "..."
             ],
-            route: {...},
-            additional_informations: null,
-            display_informations: {
-                direction: "Château de Vincennes (Saint-Mandé)",
-                code: "1",
-                network: "RATP",
-                links: [],
-                color: "F2C931",
-                commercial_mode: "Metro",
-                text_color: "000000",
-                label: "1"
+            "route": {...},
+            "additional_informations": null,
+            "display_informations": {
+                "direction": "Château de Vincennes (Saint-Mandé)",
+                "code": "1",
+                "network": "RATP",
+                "links": [],
+                "color": "F2C931",
+                "commercial_mode": "Metro",
+                "text_color": "000000",
+                "label": "1"
             }
         }
     ],
-    pagination: {...},
-    links: [...],
-    disruptions: [],
-    notes: [],
-    feed_publishers: [...],
-    exceptions: []
+    "pagination": {...},
+    "links": [...],
+    "disruptions": [],
+    "notes": [],
+    "feed_publishers": [...],
+    "exceptions": []
 }
 ```
 
@@ -1300,20 +1367,21 @@ You can access it via that kind of url: <https://api.navitia.io/v1/{a_path_to_a_
 ### Accesses
 
 | url | Result |
-|-------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `/coverage/{lon;lat}/stop_schedules`        | List of the stop schedules grouped by ``stop_point/route`` for coordinates                                    |
-| `/coverage/{resource_path}/stop_schedules`  | List of the stop schedules grouped by ``stop_point/route`` for a given resource                               |
+|--------------------------------------------------------|----------------------------------------------------------------------------------|
+| `/coverage/{region_id}/{resource_path}/stop_schedules` |List of the stop schedules grouped by ``stop_point/route`` for a given resource  |
+| `/coverage/{lon;lat}/coords/{lon;lat}/stop_schedules`  | List of the stop schedules grouped by ``stop_point/route`` for coordinates       |
 
 
 ### Parameters
 
 Required | Name           | Type                    | Description        | Default Value
 ---------|----------------|-------------------------|--------------------|--------------
-yep      | from_datetime  | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules |
+nop      | from_datetime  | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules |
 nop      | duration         | int                            | Maximum duration in seconds between from_datetime and the retrieved datetimes.                            | 86400
 nop      | forbidden_uris[] | id                             | If you want to avoid lines, modes, networks, etc.    |
 nop      | items_per_schedule | int       | Maximum number of datetimes per schedule.                                                  |
 nop      | data_freshness   | enum                           | Define the freshness of data to use to compute journeys <ul><li>realtime</li><li>base_schedule</li></ul> | base_schedule
+nop      | disable_geojson | boolean                | remove geojson fields from the response | False
 
 
 ### <a name="stop-schedule"></a>Stop_schedule object
@@ -1329,6 +1397,8 @@ nop      | data_freshness   | enum                           | Define the freshn
 
 <a name="departures"></a>Departures
 -----------------------------------
+
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fstop_areas%2Fstop_area%253ARAT%253ASA%253AGDLYO%2Fdepartures%3F&token=3b036afe-0110-4202-b9ed-99718476c2e0)
 
 ``` shell
 
@@ -1395,18 +1465,19 @@ Departures are ordered chronologically in ascending order as:
 ### Accesses
 
 | url | Result |
-|-------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `/coverage/{resource_path}/departures`      | List of the next departures, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here) |
-| `/coverage/{lon;lat}/departures`            | List of the next departures, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here) |
+|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| `/coverage/{region_id}/{resource_path}/departures` | List of the next departures, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here) |
+| `/coverage/{lon;lat}/coords/{lon;lat}/departures`  | List of the next departures, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here) |
 
 ### Parameters
 
 Required | Name           | Type                    | Description        | Default Value
 ---------|----------------|-------------------------|--------------------|--------------
-yep      | from_datetime    | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules |
+nop      | from_datetime    | [iso-date-time](#iso-date-time) | The date_time from which you want the schedules |
 nop      | duration         | int                             | Maximum duration in seconds between from_datetime and the retrieved datetimes.                            | 86400
 nop      | forbidden_uris[] | id                              | If you want to avoid lines, modes, networks, etc.    |
 nop      | data_freshness   | enum                            | Define the freshness of data to use to compute journeys <ul><li>realtime</li><li>base_schedule</li></ul> | realtime
+nop      | disable_geojson | boolean                | remove geojson fields from the response | False
 
 
 ### Departure objects
@@ -1419,6 +1490,9 @@ nop      | data_freshness   | enum                            | Define the fresh
 
 <a name="arrivals"></a>Arrivals
 -------------------------------
+
+>[Try it on Navitia playground](http://canaltp.github.io/navitia-playground/play.html?request=https%3A%2F%2Fapi.navitia.io%2Fv1%2Fcoverage%2Fsandbox%2Fstop_areas%2Fstop_area%253ARAT%253ASA%253AGDLYO%2Farrivals%3F&token=3b036afe-0110-4202-b9ed-99718476c2e0)
+
 
 ``` shell
 curl 'https://api.navitia.io/v1/coverage/sandbox/stop_areas/stop_area:RAT:SA:GDLYO/arrivals' -H 'Authorization: 3b036afe-0110-4202-b9ed-99718476c2e0'
@@ -1468,9 +1542,9 @@ object. Arrivals are ordered chronologically in ascending order.
 ### Accesses
 
 | url | Result |
-|-------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `/coverage/{resource_path}/arrivals`        | List of the arrivals, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here)        |
-| `/coverage/{lon;lat}/arrivals`              | List of the arrivals, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here)        |
+|--------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| `/coverage/{region_id}/{resource_path}/arrivals` | List of the arrivals, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here)        |
+| `/coverage/{lon;lat}/coords/{lon;lat}/arrivals`  | List of the arrivals, multi-route oriented, only time sorted (no grouped by ``stop_point/route`` here)        |
 
 ### Parameters
 
@@ -1499,7 +1573,9 @@ HTTP/1.1 200 OK
     ],[
         #another network with its lines and stop areas
     ],
-"disruptions": [...]
+"disruptions": [
+        #list of linked disruptions
+    ]
 }
 ```
 

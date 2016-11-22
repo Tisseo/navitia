@@ -49,7 +49,7 @@ namespace nf = navitia::fare;
 // collections don't have these methods.
 template<typename T> static void release(T& a) { T b; a.swap(b); }
 
-void EdReader::fill(navitia::type::Data& data, const double min_non_connected_graph_ratio){
+void EdReader::fill(navitia::type::Data& data, const double min_non_connected_graph_ratio, const bool export_georef_edges_geometries){
 
     pqxx::work work(*conn, "loading ED");
 
@@ -106,7 +106,7 @@ void EdReader::fill(navitia::type::Data& data, const double min_non_connected_gr
     this->fill_ways(data, work);
     this->fill_house_numbers(data, work);
     this->fill_vertex(data, work);
-    this->fill_graph(data, work);
+    this->fill_graph(data, work, export_georef_edges_geometries);
 
     // we need the proximity_list to build bss and parking edges
     data.geo_ref->build_proximity_list();
@@ -248,7 +248,8 @@ void EdReader::fill_object_codes(navitia::type::Data& data, pqxx::work& work){
 }
 
 void EdReader::fill_meta(navitia::type::Data& nav_data, pqxx::work& work){
-    std::string request = "SELECT beginning_date, end_date, st_astext(shape) as bounding_shape FROM navitia.parameters";
+    std::string request = "SELECT beginning_date, end_date, st_astext(shape) as bounding_shape,"
+        "street_network_source, poi_source  FROM navitia.parameters";
     pqxx::result result = work.exec(request);
 
     if (result.empty()) {
@@ -266,6 +267,12 @@ void EdReader::fill_meta(navitia::type::Data& nav_data, pqxx::work& work){
     bg::date end = bg::from_string(const_it["end_date"].as<std::string>()) + bg::days(1);
 
     nav_data.meta->production_date = bg::date_period(begin, end);
+    if (!const_it["poi_source"].is_null()){
+        const_it["poi_source"].to(nav_data.meta->poi_source);
+    }
+    if (!const_it["street_network_source"].is_null()){
+        const_it["street_network_source"].to(nav_data.meta->street_network_source);
+    }
 
     const_it["bounding_shape"].to(nav_data.meta->shape);
 }
@@ -311,7 +318,7 @@ void EdReader::fill_timezones(navitia::type::Data& data, pqxx::work& work) {
         //we add a day because 'end' is not in the period (and we want it to be)
         bg::date end = bg::from_string(const_it["end"].as<std::string>()) + bg::days(1);
         auto name = const_it["name"].as<std::string>();
-        int16_t utc_offset = const_it["offset"].as<int16_t>();
+        int32_t utc_offset = const_it["offset"].as<int32_t>();
         timezones[name][utc_offset].push_back(bg::date_period(begin, end));
 
         auto id = const_it["id"].as<idx_t>();
@@ -1418,10 +1425,15 @@ EdReader::get_duration (nt::Mode_e mode, float len, uint64_t source, uint64_t ta
     }
 }
 
-void EdReader::fill_graph(navitia::type::Data& data, pqxx::work& work) {
+void EdReader::fill_graph(navitia::type::Data& data, pqxx::work& work, bool export_georef_edges_geometries) {
     std::string request = "select e.source_node_id, target_node_id, e.way_id, "
                           "ST_LENGTH(the_geog) AS leng, e.pedestrian_allowed as pede, "
-                          "e.cycles_allowed as bike,e.cars_allowed as car from georef.edge e;";
+                          "e.cycles_allowed as bike,e.cars_allowed as car";
+    // Don't call ST_ASTEXT if not needed since it's slow
+    if(export_georef_edges_geometries) {
+        request += ", ST_ASTEXT(the_geog) AS geometry";
+    }
+    request += " from georef.edge e;";
     pqxx::result result = work.exec(request);
     size_t nb_edges_no_way = 0;
     int nb_walking_edges(0), nb_biking_edges(0), nb_driving_edges(0);
@@ -1450,6 +1462,14 @@ void EdReader::fill_graph(navitia::type::Data& data, pqxx::work& work) {
         navitia::georef::Edge e;
         float len = const_it["leng"].as<float>();
         e.way_idx = way->idx;
+        if(export_georef_edges_geometries) {
+            nt::LineString geometry;
+            boost::geometry::read_wkt(const_it["geometry"].as<std::string>(), geometry);
+            if(!geometry.empty()) {
+                e.geom_idx = way->geoms.size();
+                way->geoms.push_back(geometry);
+            }
+        }
 
         if (const_it["pede"].as<bool>()) {
             if (auto dur = get_duration(nt::Mode_e::Walking, len, source, target)) {

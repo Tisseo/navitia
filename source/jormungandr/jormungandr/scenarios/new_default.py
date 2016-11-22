@@ -32,9 +32,9 @@ from copy import deepcopy
 import itertools
 import logging
 from flask.ext.restful import abort
-from jormungandr.scenarios import simple, journey_filter
-from jormungandr.scenarios.utils import journey_sorter, change_ids, updated_request_with_default, get_or_default, \
-    fill_uris, gen_all_combin, get_pseudo_duration
+from jormungandr.scenarios import simple, journey_filter, helpers
+from jormungandr.scenarios.utils import journey_sorter, change_ids, updated_request_with_default, \
+    get_or_default, fill_uris, gen_all_combin, get_pseudo_duration, mode_weight
 from navitiacommon import type_pb2, response_pb2, request_pb2
 from jormungandr.scenarios.qualifier import min_from_criteria, arrival_crit, departure_crit, \
     duration_crit, transfers_crit, nonTC_crit, trip_carac, has_no_car, has_car, has_pt, \
@@ -43,6 +43,9 @@ import numpy as np
 import collections
 from jormungandr.utils import date_to_timestamp
 from jormungandr.scenarios.simple import get_pb_data_freshness
+import gevent, gevent.pool
+import flask
+from jormungandr import app
 
 SECTION_TYPES_TO_RETAIN = {response_pb2.PUBLIC_TRANSPORT, response_pb2.STREET_NETWORK}
 JOURNEY_TYPES_TO_RETAIN = ['best', 'comfort', 'non_pt_walk', 'non_pt_bike', 'non_pt_bss']
@@ -70,7 +73,9 @@ def get_kraken_calls(request):
     allowed_combination = [('bss', 'bss'),
                            ('walking', 'walking'),
                            ('bike', 'walking'),
-                           ('car', 'walking')]
+                           ('car', 'walking'),
+                           ('bike', 'bss'),
+                           ('car', 'bss')]
 
     res = [c for c in allowed_combination if c in itertools.product(dep_modes, arr_modes)]
 
@@ -156,12 +161,59 @@ def sort_journeys(resp, journey_order, clockwise):
         resp.journeys.sort(journey_sorter[journey_order](clockwise=clockwise))
 
 
+def compute_car_co2_emission(pb_resp, api_request, instance):
+    if not pb_resp.journeys:
+        return
+    car = next((j for j in pb_resp.journeys if helpers.is_car_direct_path(j)), None)
+    if car is None or not car.HasField('co2_emission'):
+        # if there is no car journey found, we request kraken to give us an estimation of
+        # co2 emission
+        co2_estimation = instance.georef.get_car_co2_emission_on_crow_fly(api_request['origin'], api_request['destination'])
+        if co2_estimation:
+            # Assign car_co2_emission into the resp, these value will be exposed in the final result
+            pb_resp.car_co2_emission.value = co2_estimation.value
+            pb_resp.car_co2_emission.unit = co2_estimation.unit
+    else:
+        # Assign car_co2_emission into the resp, these value will be exposed in the final result
+        pb_resp.car_co2_emission.value = car.co2_emission.value
+        pb_resp.car_co2_emission.unit = car.co2_emission.unit
+
+def tag_ecologic(resp):
+    # if there is no available car_co2_emission in resp, no tag will be assigned
+    if resp.car_co2_emission.value and resp.car_co2_emission.unit:
+        for j in resp.journeys:
+            if not j.HasField('co2_emission'):
+                j.tags.append('ecologic')
+                continue
+            if j.co2_emission.unit != resp.car_co2_emission.unit:
+                continue
+            if j.co2_emission.value < resp.car_co2_emission.value * 0.5:
+                j.tags.append('ecologic')
+
+def tag_direct_path(resp):
+    street_network_mode_tag_map = {response_pb2.Walking: ['non_pt_walking'],
+                                   response_pb2.Bike: ['non_pt_bike']}
+    for j in resp.journeys:
+        if all(s.type != response_pb2.PUBLIC_TRANSPORT for s in j.sections):
+            j.tags.extend(['non_pt'])
+
+        # TODO: remove that (and street_network_mode_tag_map) when NMP stops using it
+        # if there is only one section
+        if len(j.sections) == 1:
+            if j.sections[0].type == response_pb2.STREET_NETWORK and hasattr(j.sections[0], 'street_network'):
+                tag = street_network_mode_tag_map.get(j.sections[0].street_network.mode)
+                if tag:
+                    j.tags.extend(tag)
+
+
 def tag_journeys(resp):
     """
-    qualify the journeys
+    tag the journeys
     """
-    pass
+    tag_ecologic(resp)
 
+    # tag the direct path
+    tag_direct_path(resp)
 
 def _get_section_id(section):
     street_network_mode = None
@@ -352,7 +404,7 @@ def culling_journeys(resp, request):
         # At this point, resp.journeys should contain only must-have journeys
         list_dict = collections.defaultdict(list)
         for jrny in resp.journeys:
-            if 'to_delete' not in jrny.tags:
+            if not journey_filter.to_be_deleted(jrny):
                 list_dict[jrny.type].append(jrny)
 
         sorted_by_type_journeys = []
@@ -414,8 +466,34 @@ def culling_journeys(resp, request):
     journey_filter.delete_journeys((resp,), request)
 
 
+def _tag_journey_by_mode(journey):
+    mode = 'walking'
+    for i, section in enumerate(journey.sections):
+        cur_mode = 'walking'
+        if section.type == response_pb2.BSS_RENT:
+            cur_mode = 'bss'
+        elif section.type == response_pb2.STREET_NETWORK \
+             and section.street_network.mode == response_pb2.Bike \
+             and journey.sections[i - 1].type != response_pb2.BSS_RENT:
+            cur_mode = 'bike'
+        elif section.type == response_pb2.STREET_NETWORK \
+             and section.street_network.mode == response_pb2.Car:
+            cur_mode = 'car'
+
+        if mode_weight[mode] < mode_weight[cur_mode]:
+            mode = cur_mode
+
+    journey.tags.append(mode)
+
+
+def _tag_by_mode(responses):
+    for r in responses:
+        for j in r.journeys:
+            _tag_journey_by_mode(j)
+
+
 def nb_journeys(responses):
-    return sum(len(r.journeys) for r in responses)
+    return sum(1 for r in responses for j in r.journeys if not journey_filter.to_be_deleted(j))
 
 
 def type_journeys(resp, req):
@@ -539,7 +617,7 @@ def merge_responses(responses):
     merged_response = response_pb2.Response()
 
     for r in responses:
-        if r.HasField(b'error') or not r.journeys:
+        if r.HasField(str('error')) or not r.journeys:
             # we do not take responses with error, but if all responses have errors, we'll aggregate them
             continue
 
@@ -567,7 +645,7 @@ def merge_responses(responses):
     if not merged_response.journeys:
         # we aggregate the errors found
 
-        errors = {r.error.id: r.error for r in responses if r.HasField(b'error')}
+        errors = {r.error.id: r.error for r in responses if r.HasField(str('error'))}
         if len(errors) == 1:
             merged_response.error.id = errors.values()[0].id
             merged_response.error.message = errors.values()[0].message
@@ -605,6 +683,7 @@ class Scenario(simple.Scenario):
             nb_try = nb_try + 1
 
             tmp_resp = self.call_kraken(request_type, request, instance, krakens_call)
+            _tag_by_mode(tmp_resp)
             responses.extend(tmp_resp)  # we keep the error for building the response
             if nb_journeys(tmp_resp) == 0:
                 # no new journeys found, we stop
@@ -615,15 +694,21 @@ class Scenario(simple.Scenario):
             # we filter unwanted journeys by side effects
             journey_filter.filter_journeys(responses, instance, api_request)
 
+            #We allow one more call to kraken if there is no valid journey.
+            if nb_journeys(responses) == 0:
+                min_journeys_calls = max(min_journeys_calls, 2)
+
         journey_filter.final_filter_journeys(responses, instance, api_request)
         pb_resp = merge_responses(responses)
 
         sort_journeys(pb_resp, instance.journey_order, api_request['clockwise'])
+        compute_car_co2_emission(pb_resp, api_request, instance)
         tag_journeys(pb_resp)
+        journey_filter.delete_journeys((pb_resp,), api_request)
         type_journeys(pb_resp, api_request)
         culling_journeys(pb_resp, api_request)
 
-        self._compute_pagination_links(pb_resp, instance)
+        self._compute_pagination_links(pb_resp, instance, api_request['clockwise'])
 
         return pb_resp
 
@@ -635,24 +720,29 @@ class Scenario(simple.Scenario):
         """
         # TODO: handle min_alternative_journeys
         # TODO: call first bss|bss and do not call walking|walking if no bss in first results
-
         resp = []
         logger = logging.getLogger(__name__)
+        futures = []
+        def worker(dep_mode, arr_mode, instance, request, request_id):
+            return (dep_mode, arr_mode, instance.send_and_receive(request, request_id=request_id))
+
+        pool = gevent.pool.Pool(app.config.get('GREENLET_POOL_SIZE', 3))
         for dep_mode, arr_mode in krakens_call:
             pb_request = create_pb_request(request_type, request, dep_mode, arr_mode)
-            self.nb_kraken_calls += 1
+            #we spawn a new green thread, it won't have access to our thread local request object so we set request_id
+            futures.append(pool.spawn(worker, dep_mode, arr_mode, instance, pb_request, request_id=flask.request.id))
 
-            local_resp = instance.send_and_receive(pb_request)
-
+        for future in gevent.iwait(futures):
+            dep_mode, arr_mode, local_resp = future.get()
             # for log purpose we put and id in each journeys
+            self.nb_kraken_calls += 1
             for idx, j in enumerate(local_resp.journeys):
                 j.internal_id = "{resp}-{j}".format(resp=self.nb_kraken_calls, j=idx)
 
+            fill_uris(local_resp)
             resp.append(local_resp)
             logger.debug("for mode %s|%s we have found %s journeys", dep_mode, arr_mode, len(local_resp.journeys))
 
-        for r in resp:
-            fill_uris(r)
         return resp
 
     def __on_journeys(self, requested_type, request, instance):
@@ -683,10 +773,11 @@ class Scenario(simple.Scenario):
 
         to do that we find ask the next (resp previous) query datetime
         """
+        vjs = [j for r in responses for j in r.journeys if not journey_filter.to_be_deleted(j)]
         if request["clockwise"]:
-            request['datetime'] = self.next_journey_datetime([j for r in responses for j in r.journeys])
+            request['datetime'] = self.next_journey_datetime(vjs, request["clockwise"])
         else:
-            request['datetime'] = self.previous_journey_datetime([j for r in responses for j in r.journeys])
+            request['datetime'] = self.previous_journey_datetime(vjs, request["clockwise"])
 
         if request['datetime'] is None:
             return None
@@ -699,22 +790,30 @@ class Scenario(simple.Scenario):
         return min_from_criteria(filter(has_pt, journeys),
                                  [criteria, duration_crit, transfers_crit, nonTC_crit])
 
-    def next_journey_datetime(self, journeys):
+    def get_best(self, journeys, clockwise):
+        if clockwise:
+            return self.__get_best_for_criteria(journeys, arrival_crit)
+        else:
+            return self.__get_best_for_criteria(journeys, departure_crit)
+
+    def next_journey_datetime(self, journeys, clockwise):
         """
         to get the next journey, we add one second to the departure of the 'best found' journey
         """
-        best = self.__get_best_for_criteria(journeys, arrival_crit)
+        best = self.get_best(journeys, clockwise)
+
         if best is None:
             return None
 
         one_second = 1
         return best.departure_date_time + one_second
 
-    def previous_journey_datetime(self, journeys):
+    def previous_journey_datetime(self, journeys, clockwise):
         """
         to get the next journey, we add one second to the arrival of the 'best found' journey
         """
-        best = self.__get_best_for_criteria(journeys, departure_crit)
+        best = self.get_best(journeys, clockwise)
+
         if best is None:
             return None
 

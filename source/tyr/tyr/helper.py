@@ -81,6 +81,7 @@ class InstanceConfig(object):
         self.pg_dbname = None
         self.pg_username = None
         self.pg_password = None
+        self.pg_port = None
         self.name = None
 
 
@@ -101,9 +102,10 @@ def load_instance_config(instance_name):
     confspec.append('dbname = string()')
     confspec.append('username = string()')
     confspec.append('password = string()')
+    confspec.append('port = string(default="5432")')
 
     ini_file = '%s/%s.ini' % \
-               (current_app.config['INSTANCES_DIR'], instance_name)
+               (os.path.realpath(current_app.config['INSTANCES_DIR']), instance_name)
     if not os.path.isfile(ini_file):
         raise ValueError("File doesn't exists or is not a file %s" % ini_file)
 
@@ -129,6 +131,7 @@ def load_instance_config(instance_name):
     instance.pg_dbname = config['database']['dbname']
     instance.pg_username = config['database']['username']
     instance.pg_password = config['database']['password']
+    instance.pg_port = config['database']['port']
     return instance
 
 

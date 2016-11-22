@@ -52,18 +52,19 @@ namespace routing{
 namespace navitia {
 
 struct JourneysArg {
-    const std::vector<type::EntryPoint> origins;
-    const type::AccessibiliteParams accessibilite_params;
-    const std::vector<std::string> forbidden;
-    const type::RTLevel rt_level;
-    const std::vector<type::EntryPoint> destinations;
-    const std::vector<uint64_t> datetimes;
-    JourneysArg(const std::vector<type::EntryPoint>& origins,
-                 const type::AccessibiliteParams& accessibilite_params,
-                 const std::vector<std::string>& forbidden,
-                 const type::RTLevel& rt_level,
-                 const std::vector<type::EntryPoint>& destinations,
-                 const std::vector<uint64_t>& datetimes);
+    std::vector<type::EntryPoint> origins;
+    type::AccessibiliteParams accessibilite_params;
+    std::vector<std::string> forbidden;
+    type::RTLevel rt_level;
+    std::vector<type::EntryPoint> destinations;
+    std::vector<uint64_t> datetimes;
+    JourneysArg(std::vector<type::EntryPoint> origins,
+                type::AccessibiliteParams accessibilite_params,
+                std::vector<std::string> forbidden,
+                type::RTLevel rt_level,
+                std::vector<type::EntryPoint> destinations,
+                std::vector<uint64_t> datetimes);
+    JourneysArg();
 };
 
 class Worker {
@@ -86,15 +87,12 @@ class Worker {
 
         pbnavitia::Response dispatch(const pbnavitia::Request & request);
 
-        type::GeographicalCoord coord_of_entry_point(const type::EntryPoint & entry_point,
-                const boost::shared_ptr<const navitia::type::Data> data);
-        type::StreetNetworkParams streetnetwork_params_of_entry_point(const pbnavitia::StreetNetworkParams & request, const boost::shared_ptr<const navitia::type::Data> data, const bool use_second = true);
-
         void init_worker_data(const boost::shared_ptr<const navitia::type::Data> data);
 
         void metadatas(pbnavitia::Response& response);
         void feed_publisher(pbnavitia::Response& response);
         pbnavitia::Response status();
+        pbnavitia::Response geo_status();
         pbnavitia::Response autocomplete(const pbnavitia::PlacesRequest &request,
                                          const boost::posix_time::ptime& current_datetime);
         pbnavitia::Response place_uri(const pbnavitia::PlaceUriRequest &request,
@@ -118,8 +116,27 @@ class Worker {
                                       const boost::posix_time::ptime& current_datetime);
         pbnavitia::Response place_code(const pbnavitia::PlaceCodeRequest &request);
         pbnavitia::Response nearest_stop_points(const pbnavitia::NearestStopPointsRequest& request);
-        pbnavitia::Response graphical_isochrone(const pbnavitia::GraphicalIsochroneRequest &request,
-                                               const boost::posix_time::ptime& current_datetime);
+        boost::optional<pbnavitia::Response> set_journeys_args(const pbnavitia::JourneysRequest& request,
+                                                               const boost::posix_time::ptime& current_datetime,
+                                                               JourneysArg& arg, const std::string& name);
+        pbnavitia::Response graphical_isochrone(const pbnavitia::GraphicalIsochroneRequest& request,
+                                                const boost::posix_time::ptime& current_datetime);
+        pbnavitia::Response heat_map(const pbnavitia::HeatMapRequest& request,
+                                     const boost::posix_time::ptime& current_datetime);
+        pbnavitia::Response car_co2_emission_on_crow_fly(const pbnavitia::CarCO2EmissionRequest& request);
+        pbnavitia::Response direct_path(const pbnavitia::Request& request);
+
+        /*
+         * Given N origins and M destinations and street network mode, it returns a NxM matrix which contains durations
+         * from origin to destination by taking street network
+         * */
+        pbnavitia::Response street_network_routing_matrix(const pbnavitia::StreetNetworkRoutingMatrixRequest& request);
 };
+
+type::EntryPoint make_sn_entry_point(const std::string& place,
+        const std::string& mode,
+        const float speed,
+        const int max_duration,
+        const navitia::type::Data& data);
 
 }

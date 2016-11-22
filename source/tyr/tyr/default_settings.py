@@ -1,6 +1,7 @@
 #encoding: utf-8
 import logging
 from datetime import timedelta
+from celery import schedules
 
 #URL for the brokker, by default it's the local rabbitmq
 #For amqp (rabbitMQ) the syntax is:
@@ -27,6 +28,10 @@ INSTANCES_DIR = '.'
 #Path to the directory where the data sources for autocomplete are stocked
 TYR_AUTOCOMPLETE_DIR = "/srv/ed/autocomplete"
 
+AUOTOCOMPLETE_MAX_BACKUPS_TO_KEEP = 5
+
+#Max number of dataset to keep per instance and type
+DATASET_MAX_BACKUPS_TO_KEEP = 1
 #Log Level available
 # - DEBUG
 # - INFO
@@ -111,6 +116,16 @@ CELERYBEAT_SCHEDULE = {
         'task': 'tyr.tasks.update_autocomplete',
         'schedule': timedelta(seconds=30),
         'options': {'expires': 25}
+    },
+    'purge-autocomplete-everyday': {
+        'task': 'tyr.tasks.purge_autocomplete',
+        'schedule': schedules.crontab(hour=0, minute=0),  # Task is executed daily at midnight
+        'options': {'expires': 120}
+    },
+    'purge-dataset-everyday': {
+        'task': 'tyr.tasks.purge_datasets',
+        'schedule': schedules.crontab(hour=2, minute=30),  # Task is executed daily at 2H30
+        'options': {'expires': 120}
     },
     'heartbeat-kraken': {
         'task': 'tyr.tasks.heartbeat',

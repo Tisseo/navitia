@@ -97,7 +97,7 @@ def get_token():
         try:
             decoded = base64.decodestring(b64)
             return decoded.split(':')[0]
-        except binascii.Error:
+        except (binascii.Error, UnicodeDecodeError):
             logging.getLogger(__name__).info('badly formated token %s', auth)
             flask_restful.abort(401, message="Unauthorized, invalid token", status=401)
             return None
@@ -161,7 +161,7 @@ def get_user(token, abort_if_no_token=True):
             #a token is mandatory for non public jormungandr
             if not current_app.config.get('PUBLIC', False):
                 if abort_if_no_token:
-                    flask_restful.abort(401, message='no token')
+                    flask_restful.abort(401, message='no token. You can get one at http://www.navitia.io or contact your support if you’re using the opensource version of Navitia https://github.com/CanalTP/navitia')
                 else:
                     return None
             else:  # for public one we allow unknown user
@@ -192,3 +192,20 @@ def abort_request(user=None):
         flask_restful.abort(403)
     else:
         flask_restful.abort(401)
+
+def get_used_coverages():
+    """
+    return the list of coverages used to generate the response
+    """
+    if 'region' in request.view_args:
+        return [request.view_args['region']]
+    elif hasattr(g, 'used_coverages'):
+        return g.used_coverages
+    else:
+        return []
+
+def register_used_coverages(coverages):
+    if hasattr(coverages, '__iter__'):
+        g.used_coverages = coverages
+    else:
+        g.used_coverages = [coverages]

@@ -28,31 +28,14 @@
 # www.navitia.io
 
 from __future__ import absolute_import, print_function, unicode_literals, division
-from navitiacommon import request_pb2, type_pb2
+from navitiacommon import request_pb2, response_pb2, type_pb2
+import logging
+
 
 class Kraken(object):
 
     def __init__(self, instance):
         self.instance = instance
-
-    def get_stop_points(self, place, mode, max_duration, reverse=False):
-        req = request_pb2.Request()
-        req.requested_api = type_pb2.nearest_stop_points
-        req.nearest_stop_points.place = place
-        req.nearest_stop_points.mode = mode
-        req.nearest_stop_points.reverse = reverse
-        req.nearest_stop_points.max_duration = max_duration
-
-        req.nearest_stop_points.walking_speed = self.instance.walking_speed
-        req.nearest_stop_points.bike_speed = self.instance.bike_speed
-        req.nearest_stop_points.bss_speed = self.instance.bss_speed
-        req.nearest_stop_points.car_speed = self.instance.car_speed
-
-        result = self.instance.send_and_receive(req)
-        nsp = {}
-        for item in result.nearest_stop_points:
-            nsp[item.stop_point.uri] = item.access_duration
-        return nsp
 
     def place(self, place):
         req = request_pb2.Request()
@@ -61,4 +44,67 @@ class Kraken(object):
         response = self.instance.send_and_receive(req)
         return response.places[0]
 
+    def get_car_co2_emission_on_crow_fly(self, origin, destination):
+        logger = logging.getLogger(__name__)
+        req = request_pb2.Request()
+        req.requested_api = type_pb2.car_co2_emission
+        req.car_co2_emission.origin.place = origin
+        req.car_co2_emission.origin.access_duration = 0
+        req.car_co2_emission.destination.place = destination
+        req.car_co2_emission.destination.access_duration = 0
 
+        response = self.instance.send_and_receive(req)
+        if response.error and response.error.id == \
+                response_pb2.Error.error_id.Value('no_solution'):
+            logger.error("Cannot compute car co2 emission from {} to {}"
+                         .format(origin, destination))
+            return None
+        return response.car_co2_emission
+
+    def get_crow_fly(self, origin, streetnetwork_mode, max_duration, max_nb_crowfly):
+        speed_switcher = {
+            "walking": self.instance.walking_speed,
+            "bike": self.instance.bike_speed,
+            "car": self.instance.car_speed,
+            "bss": self.instance.bss_speed,
+        }
+        # Getting stop_ponits or stop_areas using crow fly
+        # the distance of crow fly is defined by the mode speed and max_duration
+        req = request_pb2.Request()
+        req.requested_api = type_pb2.places_nearby
+        req.places_nearby.uri = origin
+
+        req.places_nearby.distance = speed_switcher.get(streetnetwork_mode,
+                                                        self.instance.walking_speed) * max_duration
+        req.places_nearby.depth = 1
+        req.places_nearby.count = max_nb_crowfly
+        req.places_nearby.start_page = 0
+        # we are only interested in public transports
+        req.places_nearby.types.append(type_pb2.STOP_POINT)
+        return self.instance.send_and_receive(req).places_nearby
+
+    def get_stop_points_for_stop_area(self, uri):
+        req = request_pb2.Request()
+        req.requested_api = type_pb2.PTREFERENTIAL
+        req.ptref.requested_type = type_pb2.STOP_POINT
+        req.ptref.count = 100
+        req.ptref.start_page = 0
+        req.ptref.depth = 1
+        req.ptref.filter = 'stop_area.uri = {uri}'.format(uri=uri)
+
+        result = self.instance.send_and_receive(req)
+        if not result.stop_points:
+            logging.getLogger(__name__).info('PtRef, Unable to find stop_point with filter {}'.
+                                             format(req.ptref.filter))
+        return result.stop_points
+
+    def get_stop_points_from_uri(self, uri):
+        req = request_pb2.Request()
+        req.requested_api = type_pb2.PTREFERENTIAL
+        req.ptref.requested_type = type_pb2.STOP_POINT
+        req.ptref.count = 100
+        req.ptref.start_page = 0
+        req.ptref.depth = 1
+        req.ptref.filter = 'stop_point.uri = {uri}'.format(uri=uri)
+        result = self.instance.send_and_receive(req)
+        return result.stop_points

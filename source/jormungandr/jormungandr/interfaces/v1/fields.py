@@ -43,6 +43,22 @@ from navitiacommon import response_pb2, type_pb2
 import ujson
 
 
+class Lit(fields.Raw):
+    def __init__(self, val):
+        self.val = val
+
+    def output(self, key, obj):
+        return self.val
+
+
+class ListLit(fields.Raw):
+    def __init__(self, l):
+        self.l = l
+
+    def output(self, key, obj):
+        return [e.output(key, obj) for e in self.l]
+
+
 class PbField(fields.Nested):
 
     def __init__(self, nested, allow_null=True, **kwargs):
@@ -338,6 +354,9 @@ class MultiLineString(fields.Raw):
         super(MultiLineString, self).__init__(**kwargs)
 
     def output(self, key, obj):
+        if hasattr(g, 'disable_geojson') and g.disable_geojson:
+            return None
+
         val = fields.get_value(key if self.attribute is None else self.attribute, obj)
 
         lines = []
@@ -371,7 +390,7 @@ class SectionGeoJson(fields.Raw):
 
     def output(self, key, obj):
         coords = []
-        if not obj.HasField(b"type"):
+        if not obj.HasField(str("type")):
             logging.getLogger(__name__).warn("trying to output wrongly formated object as geojson, we skip")
             return
 
@@ -391,7 +410,7 @@ class SectionGeoJson(fields.Raw):
             "type": "LineString",
             "coordinates": [],
             "properties": [{
-                "length": 0 if not obj.HasField(b"length") else obj.length
+                "length": 0 if not obj.HasField(str("length")) else obj.length
             }]
         }
         for coord in coords:
@@ -399,24 +418,24 @@ class SectionGeoJson(fields.Raw):
         return response
 
 
-class MultiPolyGeoJson(fields.Raw):
+class JsonString(fields.Raw):
     def __init__(self, **kwargs):
-        super(MultiPolyGeoJson, self).__init__(**kwargs)
+        super(JsonString, self).__init__(**kwargs)
 
     def format(self, value):
 
-        geojson = str(value)
-        response = ujson.loads(geojson)
+        json = str(value)
+        response = ujson.loads(json)
 
         return response
 
-class Co2Emission(fields.Raw):
+class Durations(fields.Raw):
     def output(self, key, obj):
-        if not obj.HasField(b"co2_emission"):
+        if not obj.HasField(str("durations")):
             return
         return {
-            'value': obj.co2_emission.value,
-            'unit': obj.co2_emission.unit
+            'total': obj.durations.total,
+            'walking': obj.durations.walking
         }
 
 
@@ -729,6 +748,11 @@ error = {
     'message': fields.String()
 }
 
+beta_endpoint = {
+    'id': Lit("beta_endpoint"),
+    'message': Lit("This service is under construction. You can help through github.com/CanalTP/navitia"),
+}
+
 
 class UrisToLinks():
 
@@ -818,6 +842,7 @@ instance_parameters = {
 
 instance_status_with_parameters = deepcopy(instance_status)
 instance_status_with_parameters['parameters'] = fields.Nested(instance_parameters, allow_null=True)
+instance_status_with_parameters['realtime_contributors'] = fields.List(fields.String(), attribute='rt_contributors')
 
 instance_traveler_types = {
     'traveler_type': fields.String,

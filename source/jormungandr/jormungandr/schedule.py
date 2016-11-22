@@ -61,10 +61,10 @@ def get_realtime_system_code(route_point):
 
 
 class RealTimePassage(object):
-    def __init__(self, datetime, direction=None):
+    def __init__(self, datetime, direction=None, is_real_time = True):
         self.datetime = datetime
         self.direction = direction
-        self.is_real_time = True
+        self.is_real_time = is_real_time
 
 
 def _update_stop_schedule(stop_schedule, next_realtime_passages):
@@ -93,7 +93,10 @@ def _update_stop_schedule(stop_schedule, next_realtime_passages):
         new_dt.time = int(time)
         new_dt.date = date_to_timestamp(midnight)
 
-        new_dt.realtime_level = type_pb2.REALTIME
+        if passage.is_real_time:
+            new_dt.realtime_level = type_pb2.REALTIME
+        else:
+            new_dt.realtime_level = type_pb2.BASE_SCHEDULE
 
         # we also add the direction in the note
         if passage.direction:
@@ -106,22 +109,22 @@ def _update_stop_schedule(stop_schedule, next_realtime_passages):
 
 def _create_template_from_passage(passage):
     template = deepcopy(passage)
-    template.pt_display_informations.ClearField(b"headsign")
-    template.pt_display_informations.ClearField(b"direction")
-    template.pt_display_informations.ClearField(b"physical_mode")
-    template.pt_display_informations.ClearField(b"description")
-    template.pt_display_informations.ClearField(b"uris")
-    template.pt_display_informations.ClearField(b"has_equipments")
+    template.pt_display_informations.ClearField(str("headsign"))
+    template.pt_display_informations.ClearField(str("direction"))
+    template.pt_display_informations.ClearField(str("physical_mode"))
+    template.pt_display_informations.ClearField(str("description"))
+    template.pt_display_informations.ClearField(str("uris"))
+    template.pt_display_informations.ClearField(str("has_equipments"))
     del template.pt_display_informations.messages[:]
     del template.pt_display_informations.impact_uris[:]
     del template.pt_display_informations.notes[:]
     del template.pt_display_informations.headsigns[:]
-    template.stop_date_time.ClearField(b"arrival_date_time")
-    template.stop_date_time.ClearField(b"departure_date_time")
-    template.stop_date_time.ClearField(b"base_arrival_date_time")
-    template.stop_date_time.ClearField(b"base_departure_date_time")
-    template.stop_date_time.ClearField(b"properties")
-    template.stop_date_time.ClearField(b"data_freshness")
+    template.stop_date_time.ClearField(str("arrival_date_time"))
+    template.stop_date_time.ClearField(str("departure_date_time"))
+    template.stop_date_time.ClearField(str("base_arrival_date_time"))
+    template.stop_date_time.ClearField(str("base_departure_date_time"))
+    template.stop_date_time.ClearField(str("properties"))
+    template.stop_date_time.ClearField(str("data_freshness"))
     return template
 
 
@@ -145,7 +148,11 @@ def _update_passages(passages, route_point, template, next_realtime_passages):
         new_passage = deepcopy(template)
         new_passage.stop_date_time.arrival_date_time = date_to_timestamp(rt_passage.datetime)
         new_passage.stop_date_time.departure_date_time = date_to_timestamp(rt_passage.datetime)
-        new_passage.stop_date_time.data_freshness = type_pb2.REALTIME
+
+        if rt_passage.is_real_time:
+            new_passage.stop_date_time.data_freshness = type_pb2.REALTIME
+        else:
+            new_passage.stop_date_time.data_freshness = type_pb2.BASE_SCHEDULE
 
         # we also add the direction in the note
         if rt_passage.direction:
@@ -173,8 +180,11 @@ class RoutePoint(object):
         return hash(self.__key())
 
     @staticmethod
-    def _get_code(obj, object_id_tag):
-        tags = [c.value for c in obj.codes if c.type == object_id_tag]
+    def _get_all_codes(obj, object_id_tag):
+        return [c.value for c in obj.codes if c.type == object_id_tag]
+
+    def _get_code(self, obj, object_id_tag):
+        tags = self._get_all_codes(obj, object_id_tag)
         if len(tags) < 1:
             return None
         if len(tags) > 1:
@@ -192,6 +202,9 @@ class RoutePoint(object):
 
     def fetch_route_id(self, object_id_tag):
         return self._get_code(self.pb_route, object_id_tag)
+
+    def fetch_all_route_id(self, object_id_tag):
+        return self._get_all_codes(self.pb_route, object_id_tag)
 
     def fetch_line_code(self):
         return self.pb_route.line.code
@@ -232,10 +245,15 @@ class MixedSchedule(object):
             log.info('impossible to find {}, no realtime added'.format(rt_system_code))
             return None
 
-        next_rt_passages = rt_system.next_passage_for_route_point(route_point,
-                                                                  request['items_per_schedule'],
-                                                                  request['from_datetime'],
-                                                                  request['_current_datetime'])
+        next_rt_passages = None
+        try:
+            next_rt_passages = rt_system.next_passage_for_route_point(route_point,
+                                                                      request['items_per_schedule'],
+                                                                      request['from_datetime'],
+                                                                      request['_current_datetime'])
+        except:
+            log.exception('failure while requesting next passages to external RT system {}'.format(rt_system_code))
+
         if next_rt_passages is None:
             log.debug('no next passages, using base schedule')
             return None
@@ -247,6 +265,7 @@ class MixedSchedule(object):
         req.requested_api = api
         req._current_datetime = date_to_timestamp(request['_current_datetime'])
         st = req.next_stop_times
+        st.disable_geojson = request["disable_geojson"]
         st.departure_filter = departure_filter
         st.arrival_filter = arrival_filter
         if request["from_datetime"]:
