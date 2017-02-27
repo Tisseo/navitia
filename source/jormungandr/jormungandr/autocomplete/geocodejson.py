@@ -34,16 +34,6 @@ import logging
 from jormungandr.autocomplete.abstract_autocomplete import AbstractAutocomplete
 import requests
 from jormungandr.exceptions import TechnicalError
-from functools import wraps
-
-
-class delete_attribute_autocomplete():
-    def __call__(self, f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            objects = f(*args, **kwargs)
-            return objects.get('Autocomplete') or objects
-        return wrapper
 
 
 class GeocodeJson(AbstractAutocomplete):
@@ -56,20 +46,31 @@ class GeocodeJson(AbstractAutocomplete):
         self.external_api = kwargs.get('host')
         self.timeout = kwargs.get('timeout', 10)
 
-    # TODO: To be deleted when bragi is modified
-    @delete_attribute_autocomplete()
-    def get(self, request, instance, shape):
+    def make_params(self, request, instance):
+        params = {
+            "q": request["q"],
+            "limit": request["count"]
+        }
+
+        if request.get("from"):
+            params["lon"], params["lat"] = self.get_coords(request["from"])
+
+        if instance:
+            params["pt_dataset"] = instance.name
+
+        return params
+
+    def get(self, request, instance, shape=None):
         if not self.external_api:
             raise TechnicalError('global autocomplete not configured')
 
-        url = '{endpoint}?q={q}&limit={count}'.format(endpoint=self.external_api,
-                                                      q=request['q'],
-                                                      count=request['count'])
+        params = self.make_params(request, instance)
+
         try:
             if shape:
-                raw_response = requests.post(url, timeout=self.timeout, json=shape)
+                raw_response = requests.post(self.external_api, timeout=self.timeout, json=shape, params=params)
             else:
-                raw_response = requests.get(url, timeout=self.timeout)
+                raw_response = requests.get(self.external_api, timeout=self.timeout, params=params)
 
         except requests.Timeout:
             logging.getLogger(__name__).error('autocomplete request timeout')
@@ -78,9 +79,18 @@ class GeocodeJson(AbstractAutocomplete):
             logging.getLogger(__name__).exception('error in autocomplete request')
             raise TechnicalError('impossible to access external autocomplete service')
 
-        return raw_response.json()
+        bragi_response = raw_response.json()
+        from flask.ext.restful import marshal
+        from jormungandr.interfaces.v1.Places import geocodejson
+
+        return marshal(bragi_response, geocodejson)
 
     def geo_status(self, instance):
         raise NotImplementedError
 
-
+    def get_coords(self, param):
+        """
+        Get coordinates (longitude, latitude).
+        For moment we consider that the param can only be a coordinate.
+        """
+        return param.split(";")

@@ -41,6 +41,7 @@ import re
 from shapely.geometry import shape
 import sys
 from jormungandr.interfaces.parsers import unsigned_integer
+from urllib import unquote
 
 
 """
@@ -385,6 +386,8 @@ def query_from_str(str):
     {u'bobette': u'tata', u'bobinos': u'tutu', u'bob': u'toto'}
     >>> query_from_str("toto/tata?bob=toto&bob=tata&bob=titi&bob=tata&bobinos=tutu")
     {u'bobinos': u'tutu', u'bob': [u'toto', u'tata', u'titi', u'tata']}
+    >>> query_from_str("?bob%5B%5D=toto titi&bob[]=tata%2Btutu")
+    {u'bob[]': [u'toto titi', u'tata+tutu']}
 
     Note: the query can be encoded, so the split it either on the encoded or the decoded value
     """
@@ -393,6 +396,8 @@ def query_from_str(str):
 
     for s in last_elt.split('&' if '&' in last_elt else '%26'):
         k, v = s.split("=" if '=' in s else '%3D')
+        k = unquote(k)
+        v = unquote(v)
 
         if k in query:
             old_val = query[k]
@@ -471,7 +476,8 @@ def is_valid_journey(journey, tester, query):
     arrival = get_valid_datetime(journey['arrival_date_time'])
     departure = get_valid_datetime(journey['departure_date_time'])
     request = get_valid_datetime(journey['requested_date_time'])
-    assert journey["type"]
+    if query.get('debug', 'false') != 'true':
+        assert journey["type"]
 
     assert arrival >= departure
     # test if duration time is consistent with arrival and departure
@@ -486,6 +492,10 @@ def is_valid_journey(journey, tester, query):
 
     #we want to test that all departure match de previous section arrival
     last_arrival = departure
+
+    previous_destination_uri = None
+    if journey['sections']:
+        previous_destination_uri = journey['sections'][0]['from']['id']
     for s in journey['sections']:
         is_valid_section(s, query)
         section_departure = get_valid_datetime(s['departure_date_time'])
@@ -497,6 +507,9 @@ def is_valid_journey(journey, tester, query):
         g = s.get('geojson')
         g is None or shape(g)
 
+        if s['type'] != 'waiting':
+            assert (s['from']['id'] == previous_destination_uri)
+            previous_destination_uri = s['to']['id']
     assert last_arrival == arrival
     assert get_valid_datetime(journey['sections'][-1]['arrival_date_time']) == last_arrival
 
@@ -625,11 +638,12 @@ def is_valid_section(section, query):
             assert dur >= 0
             total_duration += dur
 
-        assert total_duration == section['duration']
+        assert abs(total_duration - section['duration']) <= 0.5 * len(section['path']) + 1
 
     #TODO check geojson
     #TODO check stop_date_times
     #TODO check from/to
+
 
 
 def is_valid_ticket(ticket, tester):
@@ -1071,6 +1085,8 @@ def is_valid_disruption(disruption, chaos_disrup=True):
 
 s_coord = "0.0000898312;0.0000898312"  # coordinate of S in the dataset
 r_coord = "0.00188646;0.00071865"  # coordinate of R in the dataset
+stopA_coord = "0.00107797;0.00071865"
+stopB_coord = "0.0000898312;0.00026949"
 
 #default journey query used in various test
 journey_basic_query = "journeys?from={from_coord}&to={to_coord}&datetime={datetime}"\
@@ -1117,6 +1133,23 @@ def is_valid_stop_date_time(stop_date_time):
     assert get_valid_datetime(stop_date_time['base_departure_date_time'])
     get_not_null(stop_date_time, 'base_arrival_date_time')
     assert get_valid_datetime(stop_date_time['base_arrival_date_time'])
+
+
+def is_valid_autocomplete(response, depth, mandatory_links=True):
+    if mandatory_links:
+        links = get_not_null(response, 'links')
+        for link in links:
+            assert 'href' in link
+            assert 'rel' in link
+            assert 'templated' in link
+    places = get_not_null(response, 'places')
+
+    for place in places:
+        is_valid_place(place, depth_check=depth)
+
+
+def is_valid_global_autocomplete(response, depth):
+    return is_valid_autocomplete(response, depth, mandatory_links=False)
 
 
 def get_used_vj(response):
@@ -1184,8 +1217,8 @@ def new_default_pagination_journey_comparator(clockwise):
             return partial(compare_field, func=func)
         return partial(reverse_compare_field, func=func)
 
-    main_criteria = make_crit(lambda j: get_valid_datetime(j['departure_date_time'])) if clockwise \
-        else make_crit(lambda j: get_valid_datetime(j['arrival_date_time']), reverse=True)
+    main_criteria = make_crit(lambda j: get_valid_datetime(j['arrival_date_time'])) if clockwise \
+        else make_crit(lambda j: get_valid_datetime(j['departure_date_time']), reverse=True)
 
     return [main_criteria,
             make_crit(lambda j: get_valid_int(j['duration'])),

@@ -131,7 +131,7 @@ static pbnavitia::Request create_request_for_pt_planner(bool clockwise, const st
   */
 struct fixture {
     fixture(): b("20150314"),
-                 w(data_manager, navitia::kraken::Configuration()){
+                 w(navitia::kraken::Configuration()){
         b.sa("A", 0, 0, true, true);
         b.sa("B", 0, 0, true, true);
         b.sa("C", 0, 0, true, false); // C is not accessible
@@ -169,7 +169,9 @@ BOOST_FIXTURE_TEST_CASE(no_wheelchair_on_vj_tests, fixture) {
 
     const auto no_wheelchair_request = create_request(false, "B");
     // we ask for a journey without a wheelchair, we arrive at 9h
-    pbnavitia::Response resp = w.dispatch(no_wheelchair_request);
+    const auto data = data_manager.get_data();
+    w.dispatch(no_wheelchair_request, *data);
+    pbnavitia::Response resp = w.pb_creator.get_response();
 
     BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::ITINERARY_FOUND);
     BOOST_REQUIRE_EQUAL(resp.journeys_size(), 1);
@@ -181,7 +183,9 @@ BOOST_FIXTURE_TEST_CASE(no_wheelchair_on_vj_tests, fixture) {
 BOOST_FIXTURE_TEST_CASE(wheelchair_on_vj_tests, fixture) {
     const auto no_wheelchair_request = create_request(true, "B");
     // we ask for a journey without a wheelchair, we arrive at 9h
-    pbnavitia::Response resp = w.dispatch(no_wheelchair_request);
+    const auto data = data_manager.get_data();
+    w.dispatch(no_wheelchair_request, *data);
+    pbnavitia::Response resp = w.pb_creator.get_response();
 
     BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::ITINERARY_FOUND);
     BOOST_REQUIRE_EQUAL(resp.journeys_size(), 1);
@@ -193,7 +197,9 @@ BOOST_FIXTURE_TEST_CASE(wheelchair_on_vj_tests, fixture) {
 
 BOOST_FIXTURE_TEST_CASE(wheelchair_on_stop_tests, fixture) {
     const auto no_wheelchair_request = create_request(true, "C");
-    pbnavitia::Response resp = w.dispatch(no_wheelchair_request);
+    const auto d = data_manager.get_data();
+    w.dispatch(no_wheelchair_request, *d);
+    pbnavitia::Response resp = w.pb_creator.get_response();
 
     BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::NO_SOLUTION);
 }
@@ -220,7 +226,9 @@ BOOST_FIXTURE_TEST_CASE(journey_on_first_day_of_production_tests, fixture) {
     auto dep_after_request = create_request_for_pt_planner(true, "20150314T080000", "stop_point:B");
 
     // we ask for a journey with clockwise=true, we arrive at 9h
-    pbnavitia::Response resp = w.dispatch(dep_after_request);
+    const auto d = data_manager.get_data();
+    w.dispatch(dep_after_request, *d);
+    pbnavitia::Response resp = w.pb_creator.get_response();
 
     BOOST_REQUIRE_EQUAL(resp.response_type(), pbnavitia::ITINERARY_FOUND);
     BOOST_REQUIRE_EQUAL(resp.journeys_size(), 1);

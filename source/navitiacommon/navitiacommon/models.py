@@ -208,18 +208,6 @@ class Key(db.Model):
     def get_by_token(cls, token):
         return cls.query.filter_by(token=token).first()
 
-class PoiType(db.Model):
-    uri = db.Column(db.Text, nullable=False)
-    name = db.Column(db.Text, nullable=True)
-    instance_id = db.Column(db.Integer, db.ForeignKey('instance.id'), nullable=False)
-
-    __tablename__ = 'poi_type'
-    __table_args__ = (db.PrimaryKeyConstraint('instance_id', 'uri'), )
-
-    def __init__(self, uri, name=None, instance=None):
-        self.uri = uri
-        self.name = name
-
 
 class PoiTypeJson(db.Model):
     poi_types_json = db.Column(db.Text, nullable=True)
@@ -239,18 +227,23 @@ class Instance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, unique=True, nullable=False)
     discarded = db.Column(db.Boolean, default=False, nullable=False)
+    #aka is_open_service in jormun
     is_free = db.Column(db.Boolean, default=False, nullable=False)
+
+    #this doesn't impact anything but is_free was used this,
+    #but an instance can be freely accessible but not using open data
+    is_open_data = db.Column(db.Boolean, default=False, nullable=False)
 
     authorizations = db.relationship('Authorization', backref=backref('instance', lazy='joined'),
             lazy='dynamic', cascade='save-update, merge, delete')
 
     jobs = db.relationship('Job', backref='instance', lazy='dynamic', cascade='save-update, merge, delete')
 
-    poi_types = db.relationship('PoiType', backref=backref('instance'),
-                               lazy='dynamic', cascade='save-update, merge, delete')
-
     poi_type_json = db.relationship('PoiTypeJson', uselist=False, backref=backref('instance'),
                                  cascade='save-update, merge, delete, delete-orphan')
+
+    import_stops_in_mimir = db.Column(db.Boolean, default=False, nullable=False)
+
     # ============================================================
     # params for jormungandr
     # ============================================================
@@ -569,14 +562,25 @@ class AutocompleteParameter(db.Model, TimestampMixin):
     def backup_dir(self, root_path):
         return os.path.join(self.main_dir(root_path), "backup")
 
-    def autocomplete_latest_datasets(self, nb_dataset=1):
-        return db.session.query(DataSet)\
-            .join(Job) \
-            .join(AutocompleteParameter) \
-            .filter(AutocompleteParameter.id == self.id, DataSet.family_type == "autocomplete", Job.state == 'done') \
-            .order_by(Job.created_at.desc()) \
-            .limit(nb_dataset) \
+    def last_datasets(self, nb_dataset=1):
+        """
+        return the n last dataset of each family type loaded for this instance
+        """
+        family_types = db.session.query(func.distinct(DataSet.family_type)) \
+            .filter(AutocompleteParameter.id == self.id) \
             .all()
+
+        result = []
+        for family_type in family_types:
+            data_sets = db.session.query(DataSet)\
+                .join(Job) \
+                .join(AutocompleteParameter) \
+                .filter(AutocompleteParameter.id == self.id, DataSet.family_type == family_type, Job.state == 'done') \
+                .order_by(Job.created_at.desc()) \
+                .limit(nb_dataset) \
+                .all()
+            result += data_sets
+        return result
 
     def __repr__(self):
         return '<AutocompleteParameter %r>' % self.name

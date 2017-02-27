@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(ok_before_and_after_disruption) {
     DataManager<navitia::type::Data> data_manager;
     data_manager.set_data(data.b.data.release());
     navitia::kraken::Configuration conf;
-    navitia::Worker w(data_manager, conf);
+    navitia::Worker w(conf);
 
     // a basic request
     pbnavitia::Request req;
@@ -71,7 +71,12 @@ BOOST_AUTO_TEST_CASE(ok_before_and_after_disruption) {
     to->set_access_duration(0);
 
     // we ask for a journey
-    pbnavitia::Response resp = w.dispatch(req);
+    pbnavitia::Response resp;
+    {
+        const auto d = data_manager.get_data();
+        w.dispatch(req, *d);
+        resp = w.pb_creator.get_response();
+    }
     BOOST_REQUIRE(resp.journeys_size() != 0);
     const auto nb_before = resp.journeys_size();
 
@@ -81,6 +86,10 @@ BOOST_AUTO_TEST_CASE(ok_before_and_after_disruption) {
     data_manager.set_data(data_cloned);
 
     // we ask for a journey, we should have the same thing
-    resp = w.dispatch(req);
+    {
+        const auto d = data_manager.get_data();
+        w.dispatch(req, *d);
+        resp = w.pb_creator.get_response();
+    }
     BOOST_REQUIRE_EQUAL(resp.journeys_size(), nb_before);
 }

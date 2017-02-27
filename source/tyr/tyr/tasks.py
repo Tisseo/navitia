@@ -40,8 +40,7 @@ from flask import current_app
 import kombu
 
 from tyr.binarisation import gtfs2ed, osm2ed, ed2nav, fusio2ed, geopal2ed, fare2ed, poi2ed, synonym2ed, \
-    shape2ed, \
-    load_bounding_shape, bano2mimir, osm2mimir
+    shape2ed, load_bounding_shape, bano2mimir, osm2mimir, stops2mimir
 from tyr.binarisation import reload_data, move_to_backupdirectory
 from tyr import celery
 from navitiacommon import models, task_pb2, utils
@@ -123,12 +122,12 @@ def import_data(files, instance, backup_file, async=True, reload=True, custom_ou
         models.db.session.commit()
         for action in actions:
             action.kwargs['job_id'] = job.id
-        #We pass the job id to each tasks, but job need to be commited for
-        #having an id
+        #We pass the job id to each tasks, but job need to be commited for having an id
         binarisation = [ed2nav.si(instance_config, job.id, custom_output_dir)]
-        #We pass the job id to each tasks, but job need to be commited for
-        #having an id
         actions.append(chain(*binarisation))
+        if dataset.family_type == 'pt' and instance.import_stops_in_mimir:
+            # if we are loading pt data we might want to load the stops to autocomplete
+            actions.append(stops2mimir.si(instance_config, filename, job.id, dataset_uid=dataset.uid))
         if reload:
             actions.append(reload_data.si(instance_config, job.id))
         actions.append(finish_job.si(job.id))
@@ -200,7 +199,7 @@ def import_autocomplete(files, autocomplete_instance, async=True, backup_file=Tr
     for _file in files:
         dataset = models.DataSet()
         dataset.type = type_of_autocomplete_data(_file)
-        dataset.family_type = 'autocomplete'
+        dataset.family_type = 'autocomplete_{}'.format(dataset.type)
         if dataset.type in task:
             if backup_file:
                 filename = move_to_backupdirectory(_file, autocomplete_instance.backup_dir(autocomplete_dir))
@@ -229,10 +228,10 @@ def import_autocomplete(files, autocomplete_instance, async=True, backup_file=Tr
         action.kwargs['job_id'] = job.id
     actions.append(finish_job.si(job.id))
     if async:
-        chain(*actions).delay()
+        return chain(*actions).delay()
     else:
         # all job are run in sequence and import_data will only return when all the jobs are finish
-        chain(*actions).apply()
+        return chain(*actions).apply()
 
 
 @celery.task()
@@ -287,6 +286,8 @@ def scan_instances():
             instance = models.Instance(name=instance_name)
             instance_config = load_instance_config(instance.name)
             instance.is_free = instance_config.is_free
+            #by default we will consider an free instance as an opendata one
+            instance.is_open_data = instance_config.is_free
 
             models.db.session.add(instance)
             models.db.session.commit()
@@ -423,7 +424,7 @@ def purge_autocomplete():
         logger.info('purging autocomplete backup directories for %s', ac_instance.name)
         max_backups = current_app.config.get('AUOTOCOMPLETE_MAX_BACKUPS_TO_KEEP', 5)
         dir_to_keep = set(os.path.realpath(os.path.dirname(dataset.name))
-                          for dataset in ac_instance.autocomplete_latest_datasets(max_backups))
+                          for dataset in ac_instance.last_datasets(max_backups))
         autocomplete_dir = current_app.config['TYR_AUTOCOMPLETE_DIR']
         backup_dir = os.path.join(autocomplete_dir, ac_instance.name, 'backup')
         all_backups = set(os.path.join(backup_dir, backup)

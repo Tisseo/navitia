@@ -28,12 +28,16 @@
 # www.navitia.io
 
 from __future__ import absolute_import, print_function, unicode_literals, division
+import logging
+from jormungandr.exceptions import TechnicalError
 from navitiacommon import request_pb2, type_pb2
 from jormungandr.utils import get_uri_pt_object
+from jormungandr.street_network.street_network import AbstractStreetNetworkService
 
-class Kraken(object):
 
-    def __init__(self, instance, url, timeout=10, api_key=None, **kwargs):
+class Kraken(AbstractStreetNetworkService):
+
+    def __init__(self, instance, service_url, timeout=10, api_key=None, **kwargs):
         self.instance = instance
 
     def direct_path(self, mode, pt_object_origin, pt_object_destination, datetime, clockwise, request):
@@ -79,4 +83,9 @@ class Kraken(object):
         req.sn_routing_matrix.mode = street_network_mode
         req.sn_routing_matrix.speed = speed_switcher.get(street_network_mode, kwargs.get("walking"))
         req.sn_routing_matrix.max_duration = max_duration
-        return self.instance.send_and_receive(req).sn_routing_matrix
+
+        res = self.instance.send_and_receive(req)
+        if res.HasField('error'):
+            logging.getLogger(__name__).error('routing matrix query error {}'.format(res.error))
+            raise TechnicalError('routing matrix fail')
+        return res.sn_routing_matrix

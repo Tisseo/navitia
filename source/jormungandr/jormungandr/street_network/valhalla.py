@@ -37,17 +37,18 @@ import json
 from flask_restful import abort
 from jormungandr.exceptions import UnableToParse, TechnicalError, InvalidArguments, ApiNotFound
 from flask import g
-from jormungandr.utils import is_url, kilometers_to_meters
+from jormungandr.utils import is_url, kilometers_to_meters, get_pt_object_coord
 from copy import deepcopy
+from jormungandr.street_network.street_network import AbstractStreetNetworkService
 
 
-class Valhalla(object):
+class Valhalla(AbstractStreetNetworkService):
 
-    def __init__(self, instance, url, timeout=10, api_key=None, **kwargs):
+    def __init__(self, instance, service_url, timeout=10, api_key=None, **kwargs):
         self.instance = instance
-        if not is_url(url):
-            raise ValueError('service_url is invalid, you give {}'.format(url))
-        self.service_url = url
+        if not is_url(service_url):
+            raise ValueError('service_url is invalid, you give {}'.format(service_url))
+        self.service_url = service_url
         self.api_key = api_key
         self.timeout = timeout
         self.costing_options = kwargs.get('costing_options', None)
@@ -74,13 +75,7 @@ class Valhalla(object):
         if not isinstance(pt_object, type_pb2.PtObject):
             logging.getLogger(__name__).error('Invalid pt_object')
             raise InvalidArguments('Invalid pt_object')
-        map_coord = {
-            type_pb2.STOP_POINT: pt_object.stop_point.coord,
-            type_pb2.STOP_AREA: pt_object.stop_area.coord,
-            type_pb2.ADDRESS: pt_object.address.coord,
-            type_pb2.ADMINISTRATIVE_REGION: pt_object.administrative_region.coord
-        }
-        coord = map_coord.get(pt_object.embedded_type, None)
+        coord = get_pt_object_coord(pt_object)
         if not coord:
             logging.getLogger(__name__).error('Invalid coord for ptobject type: {}'.format(pt_object.embedded_type))
             raise UnableToParse('Invalid coord for ptobject type: {}'.format(pt_object.embedded_type))
@@ -253,11 +248,13 @@ class Valhalla(object):
         for one_to_many in json_response['one_to_many']:
             row = sn_routing_matrix.rows.add()
             for one in one_to_many[1:]:
+                routing = row.routing_response.add()
                 if one['time']:
-                    time = one['time']
+                    routing.duration = one['time']
+                    routing.routing_status = response_pb2.reached
                 else:
-                    time = -1
-                row.duration.append(time)
+                    routing.duration = -1
+                    routing.routing_status = response_pb2.unknown
         return sn_routing_matrix
 
     def get_street_network_routing_matrix(self, origins, destinations, mode, max_duration, request, **kwargs):

@@ -40,11 +40,12 @@ from datetime import datetime
 from tyr_user_event import TyrUserEvent
 from tyr_end_point_event import EndPointEventMessage, TyrEventsRabbitMq
 from tyr.helper import load_instance_config, get_instance_logger
-from navitiacommon.launch_exec import launch_exec_traces
 import logging
 import os
 import shutil
 import json
+from jsonschema import validate, ValidationError
+from formats import poi_type_conf_format, parse_error
 
 from navitiacommon import models, parser_args_type
 from navitiacommon.default_traveler_profile_params import default_traveler_profile_params, acceptable_traveler_types
@@ -108,6 +109,7 @@ instance_fields = {
     'name': fields.Raw,
     'discarded': fields.Raw,
     'is_free': fields.Raw,
+    'import_stops_in_mimir': fields.Raw,
     'scenario': fields.Raw,
     'journey_order': fields.Raw,
     'max_walking_duration_to_pt': fields.Raw,
@@ -134,6 +136,7 @@ instance_fields = {
     'priority': fields.Raw,
     'bss_provider': fields.Boolean,
     'full_sn_geometries': fields.Boolean,
+    'is_open_data': fields.Boolean,
 }
 
 api_fields = {
@@ -187,16 +190,19 @@ user_fields_full = {
     'shape': Shape
 }
 
+dataset_field = {
+    'type': fields.Raw,
+    'name': fields.Raw,
+    'family_type': fields.Raw,
+}
+
 jobs_fields = {
     'jobs': fields.List(fields.Nested({
         'id': fields.Raw,
         'state': fields.Raw,
         'created_at': FieldDate,
         'updated_at': FieldDate,
-        'data_sets': fields.List(fields.Nested({
-            'type': fields.Raw,
-            'name': fields.Raw
-        })),
+        'data_sets': fields.List(fields.Nested(dataset_field)),
         'instance': fields.Nested(instance_fields)
     }))
 }
@@ -289,19 +295,34 @@ class PoiType(flask_restful.Resource):
 
     def post(self, instance_name):
         instance = models.Instance.query_existing().filter_by(name=instance_name).first_or_404()
-        poi_types_json = request.get_json(silent=False)
+        try:
+            poi_types_json = request.get_json(silent=False)
+        except:
+            abort(400, status="error", message='Incorrect json provided')
 
         logger = get_instance_logger(instance)
         try:
-            args = ["--connection-string", "nowhere"]
-            if poi_types_json:
-                args.append("-p")
-                poi_types = json.dumps(poi_types_json, ensure_ascii=False).encode('utf-8')
-                args.append(poi_types)
+            try:
+                validate(poi_types_json, poi_type_conf_format)
+            except ValidationError, e:
+                abort(400, status="error", message='{}'.format(parse_error(e)))
 
-            res, traces = launch_exec_traces('osm2ed', args, logger)
-            if res != 0:
-                abort(400, status="error", message='{}'.format(traces))
+            poi_types_map = {}
+            for p in poi_types_json.get('poi_types', []):
+                if p.get('id') in poi_types_map:
+                    abort(400, status="error",
+                          message='POI type id {} is defined multiple times'.format(p.get('id')))
+                poi_types_map[p.get('id')] = p.get('name')
+
+            if not 'amenity:parking' in poi_types_map or not 'amenity:bicycle_rental' in poi_types_map:
+                abort(400, status="error",
+                      message='The 2 POI types id=amenity:parking and id=amenity:bicycle_rental must be defined')
+
+            for r in poi_types_json.get('rules', []):
+                pt_id = r.get('poi_type_id')
+                if not pt_id in poi_types_map:
+                    abort(400, status="error",
+                          message='Using an undefined POI type id ({}) forbidden in rules'.format(pt_id))
 
             poi_types = models.PoiTypeJson(json.dumps(poi_types_json, ensure_ascii=False).encode('utf-8'), instance)
             db.session.add(poi_types)
@@ -441,10 +462,17 @@ class Instance(flask_restful.Resource):
                             location=('json', 'values'), default=instance.night_bus_filter_base_factor)
         parser.add_argument('priority', type=int, help='instance priority',
                             location=('json', 'values'), default=instance.priority)
-        parser.add_argument('bss_provider', type=bool, help='bss provider activation',
+        parser.add_argument('bss_provider', type=inputs.boolean, help='bss provider activation',
                             location=('json', 'values'), default=instance.bss_provider)
-        parser.add_argument('full_sn_geometries', type=bool, help='activation of full geometries',
+        parser.add_argument('full_sn_geometries', type=inputs.boolean, help='activation of full geometries',
                             location=('json', 'values'), default=instance.full_sn_geometries)
+        parser.add_argument('is_free', type=inputs.boolean, help='instance doesn\'t require authorization to be used',
+                            location=('json', 'values'), default=instance.is_free)
+        parser.add_argument('is_open_data', type=inputs.boolean, help='instance only use open data',
+                            location=('json', 'values'), default=instance.is_open_data)
+        parser.add_argument('import_stops_in_mimir', type=inputs.boolean,
+                            help='import stops in global autocomplete',
+                            location=('json', 'values'), default=instance.import_stops_in_mimir)
         args = parser.parse_args()
 
         try:
@@ -479,7 +507,10 @@ class Instance(flask_restful.Resource):
                                        'successive_physical_mode_to_limit_id',
                                        'priority',
                                        'bss_provider',
-                                       'full_sn_geometries'])
+                                       'full_sn_geometries',
+                                       'is_free',
+                                       'is_open_data',
+                                       'import_stops_in_mimir'])
             db.session.commit()
         except Exception:
             logging.exception("fail")
@@ -1131,23 +1162,24 @@ class AutocompleteParameter(flask_restful.Resource):
     def put(self, name=None):
         autocomplete_param = models.AutocompleteParameter.query.filter_by(name=name).first_or_404()
         parser = reqparse.RequestParser()
-        parser.add_argument('street', type=str, required=False, default='OSM',
-                            help='source for street: [BANO, OSM]',
+        parser.add_argument('street', type=str, required=False, default=autocomplete_param.street,
+                            help='source for street: {}'.format(utils.street_source_types),
                             location=('json', 'values'),
-                            choices= utils.street_source_types)
-        parser.add_argument('address', type=str, required=False, default='BANO',
-                            help='source for address: [BANO, OpenAddresses]',
+                            choices=utils.street_source_types)
+        parser.add_argument('address', type=str, required=False, default=autocomplete_param.address,
+                            help='source for address: {}'.format(utils.address_source_types),
                             location=('json', 'values'),
                             choices=utils.address_source_types)
-        parser.add_argument('poi', type=str, required=False, default='FUSIO',
-                            help='source for poi: [FUSIO, OSM, PagesJaunes]',
+        parser.add_argument('poi', type=str, required=False, default=autocomplete_param.poi,
+                            help='source for poi: {}'.format(utils.poi_source_types),
                             location=('json', 'values'),
                             choices=utils.poi_source_types)
-        parser.add_argument('admin', type=str, required=False, default='OSM',
-                            help='source for admin: [FUSIO, OSM]',
+        parser.add_argument('admin', type=str, required=False, default=autocomplete_param.admin,
+                            help='source for admin: {}'.format(utils.admin_source_types),
                             location=('json', 'values'),
                             choices=utils.admin_source_types)
-        parser.add_argument('admin_level', type=int, action='append', required=True)
+        parser.add_argument('admin_level', type=int, action='append', required=False,
+                            default=autocomplete_param.admin_level)
 
         args = parser.parse_args()
 
@@ -1175,3 +1207,31 @@ class AutocompleteParameter(flask_restful.Resource):
             logging.exception("fail")
             raise
         return ({}, 204)
+
+
+class InstanceDataset(flask_restful.Resource):
+
+    def get(self, instance_name):
+        parser = reqparse.RequestParser()
+        parser.add_argument('count', type=int, required=False,
+                            help='number of last dataset to dump per type',
+                            location=('json', 'values'), default=1)
+        args = parser.parse_args()
+        instance = models.Instance.get_by_name(instance_name)
+        datasets = instance.last_datasets(args['count'])
+
+        return marshal(datasets, dataset_field)
+
+
+class AutocompleteDataset(flask_restful.Resource):
+
+    def get(self, ac_instance_name):
+        parser = reqparse.RequestParser()
+        parser.add_argument('count', type=int, required=False,
+                            help='number of last dataset to dump per type',
+                            location=('json', 'values'), default=1)
+        args = parser.parse_args()
+        instance = models.AutocompleteParameter.query.filter_by(name=ac_instance_name).first_or_404()
+        datasets = instance.last_datasets(args['count'])
+
+        return marshal(datasets, dataset_field)

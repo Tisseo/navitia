@@ -52,9 +52,10 @@ krakens_dir = os.environ['KRAKEN_BUILD_DIR'] + '/tests'
 
 
 class FakeModel(object):
-    def __init__(self, priority, is_free, scenario='default'):
+    def __init__(self, priority, is_free, is_open_data, scenario='default'):
         self.priority = priority
         self.is_free = is_free
+        self.is_open_data = is_open_data
         self.scenario = scenario
 
 
@@ -101,12 +102,9 @@ class AbstractTestFixture(object):
         for name in cls.krakens_pool:
             instance_config = {
                 "key": name,
-                "zmq_socket": "ipc:///tmp/{instance_name}".format(instance_name=name),
-                "realtime_proxies": cls.data_sets[name].get('proxy_conf', [])
+                "zmq_socket": "ipc:///tmp/{instance_name}".format(instance_name=name)
             }
-            street_network = cls.data_sets[name].get('street_network', None)
-            if street_network:
-                instance_config['street_network'] = street_network
+            instance_config.update(cls.data_sets[name].get('instance_config', {}))
             with open(os.path.join(krakens_dir, name) + '.json', 'w') as f:
                 logging.debug("writing ini file {} for {}".format(f.name, name))
                 f.write(json.dumps(instance_config, indent=4))
@@ -130,10 +128,11 @@ class AbstractTestFixture(object):
             priority = cls.data_sets[name].get('priority', 0)
             logging.info('instance %s has priority %s', name, priority)
             is_free = cls.data_sets[name].get('is_free', False)
+            is_open_data = cls.data_sets[name].get('is_open_data', False)
             scenario = cls.data_sets[name].get('scenario', 'default')
             cls.mocks.append(mock.patch.object(i_manager.instances[name],
                                                'get_models',
-                                               return_value=FakeModel(priority, is_free, scenario)))
+                                               return_value=FakeModel(priority, is_free, is_open_data, scenario)))
 
         for m in cls.mocks:
             m.start()
@@ -237,8 +236,13 @@ class AbstractTestFixture(object):
     def check_journeys_links(self, response, query_dict):
         journeys_links = get_links_dict(response)
         clockwise = query_dict.get('datetime_represents', 'departure') == "departure"
+        has_pt = any(s['type'] == 'public_transport' for j in response['journeys'] for s in j['sections'])
         for l in ["prev", "next", "first", "last"]:
+            if l in ["prev", "next"] and not has_pt:# no prev and next if no pt
+                continue
+
             assert l in journeys_links
+
             url = journeys_links[l]['href']
 
             additional_args = query_from_str(url)
@@ -300,7 +304,7 @@ class AbstractTestFixture(object):
         # to have forwarded all params, (and the time must be right)
         self.check_journeys_links(response, query_dict)
 
-        feed_publishers = get_not_null(response, "feed_publishers")
+        feed_publishers = response.get("feed_publishers", [])
         for feed_publisher in feed_publishers:
             is_valid_feed_publisher(feed_publisher)
 
@@ -330,6 +334,32 @@ class AbstractTestFixture(object):
 
         j_departure = get_valid_datetime(j_to_compare['arrival_date_time'])
         eq_(j_departure - timedelta(minutes=1), dt)
+
+
+class NewDefaultScenarioAbstractTestFixture(AbstractTestFixture):
+    @staticmethod
+    def check_next_datetime_link(dt, response, clockwise):
+        if not response.get('journeys'):
+            return
+        """default next behaviour is 1s after the best or the soonest"""
+        from jormungandr.scenarios.qualifier import min_from_criteria
+        j_to_compare = min_from_criteria(generate_pt_journeys(response),
+                                         new_default_pagination_journey_comparator(clockwise=clockwise))
+
+        j_departure = get_valid_datetime(j_to_compare['departure_date_time'])
+        eq_(j_departure + timedelta(seconds=1), dt)
+
+    @staticmethod
+    def check_previous_datetime_link(dt, response, clockwise):
+        if not response.get('journeys'):
+            return
+        """default previous behaviour is 1s before the best or the latest """
+        from jormungandr.scenarios.qualifier import min_from_criteria
+        j_to_compare = min_from_criteria(generate_pt_journeys(response),
+                                         new_default_pagination_journey_comparator(clockwise=clockwise))
+
+        j_departure = get_valid_datetime(j_to_compare['arrival_date_time'])
+        eq_(j_departure - timedelta(seconds=1), dt)
 
 
 def dataset(datasets):

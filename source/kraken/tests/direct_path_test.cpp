@@ -35,15 +35,17 @@ www.navitia.io
 #include "kraken/data_manager.h"
 #include "kraken/worker.h"
 #include "kraken/configuration.h"
+#include "type/pb_converter.h"
 
 
 BOOST_AUTO_TEST_CASE(direct_path_test) {
     routing_api_data<normal_speed_provider> routing_data;
     DataManager<navitia::type::Data> data_manager;
     data_manager.set_data(routing_data.b.data.release());
-    navitia::Worker w(data_manager, navitia::kraken::Configuration());
+    navitia::Worker w{navitia::kraken::Configuration()};
 
     pbnavitia::Request req;
+    req.set_requested_api(pbnavitia::direct_path);
     auto* dp_req = req.mutable_direct_path();
 
     auto* origin = dp_req->mutable_origin();
@@ -74,31 +76,36 @@ BOOST_AUTO_TEST_CASE(direct_path_test) {
 
     // walking
     sn_params->set_origin_mode("walking");
-    auto res = w.direct_path(req);
+    const auto data = data_manager.get_data();
+    w.dispatch(req, *data);
+    auto res = w.pb_creator.get_response();
     BOOST_REQUIRE_EQUAL(res.journeys_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections(0).street_network().path_items_size(), 3);
-    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 275);
+    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 276);
 
     // bss
     sn_params->set_origin_mode("bss");
-    res = w.direct_path(req);
+    w.dispatch(req, *data);
+    res = w.pb_creator.get_response();
     BOOST_REQUIRE_EQUAL(res.journeys_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections_size(), 5);
-    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 234);
+    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 237);
 
     // bike
     sn_params->set_origin_mode("bike");
-    res = w.direct_path(req);
+    w.dispatch(req, *data);
+    res = w.pb_creator.get_response();
     BOOST_REQUIRE_EQUAL(res.journeys_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections(0).street_network().path_items_size(), 7);
-    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 58);
+    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 62);
 
     // car
     sn_params->set_origin_mode("car");
-    res = w.direct_path(req);
+    w.dispatch(req, *data);
+    res = w.pb_creator.get_response();
     BOOST_REQUIRE_EQUAL(res.journeys_size(), 1);
     BOOST_CHECK_EQUAL(res.journeys(0).sections_size(), 3);
-    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 121);
+    BOOST_CHECK_EQUAL(res.journeys(0).durations().total(), 123);
 }

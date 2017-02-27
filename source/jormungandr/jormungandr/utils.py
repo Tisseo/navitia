@@ -266,7 +266,15 @@ def pb_del_if(l, pred):
     return nb
 
 
-def create_object(class_path, **kwargs):
+def create_object(configuration):
+    """
+    Create an object from a dict
+    The dict must contains a 'class' key with the class path of the class we want to create
+    It can contains also an 'args' key with a dictionary of arguments to pass to the constructor
+    """
+    class_path = configuration['class']
+    kwargs = configuration.get('args', {})
+
     log = logging.getLogger(__name__)
     try:
         if '.' not in class_path:
@@ -276,6 +284,9 @@ def create_object(class_path, **kwargs):
         module_path, name = class_path.rsplit('.', 1)
         module = import_module(module_path)
         attr = getattr(module, name)
+    except AttributeError as e:
+        log.warn('impossible to build object {} : {}'.format(class_path, e))
+        raise ConfigException(class_path)
     except ImportError:
         log.warn('impossible to build object {}, cannot find class'.format(class_path))
         raise ConfigException(class_path)
@@ -292,3 +303,32 @@ def create_object(class_path, **kwargs):
 def generate_id():
     import uuid
     return uuid.uuid4()
+
+
+def get_pt_object_coord(pt_object):
+    """
+    Given a PtObject, return the coord according to its embedded_type
+    :param pt_object: type_pb2.PtObject
+    :return: coord: type_pb2.GeographicalCoord
+
+    >>> pt_object = type_pb2.PtObject()
+    >>> pt_object.embedded_type = type_pb2.POI
+    >>> pt_object.poi.coord.lon = 42
+    >>> pt_object.poi.coord.lat = 41
+    >>> coord = get_pt_object_coord(pt_object)
+    >>> coord.lon
+    42
+    >>> coord.lat
+    41
+    """
+    map_coord = {
+        type_pb2.STOP_POINT: "stop_point",
+        type_pb2.STOP_AREA: "stop_area",
+        type_pb2.ADDRESS: "address",
+        type_pb2.ADMINISTRATIVE_REGION: "administrative_region",
+        type_pb2.POI: "poi"
+    }
+    attr = getattr(pt_object,
+                   map_coord.get(pt_object.embedded_type, ""),
+                   None)
+    return getattr(attr, "coord", None)

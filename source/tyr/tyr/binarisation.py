@@ -515,6 +515,12 @@ def bano2mimir(self, autocomplete_instance, filename, job_id, dataset_uid):
     cnx_string = current_app.config['MIMIR_URL']
     working_directory = unzip_if_needed(filename)
     autocomplete_instance = models.db.session.merge(autocomplete_instance)#reatache the object
+
+    if autocomplete_instance.address != 'BANO':
+        logger.warn('no bano data will be loaded for instance {} because the address are read from {}'
+                    .format(autocomplete_instance.name, autocomplete_instance.address))
+        return
+
     try:
         res = launch_exec("bano2mimir",
                           ['-i', working_directory,
@@ -540,23 +546,59 @@ def osm2mimir(self, autocomplete_instance, filename, job_id, dataset_uid):
     cnx_string = current_app.config['MIMIR_URL']
     working_directory = unzip_if_needed(filename)
     autocomplete_instance = models.db.session.merge(autocomplete_instance)#reatache the object
+
+    params = ['-i', working_directory, '--connection-string', cnx_string]
+    for lvl in autocomplete_instance.admin_level:
+        params.append('--level')
+        params.append(str(lvl))
+    if autocomplete_instance.admin == 'OSM':
+        params.append('--import-admin')
+    if autocomplete_instance.street == 'OSM':
+        params.append('--import-way')
+    if autocomplete_instance.poi == 'OSM':
+        params.append('--import-poi')
+    params.append('--dataset')
+    params.append(autocomplete_instance.name)
     try:
-        params = ['-i', working_directory, '--connection-string', cnx_string]
-        for lvl in autocomplete_instance.admin_level:
-            params.append('--level')
-            params.append(str(lvl))
-        if autocomplete_instance.admin in utils.admin_source_types:
-            params.append('--import-admin')
-        if autocomplete_instance.street in utils.street_source_types:
-            params.append('--import-way')
-        params.append('--dataset')
-        params.append(autocomplete_instance.name)
         res = launch_exec("osm2mimir",
                           params,
                           logger)
         if res != 0:
             #@TODO: exception
             raise ValueError('osm2mimir failed')
+    except:
+        logger.exception('')
+        job.state = 'failed'
+        models.db.session.commit()
+        raise
+
+
+@celery.task(bind=True)
+def stops2mimir(self, instance_config, input, job_id, dataset_uid):
+    """
+    launch stops2mimir
+
+    Note: this is temporary, this will be done by tartare when tartare will be available
+    """
+    job = models.Job.query.get(job_id)
+    instance = job.instance
+
+    logger = get_instance_logger(instance)
+    cnx_string = current_app.config['MIMIR_URL']
+
+    working_directory = os.path.dirname(input)
+
+    stops_file = os.path.join(working_directory, 'stops.txt')
+
+    # Note: the dataset is for the moment the instance name, we'll need to change this when we'll aggregate
+    argv = ['--input', stops_file,
+            '--connection-string', cnx_string,
+            '--dataset', instance_config.name]
+
+    try:
+        res = launch_exec('stops2mimir', argv, logger)
+        if res != 0:
+            raise ValueError('stops2mimir failed')
     except:
         logger.exception('')
         job.state = 'failed'

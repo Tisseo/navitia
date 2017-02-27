@@ -50,6 +50,7 @@ from flask_restful import marshal, marshal_with
 import datetime
 from jormungandr.parking_space_availability.bss.stands_manager import ManageStands
 import ujson as json
+from jormungandr.interfaces.parsers import coord_format
 
 
 #global marshal
@@ -103,13 +104,14 @@ def create_administrative_regions_field(geocoding):
     response = []
     for admin in administrative_regions:
         coord = admin.get('coord', {})
-        lat = coord.get('lat') if coord else None
-        lon = coord.get('lon') if coord else None
+        lat = str(coord.get('lat')) if coord and coord.get('lat') else None
+        lon = str(coord.get('lon')) if coord and coord.get('lon') else None
         zip_codes = admin.get('zip_codes', [])
         response.append({
             "insee": admin.get('insee'),
             "name": admin.get('label'),
-            "level": int(admin.get('level')),
+            "level":
+                int(admin.get('level')) if admin.get('level') else None ,
             "coord": {
                 "lat": lat,
                 "lon": lon
@@ -121,6 +123,20 @@ def create_administrative_regions_field(geocoding):
     return response
 
 
+def get_lon_lat(obj):
+    if not obj or not obj.get('geometry') or not obj.get('geometry').get('coordinates'):
+        return None, None
+
+    coordinates = obj.get('geometry', {}).get('coordinates', [])
+    if len(coordinates) == 2:
+        lon = str(coordinates[0])
+        lat = str(coordinates[1])
+    else:
+        lon = None
+        lat = None
+    return lon, lat
+
+
 class AdministrativeRegionField(fields.Raw):
     """
     This field is needed to respect Navitia's spec for the sake of compatibility
@@ -128,8 +144,25 @@ class AdministrativeRegionField(fields.Raw):
     def output(self, key, obj):
         if not obj:
             return None
+
+        lon, lat = get_lon_lat(obj)
         geocoding = obj.get('properties', {}).get('geocoding', {})
-        return create_administrative_regions_field(geocoding) or create_admin_field(geocoding)
+
+        return {
+            "insee": geocoding.get('citycode') or geocoding.get('city_code'),
+            "level":
+                int(geocoding.get('level')) if geocoding.get('level') else None,
+            "name": geocoding.get('name'),
+            "label": geocoding.get('label'),
+            "id": geocoding.get('id'),
+            "coord": {
+                "lat": lat,
+                "lon": lon
+            },
+            "zip_code": geocoding.get('postcode'),
+            "administrative_regions":
+                create_administrative_regions_field(geocoding) or create_admin_field(geocoding) ,
+        }
 
 
 class AddressField(fields.Raw):
@@ -137,14 +170,7 @@ class AddressField(fields.Raw):
         if not obj:
             return None
 
-        coordinates = obj.get('geometry', {}).get('coordinates', [])
-        if len(coordinates) == 2:
-            lon = coordinates[0]
-            lat = coordinates[1]
-        else:
-            lon = None
-            lat = None
-
+        lon, lat = get_lon_lat(obj)
         geocoding = obj.get('properties', {}).get('geocoding', {})
 
         return {
@@ -166,14 +192,7 @@ class PoiField(fields.Raw):
         if not obj:
             return None
 
-        coordinates = obj.get('geometry', {}).get('coordinates', [])
-        if len(coordinates) == 2:
-            lon = coordinates[0]
-            lat = coordinates[1]
-        else:
-            lon = None
-            lat = None
-
+        lon, lat = get_lon_lat(obj)
         geocoding = obj.get('properties', {}).get('geocoding', {})
 
         # TODO add address, poi_type, properties attributes
@@ -187,6 +206,29 @@ class PoiField(fields.Raw):
             "name": geocoding.get('name'),
             "administrative_regions":
                 create_administrative_regions_field(geocoding) or create_admin_field(geocoding),
+        }
+
+
+class StopAreaField(fields.Raw):
+    def output(self, key, obj):
+        if not obj:
+            return None
+
+        lon, lat = get_lon_lat(obj)
+        geocoding = obj.get('properties', {}).get('geocoding', {})
+
+        # TODO add codes
+        return {
+            "id": geocoding.get('id'),
+            "coord": {
+                "lon": lon,
+                "lat": lat,
+            },
+            "label": geocoding.get('label'),
+            "name": geocoding.get('name'),
+            "administrative_regions":
+                create_administrative_regions_field(geocoding) or create_admin_field(geocoding),
+            "timezone": geocoding.get('timezone'),
         }
 
 geocode_admin = {
@@ -214,6 +256,14 @@ geocode_poi = {
     "poi": PoiField()
 }
 
+geocode_stop_area = {
+    "embedded_type": Lit("stop_area"),
+    "quality": Lit("0"),
+    "id": fields.String(attribute='properties.geocoding.id'),
+    "name": fields.String(attribute='properties.geocoding.label'),
+    "stop_area": StopAreaField()
+}
+
 class GeocodejsonFeature(fields.Raw):
     def format(self, place):
         type_ = place.get('properties', {}).get('geocoding', {}).get('type')
@@ -224,6 +274,8 @@ class GeocodejsonFeature(fields.Raw):
             return marshal(place, geocode_addr)
         elif type_ == 'poi':
             return marshal(place, geocode_poi)
+        elif type_ == 'public_transport:stop_area':
+            return marshal(place, geocode_stop_area)
 
         return place
 
@@ -280,6 +332,12 @@ class Places(ResourceUri):
         self.parsers['get'].add_argument("disable_geojson", type=boolean, default=False,
                             description="remove geojson from the response")
 
+        self.parsers['get'].add_argument("from", type=coord_format,
+                                         description="Coordinates longitude;latitude used to prioritize "
+                                                     "the objects around this coordinate")
+        self.parsers['get'].add_argument("_autocomplete", type=unicode, description="name of the autocomplete service"
+                                         " used under the hood")
+
     def get(self, region=None, lon=None, lat=None):
         args = self.parsers["get"].parse_args()
         self._register_interpreted_parameters(args)
@@ -297,13 +355,15 @@ class Places(ResourceUri):
             timezone.set_request_timezone(region)
             response = i_manager.dispatch(args, "places", instance_name=instance)
         else:
-            if global_autocomplete:
+            autocomplete = global_autocomplete.get('bragi')
+            if autocomplete:
                 user = authentication.get_user(token=authentication.get_token(), abort_if_no_token=False)
+                authentication.check_access_to_global_places(user)
                 shape = None
-                if user and user.shape :
+
+                if user and user.shape:
                     shape = json.loads(user.shape)
-                bragi_response = global_autocomplete.get(args, None, shape=shape)
-                response = marshal(bragi_response, geocodejson)
+                response = autocomplete.get(args, instance=None, shape=shape)
             else:
                 raise TechnicalError('world wide autocompletion service not available')
         return response, 200

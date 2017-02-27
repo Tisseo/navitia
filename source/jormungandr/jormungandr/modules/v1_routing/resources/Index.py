@@ -40,6 +40,7 @@ from navitiacommon import type_pb2, request_pb2
 from jormungandr import i_manager
 from jormungandr.protobuf_to_dict import protobuf_to_dict
 from jormungandr.interfaces.v1 import fields
+from jormungandr import bss_provider_manager
 
 
 class Index(ModuleResource):
@@ -76,7 +77,8 @@ class TechnicalStatus(ModuleResource):
     def get(self):
         response = {
             "jormungandr_version": __version__,
-            "regions": []
+            "regions": [],
+            "bss_providers": [provider.status() for provider in bss_provider_manager.bss_providers]
         }
         regions = i_manager.get_regions()
         for key_region in regions:
@@ -88,7 +90,8 @@ class TechnicalStatus(ModuleResource):
                                                                         timeout=1000)
 
                 raw_resp_dict = protobuf_to_dict(resp, use_enum_labels=True)
-                raw_resp_dict['status']["is_open_data"] = i_manager.instances[key_region].is_free
+                raw_resp_dict['status']["is_open_service"] = i_manager.instances[key_region].is_free
+                raw_resp_dict['status']["is_open_data"] = i_manager.instances[key_region].is_open_data
                 raw_resp_dict['status']['realtime_proxies'] = []
                 for realtime_proxy in i_manager.instances[key_region].realtime_proxy_manager.realtime_proxies.values():
                     raw_resp_dict['status']['realtime_proxies'].append(realtime_proxy.status())

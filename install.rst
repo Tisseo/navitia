@@ -52,13 +52,17 @@ We hope you got the source code from git.
 #. Run cmake
 
    ``cmake ../source``
-   Note: it will build in debug mode. If you want to compile it as a release run
-   ``cmake -DCMAKE_BUILD_TYPE=Release ../source``
+   Note: it will build in release mode. If you want to compile it with debug symbols run
+   ``cmake -DCMAKE_BUILD_TYPE=Debug ../source``
 
 #. Compile
 
    ``make -j4``
    Note: adjust -jX according to the number of cores you have
+
+#. Run the tests
+
+   ``make test``
 
 Testing
 =======
@@ -122,17 +126,16 @@ Testing
 
 #. Running the *Jörmungandr* front-end. Note : this front-end is an API, and not oriented towards final users
 
-   #. Edit if you want the Jormungandr.ini file.
+   #. Edit if you want the Jormungandr.json file.
 
       Note: If you want to put the file elsewhere, you can change the INSTANCES_DIR variable
 
       example file : ::
 
-        [instance]
-        # name of the kraken
-        key = some_region
-        # zmq socket used to talk to the kraken, should be the same as the one defined by the zmq_socket param in kraken
-        socket = ipc:///tmp/default_kraken
+        {
+            "key": "some_region",
+            "socket": "ipc:///tmp/default_kraken"
+        }
 
    #. Give him the configuration file (by default it uses source/jormungandr/default_settings.py) and run it
 

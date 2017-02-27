@@ -35,6 +35,8 @@ import queue
 from threading import Lock
 from flask.ext.restful import abort
 from zmq import green as zmq
+
+from jormungandr.exceptions import TechnicalError
 from navitiacommon import response_pb2, request_pb2, type_pb2
 from navitiacommon.default_values import get_value_or_default
 from jormungandr.timezone import set_request_instance_timezone
@@ -42,7 +44,7 @@ import logging
 from .exceptions import DeadSocketException
 from navitiacommon import models
 from importlib import import_module
-from jormungandr import cache, app
+from jormungandr import cache, app, utils, global_autocomplete
 from shapely import wkt
 from shapely.geos import ReadingError
 from shapely import geometry
@@ -50,6 +52,7 @@ from flask import g
 import flask
 import pybreaker
 from jormungandr import georef, planner, schedule, realtime_schedule, ptref, street_network
+import itertools
 
 type_to_pttype = {
       "stop_area": request_pb2.PlaceCodeRequest.StopArea,
@@ -62,9 +65,26 @@ type_to_pttype = {
       "calendar": request_pb2.PlaceCodeRequest.Calendar
 }
 
+STREET_NETWORK_MODES = ('walking', 'car', 'bss', 'bike')
+
 @app.before_request
 def _init_g():
     g.instances_model = {}
+
+
+# For street network modes that are not set in the given config file,
+# we set kraken as their default engine
+def _set_default_street_network_config(street_network_configs):
+    if not isinstance(street_network_configs, list):
+        street_network_configs = []
+    default_sn_class = 'jormungandr.street_network.kraken.Kraken'
+
+    modes_in_configs = set(list(itertools.chain.from_iterable(config['modes'] for config in street_network_configs)))
+    modes_not_set = set(STREET_NETWORK_MODES) - modes_in_configs
+    if modes_not_set:
+        street_network_configs.append({"modes": list(modes_not_set),
+                                       "class": default_sn_class})
+    return street_network_configs
 
 
 class Instance(object):
@@ -73,11 +93,10 @@ class Instance(object):
                  context,
                  name,
                  zmq_socket,
-                 street_network_configuration=None,
-                 realtime_proxies_configuration=[],
-                 zmq_socket_type='persistent'):
-        if not street_network_configuration:
-            street_network_configuration = {'class': 'jormungandr.street_network.kraken.Kraken'}
+                 street_network_configurations,
+                 realtime_proxies_configuration,
+                 zmq_socket_type,
+                 autocomplete_type):
         self.geom = None
         self._sockets = queue.Queue()
         self.socket_path = zmq_socket
@@ -93,15 +112,19 @@ class Instance(object):
                                                 reset_timeout=app.config['CIRCUIT_BREAKER_INSTANCE_TIMEOUT_S'])
         self.georef = georef.Kraken(self)
         self.planner = planner.Kraken(self)
-        self.street_network_service = street_network.StreetNetwork.get_street_network(self,
-                                                                                      street_network_configuration)
+
+        street_network_configurations = _set_default_street_network_config(street_network_configurations)
+        self.street_network_services = street_network.StreetNetwork.get_street_network_services(self,
+                                                                                                street_network_configurations)
         self.ptref = ptref.PtRef(self)
 
         self.schedule = schedule.MixedSchedule(self)
         self.realtime_proxy_manager = realtime_schedule.RealtimeProxyManager(realtime_proxies_configuration, self)
-        from jormungandr.autocomplete.kraken import Kraken
-        self.autocomplete = Kraken()
+
+        self.autocomplete = global_autocomplete.get(autocomplete_type)
+
         self.zmq_socket_type = zmq_socket_type
+
 
     def get_models(self):
         if self.name not in g.instances_model:
@@ -275,6 +298,14 @@ class Instance(object):
             return instance_db.is_free
 
     @property
+    def is_open_data(self):
+        instance_db = self.get_models()
+        if not instance_db:
+            return False
+        else:
+            return instance_db.is_open_data
+
+    @property
     def max_duration(self):
         instance_db = self.get_models()
         return get_value_or_default('max_duration', instance_db, self.name)
@@ -436,7 +467,8 @@ class Instance(object):
         req = request_pb2.Request()
         req.requested_api = type_pb2.METADATAS
         try:
-            resp = self.send_and_receive(req, timeout=1000, quiet=True)
+            #we use _send_and_receive to avoid the circuit breaker, we don't want fast fail on init :)
+            resp = self._send_and_receive(req, timeout=1000, quiet=True)
             #the instance is automatically updated on a call
             if self.publication_date != pub_date:
                 return True
@@ -445,3 +477,34 @@ class Instance(object):
             # the next request. We don't want to purge all our cache for a small error.
             logging.getLogger(__name__).debug('timeout on init for %s', self.name)
         return False
+
+    def get_street_network_routing_matrix(self, origins, destinations, mode, max_duration_to_pt, request, **kwargs):
+        service = self.street_network_services.get(mode)
+        if not service:
+            return None
+        return service.get_street_network_routing_matrix(origins,
+                                                         destinations,
+                                                         mode,
+                                                         max_duration_to_pt,
+                                                         request,
+                                                         **kwargs)
+
+    def direct_path(self, mode, pt_object_origin, pt_object_destination, datetime, clockwise, request, **kwargs):
+        service = self.street_network_services.get(mode)
+        if not service:
+            return None
+        return service.direct_path(mode,
+                                   pt_object_origin,
+                                   pt_object_destination,
+                                   datetime,
+                                   clockwise,
+                                   request,
+                                   **kwargs)
+
+    def get_autocomplete(self, requested_autocomplete):
+        if not requested_autocomplete:
+            return self.autocomplete
+        autocomplete = global_autocomplete.get(requested_autocomplete)
+        if not autocomplete:
+            raise TechnicalError('autocomplete {} not available'.format(requested_autocomplete))
+        return autocomplete
