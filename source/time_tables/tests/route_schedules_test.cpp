@@ -770,3 +770,76 @@ BOOST_AUTO_TEST_CASE(complicated_order_with_impacts) {
     print_route_schedule(route_schedule);
     BOOST_CHECK_EQUAL(route_schedule.response_status(), pbnavitia::ResponseStatus::active_disruption);
 }
+
+// Real usecase used by timetable on Tisséo instance
+// We have a line starting on Monday March 20th. There is a service running on saturdays
+// only, with a departure at 1am (or 25:00:00 exactly).
+// The service is running for the first time on Saturday 25th at 25:00, or Sunday 26 at 1am.
+// DST time change happens at 2am on the 25th.
+//
+// When importing the NTFS the trip is splitted into two trips, one for the 25th only (dst_1)
+// and another one for the rest (dst_2).
+// Hours are converted to UTC. For dst_1 we have a departure at 24:00 UTC on Saturday.
+// What is happening next is that we shift the stop_time to have them in the range [0:86400[
+// So dst_1 is circulating on the 26th at midnight, which is still True.
+// But when we are doing a route_schedules, with a calendar on this trip, we have the wrong time.
+// Since we work with just a time and not a datetime we're getting the utc_offset from the first day
+// of the validity_pattern, which is Sunday March 26th, and it's 2 hours.
+BOOST_AUTO_TEST_CASE(route_schedule_calendar_with_after_midnight_shifted_on_dst) {
+    const nt::TimeZoneHandler::dst_periods periods {
+        {"01:00"_t, {{"20170306"_d, "20170326"_d}}},
+        {"02:00"_t, {{"20170326"_d, "20171231"_d}}}
+    };
+    ed::builder b("20170306", "Tisséo", "Europe/Paris", periods);
+
+    boost::gregorian::date begin = boost::gregorian::date_from_iso_string("20170120");
+    boost::gregorian::date end = boost::gregorian::date_from_iso_string("20170702");
+
+    // stop_times are in UTC
+    b.vj("12", "010000000000000000000").uri("vj:0")
+        ("stop1", "23:30"_t, "23:30"_t)
+        ("stop2", "23:35"_t, "23:35"_t)
+        ("stop3", "23:40"_t, "23:40"_t);
+
+    b.vj("12", "010000000000000000000").uri("vj:1")
+        ("stop1", "24:00"_t, "24:00"_t)
+        ("stop2", "24:05"_t, "24:05"_t)
+        ("stop3", "24:10"_t, "24:10"_t);
+
+    navitia::type::Calendar* c = new navitia::type::Calendar(begin);
+    c->uri = "CalURI";
+    c->active_periods.push_back({begin, end});
+    b.data->pt_data->calendars.push_back(c);
+    b.data->pt_data->calendars_map[c->uri] = c;
+
+    auto a1 = new navitia::type::AssociatedCalendar;
+    a1->calendar = c;
+    b.data->pt_data->associated_calendars.push_back(a1);
+    b.data->pt_data->meta_vjs.get_mut("vj:0")->associated_calendars.insert({c->uri, a1});
+    b.data->pt_data->meta_vjs.get_mut("vj:1")->associated_calendars.insert({c->uri, a1});
+
+    b.finish();
+    b.data->pt_data->index();
+    b.data->build_raptor();
+    b.data->pt_data->build_uri();
+
+    auto * data_ptr = b.data.get();
+    navitia::PbCreator pb_creator_cal(data_ptr, bt::second_clock::universal_time(), null_time_period);
+    navitia::timetables::route_schedule(
+        pb_creator_cal, "line.uri=12", c->uri, {}, d("20170320T045000"),
+        86400, 100, 3, 10, 0, nt::RTLevel::Base
+    );
+    pbnavitia::Response resp = pb_creator_cal.get_response();
+    BOOST_REQUIRE_EQUAL(resp.route_schedules().size(), 1);
+    pbnavitia::RouteSchedule route_schedule = resp.route_schedules(0);
+    print_route_schedule(route_schedule);
+
+    BOOST_CHECK_EQUAL(get_vj(route_schedule, 0), "vj:0");
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(0).date_times(0).time(), "0:30"_t);
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(1).date_times(0).time(), "0:35"_t);
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(2).date_times(0).time(), "0:40"_t);
+    BOOST_CHECK_EQUAL(get_vj(route_schedule, 1), "vj:1");
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(0).date_times(1).time(), "1:00"_t);
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(1).date_times(1).time(), "1:05"_t);
+    BOOST_CHECK_EQUAL(route_schedule.table().rows(2).date_times(1).time(), "1:10"_t);
+}
