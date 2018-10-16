@@ -705,7 +705,7 @@ BOOST_AUTO_TEST_CASE(with_boarding_alighting_time_and_stay_in){
  *
  * Bug found on a journey request where the datetime is an arrival, involving alighting time.
  * The best solution won't be selected if :
- *  - the requested arrival_time < arrival_time + arrival access time (not sure at 100%)
+ *  - the requested arrival_time < (arrival_time + arrival access time) (not sure at 100%)
  *  - the same journey pattern is available one day before the requested date
  *
  *  Stop | Departure | Arrival | Alighting | Foot path
@@ -824,7 +824,7 @@ BOOST_AUTO_TEST_CASE(arrival_with_alighting) {
  *
  * Bug found on a journey request where the datetime is a departure, involving boarding time.
  * The best solution won't be selected if :
- *  - the requested departure_time < (departure_time - departure access time) (not sure at 100%)
+ *  - the requested departure_time > (departure_time - departure access time) (not sure at 100%)
  *  - the same journey pattern is available one day after the requested date
  *
  *  Stop | Departure | Arrival | Boarding | Foot path
