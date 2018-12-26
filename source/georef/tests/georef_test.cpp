@@ -1279,6 +1279,246 @@ BOOST_AUTO_TEST_CASE(transportation_mode_creation) {
     BOOST_CHECK_EQUAL(allowed_transportation_mode[nt::Mode_e::Bss][nt::Mode_e::Bike], false);
 }
 
+BOOST_AUTO_TEST_CASE(nearest_address_without_geom) {
+    /*
+     *            C (25,100)      D (75,100)
+     *            +               +
+     *            |               |
+     *            |               |
+     *            |               |
+     *            |               + H (75,50)
+     *            |               |
+     *            |               |
+     *            + G (25,10)     |
+     *            |               |
+     *   +--------+---------------+--------+
+     *   A (0,0)  E (25,0)        F (75,0) B (100,0)
+     */
+    using nt::GeographicalCoord;
+    using navitia::georef::HouseNumber;
+    using navitia::georef::Edge;
+
+    const int AA = 0; const GeographicalCoord A = {0, 0, false};
+    const int BB = 1; const GeographicalCoord B = {100, 0, false};
+    const int CC = 2; const GeographicalCoord C = {25, 100, false};
+    const int DD = 3; const GeographicalCoord D = {75, 100, false};
+    const int EE = 4; const GeographicalCoord E = {25, 0, false};
+    const int FF = 5; const GeographicalCoord F = {75, 0, false};
+
+    const GeographicalCoord G = {25, 10, false};
+    const GeographicalCoord H = {75, 50, false};
+
+    ed::builder b = {"20181219"};
+
+    boost::add_vertex(navitia::georef::Vertex(A),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(B),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(C),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(D),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(E),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(F),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(G),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(H),b.data->geo_ref->graph);
+
+    b.data->geo_ref->init();
+
+    b.data->geo_ref->admins.push_back(new navitia::georef::Admin());
+    auto admin = b.data->geo_ref->admins.back();
+    admin->uri = "admin:74435";
+    admin->name = "Condom";
+    admin->insee = "32107";
+    admin->level = 8;
+    admin->postal_codes.push_back("32100");
+
+    navitia::georef::Way* ab = new navitia::georef::Way();
+    ab->name = "rue AB";
+    ab->idx = 0;
+    ab->way_type = "rue";
+    ab->admin_list.push_back(admin);
+    b.data->geo_ref->ways.push_back(ab);
+
+    navitia::georef::Way* ec = new navitia::georef::Way();
+    ec->name = "rue EC";
+    ec->idx = 1;
+    ec->way_type = "rue";
+    ec->admin_list.push_back(admin);
+    b.data->geo_ref->ways.push_back(ec);
+
+    navitia::georef::Way* fd = new navitia::georef::Way();
+    fd->name = "rue FD";
+    fd->idx = 2;
+    fd->way_type = "rue";
+    fd->admin_list.push_back(admin);
+    b.data->geo_ref->ways.push_back(fd);
+
+    // A->B
+    add_edge(AA, BB, Edge(0, 100_s), b.data->geo_ref->graph);
+    add_edge(BB, AA, Edge(0, 100_s), b.data->geo_ref->graph);
+    ab->edges.push_back(std::make_pair(AA, BB));
+    ab->edges.push_back(std::make_pair(BB, AA));
+
+    // E->C
+    add_edge(EE, CC, Edge(1, 40_s), b.data->geo_ref->graph);
+    add_edge(CC, EE, Edge(1, 40_s), b.data->geo_ref->graph);
+    ec->edges.push_back(std::make_pair(EE, CC));
+    ec->edges.push_back(std::make_pair(CC, EE));
+
+    // F->D
+    add_edge(FF, DD, Edge(2, 40_s), b.data->geo_ref->graph);
+    add_edge(DD, FF, Edge(2, 40_s), b.data->geo_ref->graph);
+    fd->edges.push_back(std::make_pair(FF, DD));
+    fd->edges.push_back(std::make_pair(DD, FF));
+
+    b.data->build_uri();
+    b.data->build_proximity_list();
+
+    const Way *const_ec = ec, *const_fd = fd;
+    BOOST_CHECK_EQUAL(b.data->geo_ref->nearest_addr(G), std::make_pair(0, const_ec));
+    BOOST_CHECK_EQUAL(b.data->geo_ref->nearest_addr(H), std::make_pair(0, const_fd));
+}
+
+BOOST_AUTO_TEST_CASE(nearest_address_with_geom) {
+    /*
+     *            C (25,100)      D (75,100)
+     *            +               +
+     *            |               |
+     *            |               |
+     *            |               |
+     *            |               + H (75,50)
+     *            |               |
+     *            |               |
+     *            + G (25,10)     |
+     *            |               |
+     *   +--------+---------------+--------+
+     *   A (0,0)  E (25,0)        F (75,0) B (100,0)
+     */
+    using nt::GeographicalCoord;
+    using navitia::georef::Edge;
+
+    const int AA = 0; const GeographicalCoord A = {0, 0, false};
+    const int BB = 1; const GeographicalCoord B = {100, 0, false};
+    const int CC = 2; const GeographicalCoord C = {25, 100, false};
+    const int DD = 3; const GeographicalCoord D = {75, 100, false};
+    const int EE = 4; const GeographicalCoord E = {25, 0, false};
+    const int FF = 5; const GeographicalCoord F = {75, 0, false};
+
+    const GeographicalCoord G = {25, 10, false};
+    const GeographicalCoord H = {75, 50, false};
+
+    GraphBuilder gb;
+    PathFinder path_finder(gb.geo_ref);
+
+    gb("a",0,0)("b",100,0)("c",25,100)("d",75,100)("e",25,0)("f",75,0)("g",25,10)("h",75,50);
+    gb("a","b",100_s)("b","a",100_s)("e","c",40_s)("c","e",40_s)("f","d",40_s)("d","f",40_s);
+
+    ed::builder b = {"20181219"};
+
+    boost::add_vertex(navitia::georef::Vertex(A),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(B),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(C),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(D),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(E),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(F),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(G),b.data->geo_ref->graph);
+    boost::add_vertex(navitia::georef::Vertex(H),b.data->geo_ref->graph);
+
+    b.data->geo_ref->init();
+
+    b.data->geo_ref->admins.push_back(new navitia::georef::Admin());
+    auto admin = b.data->geo_ref->admins.back();
+    admin->uri = "admin:74435";
+    admin->name = "Condom";
+    admin->insee = "32107";
+    admin->level = 8;
+    admin->postal_codes.push_back("32100");
+
+    navitia::georef::Way* ab = new navitia::georef::Way();
+    ab->name = "rue AB";
+    ab->idx = 0;
+    ab->way_type = "rue";
+    ab->admin_list.push_back(admin);
+
+    navitia::georef::Way* ec = new navitia::georef::Way();
+    ec->name = "rue EC";
+    ec->idx = 1;
+    ec->way_type = "rue";
+    ec->admin_list.push_back(admin);
+
+    navitia::georef::Way* fd = new navitia::georef::Way();
+    fd->name = "rue FD";
+    fd->idx = 2;
+    fd->way_type = "rue";
+    fd->admin_list.push_back(admin);
+
+    nt::LineString geom;
+
+    geom.push_back(A);
+    geom.push_back(B);
+    ab->geoms.push_back(geom);
+    std::reverse(geom.begin(), geom.end());
+    ab->geoms.push_back(geom);
+
+    geom.clear();
+    geom.push_back(E);
+    geom.push_back(C);
+    ec->geoms.push_back(geom);
+    std::reverse(geom.begin(), geom.end());
+    ec->geoms.push_back(geom);
+
+    geom.clear();
+    geom.push_back(F);
+    geom.push_back(D);
+    fd->geoms.push_back(geom);
+    std::reverse(geom.begin(), geom.end());
+    fd->geoms.push_back(geom);
+
+    b.data->geo_ref->ways.push_back(ab);
+    b.data->geo_ref->ways.push_back(ec);
+    b.data->geo_ref->ways.push_back(fd);
+
+    // A->B
+    Edge edge_ab = Edge(0, 100_s);
+    Edge edge_ba = Edge(0, 100_s);
+
+    edge_ab.geom_idx = 0;
+    edge_ba.geom_idx = 1;
+
+    add_edge(AA, BB, edge_ab, b.data->geo_ref->graph);
+    add_edge(BB, AA, edge_ba, b.data->geo_ref->graph);
+    ab->edges.push_back(std::make_pair(AA, BB));
+    ab->edges.push_back(std::make_pair(BB, AA));
+
+    // E->C
+    Edge edge_ec = Edge(1, 40_s);
+    Edge edge_ce = Edge(1, 40_s);
+
+    edge_ec.geom_idx = 0;
+    edge_ce.geom_idx = 1;
+
+    add_edge(EE, CC, edge_ec, b.data->geo_ref->graph);
+    add_edge(CC, EE, edge_ce, b.data->geo_ref->graph);
+    ec->edges.push_back(std::make_pair(EE, CC));
+    ec->edges.push_back(std::make_pair(CC, EE));
+
+    // F->D
+    Edge edge_fd = Edge(2, 40_s);
+    Edge edge_df = Edge(2, 40_s);
+
+    edge_fd.geom_idx = 0;
+    edge_df.geom_idx = 1;
+
+    add_edge(FF, DD, edge_fd, b.data->geo_ref->graph);
+    add_edge(DD, FF, edge_df, b.data->geo_ref->graph);
+    fd->edges.push_back(std::make_pair(FF, DD));
+    fd->edges.push_back(std::make_pair(DD, FF));
+
+    b.data->build_uri();
+    b.data->build_proximity_list();
+
+    const Way *const_ec = ec, *const_fd = fd;
+    BOOST_CHECK_EQUAL(b.data->geo_ref->nearest_addr(G), std::make_pair(0, const_ec));
+    BOOST_CHECK_EQUAL(b.data->geo_ref->nearest_addr(H), std::make_pair(0, const_fd));
+}
+
 BOOST_AUTO_TEST_CASE(geolocalization) {
     //     (0,100)    rue AB   (100,100)
     //      A +--------------------+ B

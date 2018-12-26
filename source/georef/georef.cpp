@@ -710,8 +710,23 @@ std::pair<int, const Way*> GeoRef::nearest_addr(const type::GeographicalCoord& c
         BOOST_FOREACH (edge_t e, boost::out_edges(pair_coord.first, graph)) {
             const Way* w = ways[graph[e].way_idx];
             if (filter(*w)) { continue; }
-            if (way_dist.count(w) == 0) {
-                way_dist[w] = coord.distance_to(w->projected_centroid(graph));
+            const auto edge = graph[e];
+            double distance;
+            // check the edge has a geom
+            // if the geom exists, get the distance between requested coord and the geom
+            if (edge.geom_idx != nt::invalid_idx) {
+                distance = boost::geometry::distance(coord, w->geoms[edge.geom_idx]);
+            // if the geom doesn't exist, build the line between its vertices and get the distance
+            } else {
+                nt::LineString line;
+
+                line.push_back(graph[boost::source(e, graph)].coord);
+                line.push_back(graph[boost::target(e, graph)].coord);
+                distance = boost::geometry::distance(coord, line);
+            }
+            // save the smallest distance between the coord and the way's edges
+            if (way_dist.count(w) == 0 || distance < way_dist[w]) {
+                way_dist[w] = distance;
             }
         }
     }
